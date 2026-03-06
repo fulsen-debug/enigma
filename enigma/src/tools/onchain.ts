@@ -18,12 +18,59 @@ interface HolderNode {
   recentSignatures: string[];
 }
 
+interface HolderActivity {
+  buyTxCount: number;
+  sellTxCount: number;
+}
+
+interface AccountMeta {
+  ownerProgram: string;
+  executable: boolean;
+  dataLength: number;
+}
+
 type RpcCaller = <T>(method: string, params: unknown[]) => Promise<T>;
 
 const DEFAULT_RPC_TIMEOUT_MS = Number(process.env.ENIGMA_RPC_TIMEOUT_MS || 12_000);
 const DEFAULT_RPC_ATTEMPTS = Math.max(1, Number(process.env.ENIGMA_RPC_RETRY_ATTEMPTS || 3));
 const DEFAULT_CACHE_TTL_MS = Math.max(5_000, Number(process.env.ENIGMA_ONCHAIN_CACHE_TTL_SEC || 60) * 1000);
 const FAILURE_CACHE_TTL_MS = 10_000;
+const SYSTEM_PROGRAM_ID = "11111111111111111111111111111111";
+const SAMPLE_SIGNATURE_LIMIT = Math.max(25, Number(process.env.ENIGMA_HOLDER_SIGNATURE_SAMPLE || 25));
+const SAMPLE_BUY_SELL_SIGNATURE_LIMIT = Math.max(
+  8,
+  Number(process.env.ENIGMA_HOLDER_BUYSELL_SIGNATURE_SAMPLE || 8)
+);
+const DEEP_SIGNATURE_LIMIT = Math.max(120, Number(process.env.ENIGMA_HOLDER_SIGNATURE_DEEP || 240));
+const DEEP_BUY_SELL_SIGNATURE_LIMIT = Math.max(
+  20,
+  Number(process.env.ENIGMA_HOLDER_BUYSELL_SIGNATURE_DEEP || 60)
+);
+const SAMPLE_BUY_SELL_HOLDER_LIMIT = Math.max(
+  3,
+  Number(process.env.ENIGMA_HOLDER_BUYSELL_HOLDER_SAMPLE || 5)
+);
+const DEEP_BUY_SELL_HOLDER_LIMIT = Math.max(
+  SAMPLE_BUY_SELL_HOLDER_LIMIT,
+  Number(process.env.ENIGMA_HOLDER_BUYSELL_HOLDER_DEEP || 12)
+);
+const FULL_SIGNATURE_LIMIT = Math.max(
+  DEEP_SIGNATURE_LIMIT,
+  Number(process.env.ENIGMA_HOLDER_SIGNATURE_FULL || 5000)
+);
+const FULL_BUY_SELL_SIGNATURE_LIMIT = Math.max(
+  DEEP_BUY_SELL_SIGNATURE_LIMIT,
+  Number(process.env.ENIGMA_HOLDER_BUYSELL_SIGNATURE_FULL || 5000)
+);
+const DEFAULT_ANALYSIS_MODE_RAW = String(process.env.ENIGMA_HOLDER_ANALYSIS_MODE || "sample")
+  .trim()
+  .toLowerCase();
+const DEFAULT_ANALYSIS_MODE: "sample" | "deep" | "full" =
+  DEFAULT_ANALYSIS_MODE_RAW === "sample"
+    ? "sample"
+    : DEFAULT_ANALYSIS_MODE_RAW === "deep"
+      ? "deep"
+      : "full";
 
 function parseWalletLabels(): Record<string, string> {
   const raw = String(process.env.ENIGMA_WALLET_LABELS || "").trim();
@@ -43,6 +90,15 @@ function sleep(ms: number): Promise<void> {
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function sanitizeRpcEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "configured";
+  }
 }
 
 function buildRpcUrls(primaryRpcUrl?: string): string[] {
@@ -141,6 +197,31 @@ function pct(part: number, total: number): number {
   return (part / total) * 100;
 }
 
+async function fetchSignaturesWithLookback(
+  callRpc: RpcCaller,
+  address: string,
+  maxSignatures: number
+): Promise<Array<{ signature: string; blockTime?: number | null }>> {
+  const out: Array<{ signature: string; blockTime?: number | null }> = [];
+  const pageSize = Math.min(200, Math.max(25, maxSignatures));
+  let before: string | undefined;
+
+  while (out.length < maxSignatures) {
+    const limit = Math.min(pageSize, maxSignatures - out.length);
+    const page = await callRpc<Array<{ signature: string; blockTime?: number | null }>>(
+      "getSignaturesForAddress",
+      [address, before ? { limit, before } : { limit }]
+    );
+    if (!page.length) break;
+    out.push(...page);
+    if (page.length < limit) break;
+    before = page[page.length - 1]?.signature;
+    if (!before) break;
+  }
+
+  return out;
+}
+
 function inferWalletSource(input: {
   configuredLabel?: string;
   owner: string;
@@ -210,6 +291,50 @@ function avg(values: Array<number | null>): number | null {
   return valid.reduce((sum, value) => sum + value, 0) / valid.length;
 }
 
+async function loadAccountMetas(
+  callRpc: RpcCaller,
+  addresses: string[]
+): Promise<Record<string, AccountMeta>> {
+  if (addresses.length === 0) return {};
+
+  const response = await callRpc<{
+    value: Array<
+      | {
+          owner?: string;
+          executable?: boolean;
+          data?: [string, string] | string;
+        }
+      | null
+    >;
+  }>("getMultipleAccounts", [addresses, { encoding: "base64" }]);
+
+  const output: Record<string, AccountMeta> = {};
+  response.value.forEach((value, index) => {
+    if (!value) return;
+    const dataRaw = value.data;
+    let dataLength = 0;
+    if (Array.isArray(dataRaw) && typeof dataRaw[0] === "string") {
+      try {
+        dataLength = Buffer.from(dataRaw[0], "base64").length;
+      } catch {
+        dataLength = 0;
+      }
+    } else if (typeof dataRaw === "string") {
+      try {
+        dataLength = Buffer.from(dataRaw, "base64").length;
+      } catch {
+        dataLength = 0;
+      }
+    }
+    output[addresses[index]] = {
+      ownerProgram: String(value.owner || ""),
+      executable: Boolean(value.executable),
+      dataLength
+    };
+  });
+  return output;
+}
+
 async function loadOwners(callRpc: RpcCaller, tokenAccounts: string[]): Promise<Record<string, string>> {
   if (tokenAccounts.length === 0) return {};
 
@@ -236,12 +361,13 @@ async function loadOwners(callRpc: RpcCaller, tokenAccounts: string[]): Promise<
   return output;
 }
 
-async function walletAgeDays(callRpc: RpcCaller, owner: string): Promise<number | null> {
+async function walletAgeDays(
+  callRpc: RpcCaller,
+  owner: string,
+  signatureLimit: number
+): Promise<number | null> {
   try {
-    const signatures = await callRpc<Array<{ signature: string; blockTime?: number | null }>>(
-      "getSignaturesForAddress",
-      [owner, { limit: 25 }]
-    );
+    const signatures = await fetchSignaturesWithLookback(callRpc, owner, signatureLimit);
 
     const times = signatures
       .map((sig) => sig.blockTime || null)
@@ -259,13 +385,11 @@ async function walletAgeDays(callRpc: RpcCaller, owner: string): Promise<number 
 
 async function tokenAccountRecentSignatures(
   callRpc: RpcCaller,
-  tokenAccount: string
+  tokenAccount: string,
+  signatureLimit: number
 ): Promise<string[]> {
   try {
-    const signatures = await callRpc<Array<{ signature: string }>>("getSignaturesForAddress", [
-      tokenAccount,
-      { limit: 20 }
-    ]);
+    const signatures = await fetchSignaturesWithLookback(callRpc, tokenAccount, signatureLimit);
     return signatures.map((sig) => sig.signature).filter(Boolean);
   } catch {
     return [];
@@ -306,13 +430,11 @@ function tokenAccountDeltaFromTx(tx: Record<string, unknown>, tokenAccount: stri
 
 async function tokenAccountBuySellActivity(
   callRpc: RpcCaller,
-  tokenAccount: string
-): Promise<{ buyTxCount: number; sellTxCount: number }> {
+  tokenAccount: string,
+  signatureLimit: number
+): Promise<HolderActivity> {
   try {
-    const signatures = await callRpc<Array<{ signature: string }>>("getSignaturesForAddress", [
-      tokenAccount,
-      { limit: 8 }
-    ]);
+    const signatures = await fetchSignaturesWithLookback(callRpc, tokenAccount, signatureLimit);
 
     let buyTxCount = 0;
     let sellTxCount = 0;
@@ -341,6 +463,105 @@ async function tokenAccountBuySellActivity(
   }
 }
 
+function ownerMintDeltaFromTx(tx: Record<string, unknown>, owner: string, mint: string): number {
+  const meta = (tx.meta as Record<string, unknown> | undefined) || {};
+  const pre = (meta.preTokenBalances as Array<Record<string, unknown>> | undefined) || [];
+  const post = (meta.postTokenBalances as Array<Record<string, unknown>> | undefined) || [];
+
+  const sumFor = (entries: Array<Record<string, unknown>>): number =>
+    entries.reduce((sum, entry) => {
+      const entryOwner = String(entry.owner || "");
+      const entryMint = String(entry.mint || "");
+      if (entryOwner !== owner || entryMint !== mint) return sum;
+      return sum + parseTokenAmount(entry);
+    }, 0);
+
+  return sumFor(post) - sumFor(pre);
+}
+
+async function ownerAddressBuySellActivity(
+  callRpc: RpcCaller,
+  owner: string,
+  mint: string,
+  signatureLimit: number
+): Promise<HolderActivity> {
+  try {
+    const signatures = await fetchSignaturesWithLookback(callRpc, owner, signatureLimit);
+    let buyTxCount = 0;
+    let sellTxCount = 0;
+
+    for (const item of signatures) {
+      if (!item.signature) continue;
+      let tx: Record<string, unknown> | null = null;
+      try {
+        tx = await callRpc<Record<string, unknown> | null>("getTransaction", [
+          item.signature,
+          { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }
+        ]);
+      } catch {
+        continue;
+      }
+      if (!tx) continue;
+
+      const delta = ownerMintDeltaFromTx(tx, owner, mint);
+      if (delta > 0) buyTxCount += 1;
+      else if (delta < 0) sellTxCount += 1;
+    }
+
+    return { buyTxCount, sellTxCount };
+  } catch {
+    return { buyTxCount: 0, sellTxCount: 0 };
+  }
+}
+
+function pickLpCandidateTokenAccount(input: {
+  holders: HolderNode[];
+  totalSupply: number;
+  ownerMetas: Record<string, AccountMeta>;
+  configuredLabels: Record<string, string>;
+}): string {
+  if (!input.holders.length || input.totalSupply <= 0) return "";
+
+  let bestTokenAccount = "";
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestAmountRaw = 0;
+
+  input.holders.forEach((holder, index) => {
+    const ownerMeta = input.ownerMetas[holder.owner];
+    const configuredLabel = String(input.configuredLabels[holder.owner] || "").toLowerCase();
+    const amountPct = pct(holder.amountRaw, input.totalSupply);
+    let score = 0;
+
+    if (index === 0) score += 2.5;
+    else if (index < 3) score += 1;
+
+    if (amountPct >= 10) score += 2;
+    else if (amountPct >= 5) score += 1;
+
+    if (holder.recentSignatures.length >= 15) score += 2;
+    else if (holder.recentSignatures.length >= 8) score += 1;
+
+    if (holder.walletAgeDays === null) score += 1;
+
+    if (ownerMeta) {
+      if (ownerMeta.ownerProgram && ownerMeta.ownerProgram !== SYSTEM_PROGRAM_ID) score += 2;
+      if (ownerMeta.dataLength > 0) score += 1;
+      if (ownerMeta.executable) score -= 3;
+    }
+
+    if (configuredLabel && !/lp|pool|amm|dex|vault/.test(configuredLabel)) score -= 3;
+    if (configuredLabel && /lp|pool|amm|dex|vault/.test(configuredLabel)) score += 1;
+
+    if (score > bestScore || (score === bestScore && holder.amountRaw > bestAmountRaw)) {
+      bestScore = score;
+      bestAmountRaw = holder.amountRaw;
+      bestTokenAccount = holder.tokenAccount;
+    }
+  });
+
+  return bestScore >= 4 ? bestTokenAccount : "";
+}
+
 export function createOnchainTool(rpcUrl?: string) {
   const rpc = createRpcCaller(rpcUrl);
   const primaryRpc = rpc.urls[0];
@@ -352,6 +573,7 @@ export function createOnchainTool(rpcUrl?: string) {
       mint: string,
       options?: {
         holderLimit?: number;
+        analysisMode?: "sample" | "deep" | "full";
       }
     ): Promise<Record<string, unknown>> {
       if (!primaryRpc) {
@@ -363,8 +585,35 @@ export function createOnchainTool(rpcUrl?: string) {
         };
       }
 
-      const holderLimit = Math.min(50, Math.max(8, Number(options?.holderLimit || 12)));
-      const cacheKey = `${mint.trim()}::${holderLimit}`;
+      const holderLimit = Math.min(50, Math.max(8, Number(options?.holderLimit || 10)));
+      const requestedMode = String(options?.analysisMode || "").trim().toLowerCase();
+      const analysisMode: "sample" | "deep" | "full" =
+        requestedMode === "sample"
+          ? "sample"
+          : requestedMode === "deep"
+            ? "deep"
+            : requestedMode === "full"
+              ? "full"
+              : DEFAULT_ANALYSIS_MODE;
+      const signatureSamplePerAccount =
+        analysisMode === "full"
+          ? FULL_SIGNATURE_LIMIT
+          : analysisMode === "deep"
+            ? DEEP_SIGNATURE_LIMIT
+            : SAMPLE_SIGNATURE_LIMIT;
+      const buySellSignatureLimit =
+        analysisMode === "full"
+          ? FULL_BUY_SELL_SIGNATURE_LIMIT
+          : analysisMode === "deep"
+            ? DEEP_BUY_SELL_SIGNATURE_LIMIT
+            : SAMPLE_BUY_SELL_SIGNATURE_LIMIT;
+      const buySellHolderLimit =
+        analysisMode === "full"
+          ? holderLimit
+          : analysisMode === "deep"
+            ? DEEP_BUY_SELL_HOLDER_LIMIT
+            : SAMPLE_BUY_SELL_HOLDER_LIMIT;
+      const cacheKey = `${mint.trim()}::${holderLimit}::${analysisMode}`;
       const now = Date.now();
       const cached = riskCache.get(cacheKey);
       if (cached && cached.expiresAt > now) {
@@ -404,24 +653,21 @@ export function createOnchainTool(rpcUrl?: string) {
           riskFlags.push("Freeze authority is active (accounts can potentially be frozen)");
 
         const totalSupply = Number(supply.value.amount || 0);
-        const top3 = largestAccounts.value.slice(0, 3);
-        const topRaw = top3.reduce((sum, holder) => sum + Number(holder.amount || 0), 0);
-        const top3Pct = pct(topRaw, totalSupply);
-
-        let concentrationRisk = "low";
-        if (top3Pct >= 50) concentrationRisk = "high";
-        else if (top3Pct >= 25) concentrationRisk = "medium";
-        if (top3Pct >= 50) riskFlags.push("Top-3 holder concentration is elevated");
-
         const analyzed = largestAccounts.value.slice(0, holderLimit);
         const tokenAccounts = analyzed.map((holder) => holder.address);
         const ownersByTokenAccount = await loadOwners(rpc.call, tokenAccounts);
+        const walletAgeCache = new Map<string, Promise<number | null>>();
 
         const holderNodes: HolderNode[] = await Promise.all(
           analyzed.map(async (holder) => {
             const owner = ownersByTokenAccount[holder.address] || holder.address;
-            const signatures = await tokenAccountRecentSignatures(rpc.call, holder.address);
-            const age = await walletAgeDays(rpc.call, owner);
+            if (!walletAgeCache.has(owner)) {
+              walletAgeCache.set(owner, walletAgeDays(rpc.call, owner, signatureSamplePerAccount));
+            }
+            const [signatures, age] = await Promise.all([
+              tokenAccountRecentSignatures(rpc.call, holder.address, signatureSamplePerAccount),
+              walletAgeCache.get(owner) as Promise<number | null>
+            ]);
             return {
               tokenAccount: holder.address,
               owner,
@@ -432,6 +678,46 @@ export function createOnchainTool(rpcUrl?: string) {
             };
           })
         );
+
+        const ownerMetas = await loadAccountMetas(
+          rpc.call,
+          Array.from(new Set(holderNodes.map((holder) => holder.owner)))
+        );
+        const lpCandidateTokenAccount = pickLpCandidateTokenAccount({
+          holders: holderNodes,
+          totalSupply,
+          ownerMetas,
+          configuredLabels: knownWalletLabels
+        });
+        const top3WithLp = largestAccounts.value.slice(0, 3);
+        const topRawWithLp = top3WithLp.reduce((sum, holder) => sum + Number(holder.amount || 0), 0);
+        const top3WithLpPct = pct(topRawWithLp, totalSupply);
+        const top10WithLp = largestAccounts.value.slice(0, 10);
+        const top10RawWithLp = top10WithLp.reduce((sum, holder) => sum + Number(holder.amount || 0), 0);
+        const top10WithLpPct = pct(top10RawWithLp, totalSupply);
+        const concentrationPool = lpCandidateTokenAccount
+          ? largestAccounts.value.filter((holder) => holder.address !== lpCandidateTokenAccount)
+          : largestAccounts.value;
+        const top3ExcludingLp = concentrationPool.slice(0, 3);
+        const topRawExcludingLp = top3ExcludingLp.reduce(
+          (sum, holder) => sum + Number(holder.amount || 0),
+          0
+        );
+        const top3Pct = pct(topRawExcludingLp, totalSupply);
+        const top10ExcludingLp = concentrationPool.slice(0, 10);
+        const top10RawExcludingLp = top10ExcludingLp.reduce(
+          (sum, holder) => sum + Number(holder.amount || 0),
+          0
+        );
+        const top10Pct = pct(top10RawExcludingLp, totalSupply);
+
+        let concentrationRisk = "low";
+        if (top10Pct >= 80) concentrationRisk = "high";
+        else if (top10Pct >= 55) concentrationRisk = "medium";
+        if (top10Pct >= 80) riskFlags.push("Top-10 holder concentration (excluding LP candidate) is elevated");
+        if (!lpCandidateTokenAccount) {
+          riskFlags.push("LP candidate not confidently identified; concentration may include LP account");
+        }
 
         const freshHolders = holderNodes.filter(
           (holder) => holder.walletAgeDays !== null && holder.walletAgeDays <= 14
@@ -455,12 +741,20 @@ export function createOnchainTool(rpcUrl?: string) {
           connectedHolderPct: Number(pct(connectedRaw, totalSupply).toFixed(2)),
           analysisCoverage: {
             topAccountsAnalyzed: holderNodes.length,
-            buySellTxSamplePerAccount: 8,
-            accountsWithBuySellSampling: Math.min(holderNodes.length, 5),
-            signatureSamplePerAccount: 20,
-            walletAgeSignatureSamplePerOwner: 25,
+            buySellTxSamplePerAccount: buySellSignatureLimit,
+            accountsWithBuySellSampling: Math.min(holderNodes.length, buySellHolderLimit),
+            buySellSource:
+              analysisMode === "sample" ? "token-account" : "owner-address",
+            signatureSamplePerAccount,
+            walletAgeSignatureSamplePerOwner: signatureSamplePerAccount,
+            mode: analysisMode,
             fullHistory: false,
-            note: "Behavior metrics are based on recent on-chain samples, not full lifetime trade history."
+            note:
+              analysisMode === "full"
+                ? "Full holder mode: scans holder owner-address history across available RPC pages for analyzed holders. Data may still be bounded by RPC/provider retention and configured caps."
+                : analysisMode === "deep"
+                  ? "Deep holder review mode: wallet age and buy/sell counts scan older owner-address signatures with pagination, but still not complete lifetime history."
+                  : "Fast scan mode: behavior metrics are sampled from recent token-account activity and are not full lifetime wallet history."
           },
           connectedGroups: groups.map((group, idx) => ({
             id: idx + 1,
@@ -477,8 +771,20 @@ export function createOnchainTool(rpcUrl?: string) {
         };
 
         const activityByTokenAccount = await Promise.all(
-          holderNodes.slice(0, 5).map(async (holder) => {
-            const activity = await tokenAccountBuySellActivity(rpc.call, holder.tokenAccount);
+          holderNodes.slice(0, buySellHolderLimit).map(async (holder) => {
+            const activity =
+              analysisMode === "deep" || analysisMode === "full"
+                ? await ownerAddressBuySellActivity(
+                    rpc.call,
+                    holder.owner,
+                    mint,
+                    buySellSignatureLimit
+                  )
+                : await tokenAccountBuySellActivity(
+                    rpc.call,
+                    holder.tokenAccount,
+                    buySellSignatureLimit
+                  );
             return { tokenAccount: holder.tokenAccount, activity };
           })
         );
@@ -486,11 +792,12 @@ export function createOnchainTool(rpcUrl?: string) {
           activityByTokenAccount.map((entry) => [entry.tokenAccount, entry.activity])
         );
 
-        const holderProfiles = holderNodes.map((holder, index) => {
+        const holderProfiles = holderNodes.map((holder) => {
           const amountPct = Number(pct(holder.amountRaw, totalSupply).toFixed(2));
           const isNewWallet = holder.walletAgeDays !== null && holder.walletAgeDays <= 14;
           const connectedGroupId = groupByOwner.get(holder.owner) || 0;
-          const isLpCandidate = index === 0;
+          const isLpCandidate =
+            Boolean(lpCandidateTokenAccount) && holder.tokenAccount === lpCandidateTokenAccount;
           const activity = activityMap.get(holder.tokenAccount) || { buyTxCount: 0, sellTxCount: 0 };
           const walletLabel = inferWalletSource({
             configuredLabel: knownWalletLabels[holder.owner],
@@ -541,6 +848,14 @@ export function createOnchainTool(rpcUrl?: string) {
           concentrationRisk,
           suspiciousPatterns: riskFlags,
           top3HolderSharePct: Number(top3Pct.toFixed(2)),
+          top3HolderSharePctWithLp: Number(top3WithLpPct.toFixed(2)),
+          top10HolderSharePct: Number(top10Pct.toFixed(2)),
+          top10HolderSharePctWithLp: Number(top10WithLpPct.toFixed(2)),
+          concentrationWindow: "top10",
+          concentrationMode: lpCandidateTokenAccount
+            ? "top10_excluding_lp_candidate"
+            : "top10_lp_candidate_unconfirmed",
+          lpCandidateTokenAccount: lpCandidateTokenAccount || null,
           totalSupplyRaw: totalSupply,
           hasMintAuthority,
           hasFreezeAuthority,
@@ -579,7 +894,7 @@ export function createOnchainTool(rpcUrl?: string) {
         };
       }
 
-      const top3Pct = Number(risk.top3HolderSharePct || 0);
+      const top10Pct = Number(risk.top10HolderSharePct || 0);
       const hasMintAuthority = Boolean(risk.hasMintAuthority);
       const hasFreezeAuthority = Boolean(risk.hasFreezeAuthority);
       const holderBehavior = (risk.holderBehavior as Record<string, unknown>) || {};
@@ -589,15 +904,15 @@ export function createOnchainTool(rpcUrl?: string) {
       const reasons: string[] = [];
       let score = 100;
 
-      if (top3Pct >= 60) {
+      if (top10Pct >= 85) {
         score -= 40;
-        reasons.push("Top-3 holders control >=60% supply");
-      } else if (top3Pct >= 35) {
+        reasons.push("Top-10 holders control >=85% supply");
+      } else if (top10Pct >= 65) {
         score -= 20;
-        reasons.push("Top-3 holders control >=35% supply");
-      } else if (top3Pct >= 20) {
+        reasons.push("Top-10 holders control >=65% supply");
+      } else if (top10Pct >= 45) {
         score -= 10;
-        reasons.push("Top-3 holder concentration is non-trivial");
+        reasons.push("Top-10 holder concentration is non-trivial");
       } else {
         reasons.push("Holder concentration appears relatively distributed");
       }
@@ -653,16 +968,17 @@ export function createOnchainTool(rpcUrl?: string) {
         return { ok: false, message: "Missing SOLANA_RPC_URL/HELIUS_API_KEY" };
       }
 
+      const endpoint = sanitizeRpcEndpoint(primaryRpc);
       try {
         const version = await rpc.call<{ "solana-core": string }>("getVersion", []);
         return {
           ok: true,
           version,
-          rpc: primaryRpc,
+          endpoint,
           fallbackCount: Math.max(0, rpc.urls.length - 1)
         };
       } catch (error) {
-        return { ok: false, message: (error as Error).message, rpc: primaryRpc };
+        return { ok: false, message: (error as Error).message, endpoint };
       }
     }
   };

@@ -95,10 +95,23 @@
       </section>
 
       <section class="doc-card">
-        <h2>8) Trading Console (Manual + Autopilot)</h2>
+        <h2>8) Trading Console (Test + Live Agent)</h2>
         <ul>
-          <li>Run <code>Manual Test Flow (Paper)</code> first and review expected drawdown/equity before loops.</li>
-          <li>Use <code>Autopilot Execution Engine</code> only after paper results are stable for your watchlist.</li>
+          <li>Set one <code>Agent Token Mint</code> for Test/Live agent loops. This is single-token mode.</li>
+          <li>Watchlist is scanner-only and does not drive Test/Live agent loops.</li>
+          <li>Use the beginner-safe top controls only: <code>Operating Preset</code>, <code>Run Test</code>, <code>Run Live</code>, <code>Stop</code>.</li>
+          <li><code>Beginner</code> preset is default for safer pacing, <code>Balanced</code> is medium pace, <code>Fast Scalp</code> is the highest-frequency mode.</li>
+          <li>Use <code>Run Test</code> first, then validate results in the buy/sell visual activity panel.</li>
+          <li>Use <code>Run Live</code> only after test results are stable for that agent token.</li>
+          <li>Engine now uses a regime policy matrix (ADX + Volatility + liquidity/spread + holder risk) to auto-select breakout/trend/mean-revert or no-trade mode.</li>
+          <li>Entry logic is multi-trigger: pullback entry, momentum continuation, and timeout fallback (reduced size) to avoid waiting forever.</li>
+          <li>Position sizing is dynamic: risk-budget and stop-distance based, then reduced when volatility/spread rises.</li>
+          <li>Exit watcher supports fast multi-sweep checks for TP/SL/trailing/hostile-regime exits.</li>
+          <li>PnL logs now show expected vs realized outcomes and include execution drag (fees/slippage/latency).</li>
+          <li>Decision engine is deterministic and numeric (no LLM dependency in trade decisions).</li>
+          <li>Trade Activity table now prints <code>BUY</code>/<code>SELL</code> logs only; INFO/engine status stays in monitor/system messages.</li>
+          <li>Layered same-token entries are supported up to <code>Max Open Positions</code> with <code>Open Cooldown</code> control.</li>
+          <li><code>Check Every (sec)</code> controls reaction speed: lower values react faster to TP/SL/trailing events, higher values reduce API load.</li>
           <li>Engine guardrails auto-adjust invalid combinations so <code>SL</code> and <code>Trailing Stop</code> stay below <code>TP</code>.</li>
           <li>Live execution requires PRO plan and backend flag <code>ENIGMA_EXECUTION_ENABLED=1</code>.</li>
         </ul>

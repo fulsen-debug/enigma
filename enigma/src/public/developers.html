@@ -30,7 +30,7 @@
         <p><strong>KOBECOIN AI Guardian</strong> is a Solana risk-intelligence layer designed for traders and trading platforms.</p>
         <ul>
           <li>Pre-entry token behavior analysis (kill-switch, concentration, authorities, connected holders)</li>
-          <li>Live watchlist monitoring and status flips</li>
+          <li>Live scanner watchlist monitoring and status flips</li>
           <li>Holder behavior table for deeper due diligence</li>
           <li>Execution-ready architecture via external routers (for example Jupiter Ultra)</li>
         </ul>
@@ -45,7 +45,28 @@ HOST=0.0.0.0
 ENIGMA_JWT_SECRET=&lt;strong-random-secret&gt;
 HELIUS_API_KEY=&lt;key&gt;
 # Optional alternative:
-# SOLANA_RPC_URL=&lt;https-rpc-endpoint&gt;</code></pre>
+# SOLANA_RPC_URL=&lt;https-rpc-endpoint&gt;
+
+# Live safety rails (recommended)
+ENIGMA_SAFETY_MAX_TOTAL_EXPOSURE_USD=500
+ENIGMA_SAFETY_MAX_DAILY_LOSS_USD=100
+ENIGMA_SAFETY_ERROR_THRESHOLD=3
+ENIGMA_SAFETY_ERROR_WINDOW_SEC=600
+ENIGMA_SAFETY_PAUSE_SEC=300
+
+# Entry/exits autonomy tuning
+ENIGMA_ENTRY_TIMEOUT_SEC=90
+ENIGMA_ENTRY_TIMEOUT_MIN_SEC=15
+ENIGMA_ENTRY_TIMEOUT_MAX_SEC=90
+ENIGMA_ENTRY_FALLBACK_MIN_CONFIDENCE=0.35
+ENIGMA_ENTRY_FALLBACK_CONFIDENCE_DECAY=0.05
+ENIGMA_ENTRY_FALLBACK_CONFIDENCE_FLOOR=0.25
+ENIGMA_ENTRY_FALLBACK_SIZE_MULTIPLIER=0.5
+ENIGMA_ENTRY_FALLBACK_SIZE_STEP=0.1
+ENIGMA_ENTRY_FALLBACK_SIZE_MAX=0.9
+ENIGMA_ENTRY_BREAKOUT_5M_PCT=0.9
+ENIGMA_BREAKEVEN_TRIGGER_PCT=1.2
+ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
         <ul>
           <li><strong>Operator-only keys:</strong> all env keys on this page are for KOBECOIN backend operations.</li>
           <li><strong>User-side:</strong> users only connect wallet and use app flows; they do not provide Helius/Jupiter/admin keys.</li>
@@ -54,6 +75,7 @@ HELIUS_API_KEY=&lt;key&gt;
           <li>Use persistent storage for SQLite data in production.</li>
           <li>Put the service behind TLS + reverse proxy (Nginx/Cloudflare/load balancer).</li>
           <li>Set <code>ENIGMA_PREMIUM_TELEGRAM</code> and <code>ENIGMA_ADMIN_TOKEN</code> for premium onboarding.</li>
+          <li>Do not set <code>ENIGMA_ALLOW_FREE_LIVE=1</code> in final production. Keep live execution access policy controlled.</li>
         </ul>
       </section>
 
@@ -106,18 +128,19 @@ HELIUS_API_KEY=&lt;key&gt;
               <tr><td><code>/api/watchlist</code></td><td>GET/PUT/POST</td><td>Yes</td><td>Read/update watchlist</td></tr>
               <tr><td><code>/api/watchlist/add</code></td><td>POST</td><td>Yes</td><td>Append one mint</td></tr>
               <tr><td><code>/api/signal</code></td><td>POST</td><td>Yes</td><td>Single-token scan</td></tr>
-              <tr><td><code>/api/watchlist/scan</code></td><td>POST</td><td>Yes</td><td>Scan saved watchlist</td></tr>
+              <tr><td><code>/api/watchlist/scan</code></td><td>POST</td><td>Yes</td><td>Scan saved scanner watchlist</td></tr>
               <tr><td><code>/api/signals/stream</code></td><td>POST</td><td>Yes</td><td>Scan passed mint list</td></tr>
               <tr><td><code>/api/discovery/suggest</code></td><td>POST</td><td>Yes</td><td>New token candidate suggestions</td></tr>
               <tr><td><code>/api/token/holders</code></td><td>GET</td><td>Yes</td><td>Holder profile table + behavior</td></tr>
+              <tr><td><code>/api/token/market/live</code></td><td>GET</td><td>Yes</td><td>Realtime price snapshot + chart points (no signal quota)</td></tr>
               <tr><td><code>/api/forecast/resolve</code></td><td>POST</td><td>Yes</td><td>Resolve trade outcome feedback</td></tr>
               <tr><td><code>/api/dashboard/stats</code></td><td>GET</td><td>Yes</td><td>Usage and signal metrics</td></tr>
               <tr><td><code>/api/autotrade/config</code></td><td>GET/PUT</td><td>Yes</td><td>Auto-trade policy config</td></tr>
-              <tr><td><code>/api/autotrade/run</code></td><td>POST</td><td>Yes</td><td>Policy run for buy-candidate decisions</td></tr>
+              <tr><td><code>/api/autotrade/run</code></td><td>POST</td><td>Yes</td><td>Single-agent-token policy run for buy-candidate decisions</td></tr>
               <tr><td><code>/api/autotrade/performance</code></td><td>GET</td><td>Yes</td><td>Persistent paper/live run analytics</td></tr>
               <tr><td><code>/api/autotrade/execution-config</code></td><td>GET/PUT</td><td>Yes</td><td>Execution engine rules (TP/SL/size/cooldown)</td></tr>
               <tr><td><code>/api/autotrade/positions</code></td><td>GET</td><td>Yes</td><td>Open/closed position ledger</td></tr>
-              <tr><td><code>/api/autotrade/engine/tick</code></td><td>POST</td><td>Yes</td><td>One engine cycle: auto open/close actions</td></tr>
+              <tr><td><code>/api/autotrade/engine/tick</code></td><td>POST</td><td>Yes</td><td>One engine cycle for one agent token: auto open/close actions</td></tr>
             </tbody>
           </table>
         </div>
@@ -130,7 +153,7 @@ HELIUS_API_KEY=&lt;key&gt;
           <li>Client calls <code>/api/signal</code> before entry.</li>
           <li>Policy engine decides: allow / caution / block.</li>
           <li>If allowed, trader executes via exchange/router (Jupiter Ultra or other).</li>
-          <li>Post-entry, app loops <code>/api/watchlist/scan</code> for alerts and risk drift.</li>
+          <li>Post-entry, scanner loops <code>/api/watchlist/scan</code> for alerts and risk drift.</li>
         </ol>
         <p>This preserves control for the trader while enabling semi-automated risk handling.</p>
       </section>
@@ -143,7 +166,7 @@ HELIUS_API_KEY=&lt;key&gt;
           <li>Quote/Order: Jupiter <code>/ultra/v1/order</code></li>
           <li>Signing: user wallet signs base64 tx</li>
           <li>Execute: Jupiter <code>/ultra/v1/execute</code></li>
-          <li>Monitor: Kobecoin AI Guardian live scan loop + alerts</li>
+          <li>Monitor: Kobecoin AI Guardian scanner loop + alerts</li>
         </ol>
         <p>Best practice: never execute when Kobecoin AI Guardian verdict is <code>HIGH_RISK</code> unless trader explicitly overrides.</p>
       </section>
@@ -258,11 +281,20 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
         <h2>13) Auto-Trade Mode (Policy Controlled)</h2>
         <p>Auto-trade is implemented as a policy engine with safe defaults.</p>
         <ul>
+          <li>Agent loop is single-token mode: pass one <code>mint</code> per run/tick request.</li>
+          <li>Watchlist endpoints remain scanner-only.</li>
           <li>Default mode is <code>paper</code> and disabled</li>
+          <li>Engine tick supports layered entries on the same agent mint, bounded by <code>maxOpenPositions</code> and <code>cooldownSec</code>.</li>
+          <li>Per-user execution locks prevent overlapping <code>/run</code>, <code>/engine/tick</code>, and <code>/monitor</code> calls from opening duplicate concurrent cycles.</li>
+          <li><code>/api/autotrade/*</code> has dedicated rate limiting for loop safety under high-frequency polling.</li>
+          <li><code>allowCautionEntries=true</code> enables faster entries by accepting CAUTION status (HIGH_RISK remains blocked).</li>
+          <li><code>allowHighRiskEntries=true</code> can force entries even in HIGH_RISK state (extreme risk).</li>
+          <li><code>minPatternScore</code> can be set to <code>0</code> to disable pattern gate in policy checks.</li>
           <li>Only <code>FAVORABLE</code> signals that pass thresholds become buy candidates</li>
           <li>Live mode can execute Jupiter swaps when execution env + signer are configured</li>
-          <li>Dashboard trading UI maps directly to these endpoints: <code>Manual Test Flow</code> -> <code>/api/autotrade/config</code> and <code>/api/autotrade/run</code>, <code>Autopilot Execution Engine</code> -> <code>/api/autotrade/execution-config</code> and <code>/api/autotrade/engine/tick</code></li>
+          <li>Dashboard trading UI maps directly to these endpoints: <code>Test Mode (Paper)</code> -> <code>/api/autotrade/config</code> and <code>/api/autotrade/run</code>, <code>Live Mode (Agent)</code> -> <code>/api/autotrade/execution-config</code>, <code>/api/autotrade/engine/tick</code>, and <code>/api/autotrade/monitor</code></li>
           <li>UI guardrails normalize invalid exits automatically (<code>SL</code> and <code>trailingStopPct</code> remain below <code>tpPct</code>) before saving execution config</li>
+          <li>Run history retention is capped by <code>ENIGMA_AUTOTRADE_RUN_RETENTION</code> (default <code>1200</code>) to avoid unbounded log growth.</li>
         </ul>
         <pre><code>curl -X PUT https://your-domain.com/api/autotrade/config \
   -H "authorization: Bearer &lt;JWT&gt;" \
@@ -270,6 +302,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
   -d '{
     "enabled": true,
     "mode": "paper",
+    "allowCautionEntries": false,
     "minPatternScore": 74,
     "minConfidence": 0.78,
     "maxConnectedHolderPct": 20,
@@ -280,7 +313,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
         <pre><code>curl -X POST https://your-domain.com/api/autotrade/run \
   -H "authorization: Bearer &lt;JWT&gt;" \
   -H "content-type: application/json" \
-  -d '{"mints":"So11111111111111111111111111111111111111112"}'</code></pre>
+  -d '{"mint":"So11111111111111111111111111111111111111112"}'</code></pre>
         <p>Execution engine endpoints:</p>
         <pre><code>curl -X PUT https://your-domain.com/api/autotrade/execution-config \
   -H "authorization: Bearer &lt;JWT&gt;" \
@@ -300,7 +333,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
         <pre><code>curl -X POST https://your-domain.com/api/autotrade/engine/tick \
   -H "authorization: Bearer &lt;JWT&gt;" \
   -H "content-type: application/json" \
-  -d '{}'</code></pre>
+  -d '{"mint":"So11111111111111111111111111111111111111112"}'</code></pre>
         <p><strong>Security policy:</strong> never paste private keys into browser UI or app server config. Use dedicated signer/HSM worker for production live execution.</p>
         <p><strong>Premium policy:</strong> keep live mode as <code>pro</code> only. Users contact your Telegram, then you upgrade them using the admin endpoint.</p>
         <p><strong>Optional auto-upgrade:</strong> users can pay on-chain and submit tx signature to <code>/api/premium/verify-payment</code> for automatic activation.</p>
@@ -315,6 +348,21 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
           <li><strong>Cache TTL:</strong> candle cache defaults to <code>ENIGMA_CANDLE_CACHE_TTL_SEC=60</code> to avoid recalculating every render.</li>
           <li><strong>Regime cache TTL:</strong> market regime summary cache defaults to <code>ENIGMA_MARKET_REGIME_CACHE_TTL_SEC=45</code>.</li>
           <li><strong>Timeframes supported:</strong> <code>5m</code>, <code>15m</code>, <code>1h</code>, <code>4h</code>, <code>1d</code>; scanner prefers <code>1h</code> and falls back automatically when data is insufficient.</li>
+        </ul>
+      </section>
+
+      <section class="doc-card">
+        <h2>15) Agent Execution v2 (No-LLM Deterministic Path)</h2>
+        <ul>
+          <li><strong>Decision path:</strong> execution uses deterministic numeric rules only (no chat/LLM dependency in trade open/close decisions).</li>
+          <li><strong>Regime policy matrix:</strong> combines <code>ADX</code>, <code>VolatilityIndex</code>, liquidity, participation, estimated spread, and holder risk to switch style: <code>BREAKOUT</code>, <code>TREND</code>, <code>MEAN_REVERT</code>, <code>NO_TRADE</code>.</li>
+          <li><strong>Adaptive entry triggers:</strong> pullback in buy zone, momentum continuation above zone, or timeout fallback with reduced size.</li>
+          <li><strong>Dynamic size formula:</strong> <code>size = min(maxRiskPerTrade / stopDistance, maxPositionCap)</code>, then scaled by volatility/spread/regime multipliers.</li>
+          <li><strong>Risk hard limits:</strong> trade/day/hour/token loss caps, loss-streak cooldown pause, max concurrent positions, and hostile-regime kill-switch.</li>
+          <li><strong>Event-driven exit watcher:</strong> monitor endpoint supports fast multi-sweep checks to evaluate TP/SL/trailing/timeout exits between entry scans.</li>
+          <li><strong>Protective orders:</strong> use exchange/router-native protective order flow when venue supports it; current default path is deterministic fast-poll fallback.</li>
+          <li><strong>PnL attribution:</strong> open/close actions include expected vs realized and execution drag (fees/slippage/latency/partial-fill effects).</li>
+          <li><strong>Tuning env vars:</strong> <code>ENIGMA_SAFETY_MAX_HOURLY_LOSS_USD</code>, <code>ENIGMA_SAFETY_MAX_TOKEN_DAILY_LOSS_USD</code>, <code>ENIGMA_SAFETY_MAX_TOKEN_HOURLY_LOSS_USD</code>, <code>ENIGMA_SAFETY_MAX_LOSS_PER_TRADE_USD</code>, <code>ENIGMA_SAFETY_LOSS_STREAK_THRESHOLD</code>, <code>ENIGMA_SAFETY_LOSS_STREAK_PAUSE_SEC</code>, <code>ENIGMA_SAFETY_EXIT_ON_HOSTILE_REGIME</code>.</li>
         </ul>
       </section>
     </main>

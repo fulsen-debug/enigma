@@ -25,6 +25,7 @@ import {
   getAutoTradeConfig,
   getAutoTradeExecutionConfig,
   getAutoTradePerformance,
+  getUsage,
   getDashboardStats,
   getWithdrawalRequestById,
   getWatchlist,
@@ -36,6 +37,7 @@ import {
   putAutoTradeExecutionConfig,
   putNonce,
   resolveForecast,
+  resetAutoTradeRuns,
   savePremiumPayment,
   setUserManagedBalance,
   setUserPlanByWallet,
@@ -45,8 +47,24 @@ import {
   updateWithdrawalRequestStatus,
   updateAutoTradePositionMark
 } from "./server/db.js";
-import { discoverNewSolanaMints, generateSignal } from "./server/signalEngine.js";
+import {
+  discoverNewSolanaMints,
+  fetchRealtimeMarketSnapshot,
+  generateSignal,
+  isSolanaTrackedAsset,
+  isSupportedTrackedAsset,
+  normalizeTrackedAssetId
+} from "./server/signalEngine.js";
 import { executeSolTransfer, executeUltraBuy, executeUltraSell } from "./server/jupiterExecutor.js";
+import { fetchCandlesFromBinanceSymbol, fetchCandlesFromGeckoTerminal } from "./server/candles.js";
+import {
+  chooseAdaptiveEntryTrigger,
+  computeDynamicPositionSize,
+  computePnlAttribution,
+  deriveRegimePolicy,
+  estimateSpreadBps,
+  simulateExecutionFill
+} from "./server/agentPolicy.js";
 
 function validateRuntimeConfig(): { mode: string; hasRpc: boolean } {
   const mode = String(process.env.NODE_ENV || "development");
@@ -76,25 +94,328 @@ const PREMIUM_TIER_LAMPORTS: Record<string, number> = {
   pro3: Number(process.env.ENIGMA_PRO3_LAMPORTS || 5000000000),
   pro4: Number(process.env.ENIGMA_PRO4_LAMPORTS || 25000000000)
 };
+const PAPER_ONLY_MODE = String(process.env.ENIGMA_PAPER_ONLY_MODE || "1").trim() !== "0";
 const app = express();
 app.set("trust proxy", 1);
 const startPort = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "0.0.0.0";
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 const publicDir = resolve(sourceDir, "public");
+const API_RATE_LIMIT_MAX = Math.max(120, Number(process.env.ENIGMA_API_RATE_LIMIT_MAX || 300));
+const AUTOTRADE_RATE_LIMIT_MAX = Math.max(240, Number(process.env.ENIGMA_AUTOTRADE_RATE_LIMIT_MAX || 600));
+const SCANNER_RATE_LIMIT_MAX = Math.max(300, Number(process.env.ENIGMA_SCANNER_RATE_LIMIT_MAX || 1500));
+const MARKET_LIVE_RATE_LIMIT_MAX = Math.max(
+  120,
+  Number(process.env.ENIGMA_MARKET_LIVE_RATE_LIMIT_MAX || 600)
+);
+const WATCHLIST_MAX_TOKENS = Math.max(25, Number(process.env.ENIGMA_WATCHLIST_MAX_TOKENS || 200));
+const SIGNAL_STREAM_MAX_TOKENS = Math.max(
+  10,
+  Math.min(WATCHLIST_MAX_TOKENS, Number(process.env.ENIGMA_SIGNAL_STREAM_MAX_TOKENS || 50))
+);
 
 app.use(express.json());
 app.use(express.static(publicDir));
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 120,
+  max: API_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  // Keep scanner/general quota independent from high-frequency monitoring endpoints.
+  skip: (req) =>
+    req.path.startsWith("/autotrade") ||
+    req.path.startsWith("/token/market/live") ||
+    req.path === "/signal" ||
+    req.path.startsWith("/watchlist/scan") ||
+    req.path.startsWith("/discovery/suggest") ||
+    req.path.startsWith("/signals/stream"),
   message: { error: "too many requests; slow down" }
 });
 
 app.use("/api", apiLimiter);
+
+const autotradeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: AUTOTRADE_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "autotrade rate limit exceeded; slow down loops" }
+});
+
+app.use("/api/autotrade", autotradeLimiter);
+
+const scannerLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: SCANNER_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "scanner rate limit exceeded; wait a few seconds and retry" }
+});
+
+app.use("/api/signal", scannerLimiter);
+app.use("/api/watchlist/scan", scannerLimiter);
+app.use("/api/discovery/suggest", scannerLimiter);
+app.use("/api/signals/stream", scannerLimiter);
+
+const marketLiveLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: MARKET_LIVE_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "market live rate limit exceeded; slow down polling" }
+});
+
+app.use("/api/token/market/live", marketLiveLimiter);
+
+const USER_EXECUTION_LOCK_TTL_MS = Math.max(
+  5000,
+  Number(process.env.ENIGMA_USER_EXECUTION_LOCK_TTL_MS || 45000)
+);
+const SAFETY_MAX_TOTAL_EXPOSURE_USD = Math.max(
+  10,
+  Number(process.env.ENIGMA_SAFETY_MAX_TOTAL_EXPOSURE_USD || 500)
+);
+const SAFETY_MAX_DAILY_LOSS_USD = Math.max(
+  1,
+  Number(process.env.ENIGMA_SAFETY_MAX_DAILY_LOSS_USD || 100)
+);
+const SAFETY_MAX_HOURLY_LOSS_USD = Math.max(
+  1,
+  Number(process.env.ENIGMA_SAFETY_MAX_HOURLY_LOSS_USD || 35)
+);
+const SAFETY_MAX_TOKEN_DAILY_LOSS_USD = Math.max(
+  1,
+  Number(process.env.ENIGMA_SAFETY_MAX_TOKEN_DAILY_LOSS_USD || 20)
+);
+const SAFETY_MAX_TOKEN_HOURLY_LOSS_USD = Math.max(
+  0.5,
+  Number(process.env.ENIGMA_SAFETY_MAX_TOKEN_HOURLY_LOSS_USD || 8)
+);
+const SAFETY_MAX_LOSS_PER_TRADE_USD = Math.max(
+  0.25,
+  Number(process.env.ENIGMA_SAFETY_MAX_LOSS_PER_TRADE_USD || 2.5)
+);
+const SAFETY_LOSS_STREAK_THRESHOLD = Math.max(
+  2,
+  Number(process.env.ENIGMA_SAFETY_LOSS_STREAK_THRESHOLD || 3)
+);
+const SAFETY_LOSS_STREAK_PAUSE_SEC = Math.max(
+  30,
+  Number(process.env.ENIGMA_SAFETY_LOSS_STREAK_PAUSE_SEC || 600)
+);
+const SAFETY_EXIT_ON_HOSTILE_REGIME = String(
+  process.env.ENIGMA_SAFETY_EXIT_ON_HOSTILE_REGIME || "1"
+).trim() !== "0";
+const SAFETY_ERROR_THRESHOLD = Math.max(
+  1,
+  Number(process.env.ENIGMA_SAFETY_ERROR_THRESHOLD || 3)
+);
+const SAFETY_ERROR_WINDOW_SEC = Math.max(
+  30,
+  Number(process.env.ENIGMA_SAFETY_ERROR_WINDOW_SEC || 600)
+);
+const SAFETY_PAUSE_SEC = Math.max(
+  10,
+  Number(process.env.ENIGMA_SAFETY_PAUSE_SEC || 300)
+);
+const ENTRY_TIMEOUT_SEC = Math.max(
+  10,
+  Number(process.env.ENIGMA_ENTRY_TIMEOUT_SEC || 90)
+);
+const ENTRY_TIMEOUT_MIN_SEC = Math.max(
+  5,
+  Number(process.env.ENIGMA_ENTRY_TIMEOUT_MIN_SEC || 15)
+);
+const ENTRY_TIMEOUT_MAX_SEC = Math.max(
+  ENTRY_TIMEOUT_MIN_SEC,
+  Number(process.env.ENIGMA_ENTRY_TIMEOUT_MAX_SEC || ENTRY_TIMEOUT_SEC)
+);
+const ENTRY_FALLBACK_MIN_CONFIDENCE = Math.max(
+  0.1,
+  Math.min(0.99, Number(process.env.ENIGMA_ENTRY_FALLBACK_MIN_CONFIDENCE || 0.35))
+);
+const ENTRY_FALLBACK_SIZE_MULTIPLIER = Math.max(
+  0.1,
+  Math.min(1, Number(process.env.ENIGMA_ENTRY_FALLBACK_SIZE_MULTIPLIER || 0.5))
+);
+const ENTRY_FALLBACK_CONFIDENCE_DECAY = Math.max(
+  0,
+  Math.min(0.2, Number(process.env.ENIGMA_ENTRY_FALLBACK_CONFIDENCE_DECAY || 0.05))
+);
+const ENTRY_FALLBACK_CONFIDENCE_FLOOR = Math.max(
+  0.1,
+  Math.min(0.95, Number(process.env.ENIGMA_ENTRY_FALLBACK_CONFIDENCE_FLOOR || 0.25))
+);
+const ENTRY_FALLBACK_SIZE_STEP = Math.max(
+  0,
+  Math.min(0.5, Number(process.env.ENIGMA_ENTRY_FALLBACK_SIZE_STEP || 0.1))
+);
+const ENTRY_FALLBACK_SIZE_MAX = Math.max(
+  ENTRY_FALLBACK_SIZE_MULTIPLIER,
+  Math.min(1, Number(process.env.ENIGMA_ENTRY_FALLBACK_SIZE_MAX || 0.9))
+);
+const ENTRY_BREAKOUT_5M_PCT = Math.max(
+  0,
+  Number(process.env.ENIGMA_ENTRY_BREAKOUT_5M_PCT || 0.9)
+);
+const BREAKEVEN_TRIGGER_PCT = Math.max(
+  0.1,
+  Number(process.env.ENIGMA_BREAKEVEN_TRIGGER_PCT || 1.2)
+);
+const BREAKEVEN_LOCK_PCT = Math.max(
+  0,
+  Number(process.env.ENIGMA_BREAKEVEN_LOCK_PCT || 0.15)
+);
+const autotradeRunLocks = new Map<number, number>();
+const autotradeTickLocks = new Map<number, number>();
+const autotradeMonitorLocks = new Map<number, number>();
+const userExecutionSafetyState = new Map<number, { errorTimestamps: number[]; pausedUntil: number }>();
+const entryFallbackState = new Map<string, { startedAt: number; lastSeenAt: number; cycles: number }>();
+const positionExecutionMeta = new Map<
+  number,
+  { entryReferencePriceUsd: number; entryFillCostUsd: number; expectedPnlPct: number }
+>();
+const livePriceCache = new Map<
+  string,
+  { priceUsd: number; updatedAt: number; market: Record<string, unknown> }
+>();
+
+function acquireUserExecutionLock(lockMap: Map<number, number>, userId: number): boolean {
+  const now = Date.now();
+  const startedAt = Number(lockMap.get(userId) || 0);
+  if (startedAt > 0 && now - startedAt < USER_EXECUTION_LOCK_TTL_MS) {
+    return false;
+  }
+  lockMap.set(userId, now);
+  return true;
+}
+
+function releaseUserExecutionLock(lockMap: Map<number, number>, userId: number): void {
+  lockMap.delete(userId);
+}
+
+function utcDayStartMs(nowMs = Date.now()): number {
+  const d = new Date(nowMs);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function getOpenExposureUsd(userId: number): number {
+  const openPositions = listAutoTradePositions(userId, "OPEN");
+  return Number(
+    openPositions.reduce((sum, position) => sum + Number(position.sizeUsd || 0), 0).toFixed(2)
+  );
+}
+
+function getDailyRealizedLossUsd(userId: number, nowMs = Date.now()): number {
+  const dayStart = utcDayStartMs(nowMs);
+  const closedPositions = listAutoTradePositions(userId, "CLOSED");
+  let lossUsd = 0;
+  for (const position of closedPositions) {
+    const closedAtMs = Date.parse(String(position.closed_at || ""));
+    if (!Number.isFinite(closedAtMs) || closedAtMs < dayStart) continue;
+    const pnlPct = Number(position.pnlPct || 0);
+    if (pnlPct >= 0) continue;
+    const sizeUsd = Number(position.sizeUsd || 0);
+    lossUsd += sizeUsd * (Math.abs(pnlPct) / 100);
+  }
+  return Number(lossUsd.toFixed(2));
+}
+
+function getWindowRealizedLossUsd(userId: number, windowMs: number, nowMs = Date.now()): number {
+  const cutoff = nowMs - windowMs;
+  const closedPositions = listAutoTradePositions(userId, "CLOSED");
+  let lossUsd = 0;
+  for (const position of closedPositions) {
+    const closedAtMs = Date.parse(String(position.closed_at || ""));
+    if (!Number.isFinite(closedAtMs) || closedAtMs < cutoff) continue;
+    const pnlPct = Number(position.pnlPct || 0);
+    if (pnlPct >= 0) continue;
+    const sizeUsd = Number(position.sizeUsd || 0);
+    lossUsd += sizeUsd * (Math.abs(pnlPct) / 100);
+  }
+  return Number(lossUsd.toFixed(2));
+}
+
+function getTokenWindowRealizedLossUsd(
+  userId: number,
+  mint: string,
+  windowMs: number,
+  nowMs = Date.now()
+): number {
+  const key = String(mint || "").trim();
+  if (!key) return 0;
+  const cutoff = nowMs - windowMs;
+  const closedPositions = listAutoTradePositions(userId, "CLOSED");
+  let lossUsd = 0;
+  for (const position of closedPositions) {
+    if (String(position.mint || "") !== key) continue;
+    const closedAtMs = Date.parse(String(position.closed_at || ""));
+    if (!Number.isFinite(closedAtMs) || closedAtMs < cutoff) continue;
+    const pnlPct = Number(position.pnlPct || 0);
+    if (pnlPct >= 0) continue;
+    const sizeUsd = Number(position.sizeUsd || 0);
+    lossUsd += sizeUsd * (Math.abs(pnlPct) / 100);
+  }
+  return Number(lossUsd.toFixed(2));
+}
+
+function getConsecutiveLossStreak(userId: number, limit = 25): number {
+  const closed = listAutoTradePositions(userId, "CLOSED").slice(0, limit);
+  let streak = 0;
+  for (const position of closed) {
+    const pnlPct = Number(position.pnlPct || 0);
+    if (pnlPct < 0) {
+      streak += 1;
+      continue;
+    }
+    break;
+  }
+  return streak;
+}
+
+function getExecutionSafetyState(userId: number): { errorTimestamps: number[]; pausedUntil: number } {
+  const current = userExecutionSafetyState.get(userId);
+  if (current) return current;
+  const initial = { errorTimestamps: [], pausedUntil: 0 };
+  userExecutionSafetyState.set(userId, initial);
+  return initial;
+}
+
+function pruneSafetyErrors(state: { errorTimestamps: number[]; pausedUntil: number }, nowMs = Date.now()): void {
+  const cutoff = nowMs - SAFETY_ERROR_WINDOW_SEC * 1000;
+  state.errorTimestamps = state.errorTimestamps.filter((ts) => ts >= cutoff);
+}
+
+function recordExecutionError(userId: number): void {
+  const nowMs = Date.now();
+  const state = getExecutionSafetyState(userId);
+  pruneSafetyErrors(state, nowMs);
+  state.errorTimestamps.push(nowMs);
+  if (state.errorTimestamps.length >= SAFETY_ERROR_THRESHOLD) {
+    state.pausedUntil = nowMs + SAFETY_PAUSE_SEC * 1000;
+  }
+}
+
+function recordExecutionSuccess(userId: number): void {
+  const nowMs = Date.now();
+  const state = getExecutionSafetyState(userId);
+  pruneSafetyErrors(state, nowMs);
+  if (state.pausedUntil && state.pausedUntil <= nowMs) {
+    state.pausedUntil = 0;
+  }
+  state.errorTimestamps = [];
+}
+
+function normalizeTsMs(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return Date.now();
+  return value < 1_000_000_000_000 ? value * 1000 : value;
+}
+
+function entryFallbackKey(userId: number, mint: string): string {
+  return `${userId}:${mint}`;
+}
 
 interface AutoTradeDecision {
   mint: string;
@@ -104,8 +425,39 @@ interface AutoTradeDecision {
   signalStatus?: string;
   patternScore?: number;
   confidence?: number;
+  killSwitchScore?: number;
+  connectedHolderPct?: number;
   tradePlan?: Record<string, unknown>;
   entryPriceUsd?: number;
+  token?: {
+    mint: string;
+    symbol: string;
+    name: string;
+    imageUrl: string;
+  };
+  market?: {
+    priceUsd: number;
+    liquidityUsd?: number;
+    volume24hUsd?: number;
+    participation?: number;
+    spreadBps?: number;
+    priceChange5mPct?: number;
+    priceChange1hPct?: number;
+  };
+  marketRegime?: {
+    timeframe: string;
+    regime: string;
+    volatilityIndex: number | null;
+    adx: number | null;
+  };
+  regimePolicy?: {
+    style: "BREAKOUT" | "TREND" | "MEAN_REVERT" | "NO_TRADE";
+    allowEntry: boolean;
+    hostile: boolean;
+    riskMultiplier: number;
+    strategyHint: string;
+    reason: string;
+  };
 }
 
 function premiumRequiredResponse() {
@@ -115,6 +467,13 @@ function premiumRequiredResponse() {
     telegram: PREMIUM_TELEGRAM,
     note: "Contact Telegram to upgrade your account to PRO for real transactions."
   };
+}
+
+function hasLiveExecutionAccess(userPlan: string): boolean {
+  if (String(process.env.ENIGMA_ALLOW_FREE_LIVE || "").trim() === "1") {
+    return true;
+  }
+  return userPlan === "pro";
 }
 
 function requireAdminToken(req: express.Request, res: express.Response): boolean {
@@ -438,6 +797,17 @@ const openApiSpec = {
         responses: { "200": { description: "Holder profiles and behavior" } }
       }
     },
+    "/api/token/market/live": {
+      get: {
+        summary: "Get lightweight live market snapshot + chart points for a mint",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { in: "query", name: "mint", required: true, schema: { type: "string" } },
+          { in: "query", name: "windowSec", required: false, schema: { type: "number" } }
+        ],
+        responses: { "200": { description: "Live market snapshot and trend points" } }
+      }
+    },
     "/api/dashboard/stats": {
       get: {
         summary: "Dashboard stats",
@@ -494,6 +864,8 @@ const openApiSpec = {
                 properties: {
                   enabled: { type: "boolean" },
                   mode: { type: "string", enum: ["paper", "live"] },
+                  allowCautionEntries: { type: "boolean" },
+                  allowHighRiskEntries: { type: "boolean" },
                   minPatternScore: { type: "number" },
                   minConfidence: { type: "number" },
                   maxConnectedHolderPct: { type: "number" },
@@ -510,13 +882,20 @@ const openApiSpec = {
     },
     "/api/autotrade/run": {
       post: {
-        summary: "Run autotrade policy against watchlist or provided mints",
+        summary: "Run autotrade policy against one agent token mint",
         security: [{ bearerAuth: [] }],
         requestBody: {
-          required: false,
+          required: true,
           content: {
             "application/json": {
-              schema: { type: "object", properties: { mints: { type: "string" } } }
+              schema: {
+                type: "object",
+                required: ["mint"],
+                properties: {
+                  mint: { type: "string" },
+                  mints: { type: "string", description: "Deprecated alias for mint" }
+                }
+              }
             }
           }
         },
@@ -529,6 +908,26 @@ const openApiSpec = {
         security: [{ bearerAuth: [] }],
         parameters: [{ in: "query", name: "limit", required: false, schema: { type: "number" } }],
         responses: { "200": { description: "Autotrade performance summary and run history" } }
+      }
+    },
+    "/api/autotrade/performance/reset": {
+      post: {
+        summary: "Reset persistent autotrade run analytics for a fresh test session",
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  scope: { type: "string", enum: ["paper", "live", "all"] }
+                }
+              }
+            }
+          }
+        },
+        responses: { "200": { description: "Autotrade run analytics reset complete" } }
       }
     },
     "/api/autotrade/execution-config": {
@@ -549,6 +948,7 @@ const openApiSpec = {
                 properties: {
                   enabled: { type: "boolean" },
                   mode: { type: "string", enum: ["paper", "live"] },
+                  paperBudgetUsd: { type: "number" },
                   tradeAmountUsd: { type: "number" },
                   maxOpenPositions: { type: "number" },
                   tpPct: { type: "number" },
@@ -573,15 +973,29 @@ const openApiSpec = {
         responses: { "200": { description: "Current and historical positions" } }
       }
     },
+    "/api/autotrade/monitor": {
+      post: {
+        summary: "Refresh open position prices for near real-time monitoring",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Updated open position marks and monitor ticks" } }
+      }
+    },
     "/api/autotrade/engine/tick": {
       post: {
-        summary: "Run one auto-execution engine tick (open and close positions)",
+        summary: "Run one auto-execution tick for one agent mint (supports layered entries up to maxOpenPositions)",
         security: [{ bearerAuth: [] }],
         requestBody: {
-          required: false,
+          required: true,
           content: {
             "application/json": {
-              schema: { type: "object", properties: { mints: { type: "string" } } }
+              schema: {
+                type: "object",
+                required: ["mint"],
+                properties: {
+                  mint: { type: "string" },
+                  mints: { type: "string", description: "Deprecated alias for mint" }
+                }
+              }
             }
           }
         },
@@ -595,7 +1009,7 @@ app.get("/api/openapi.json", (_req, res) => {
   res.json(openApiSpec);
 });
 
-function parseMintsCsv(input: string, max = 5): string[] {
+function parseMintsCsv(input: string, max = WATCHLIST_MAX_TOKENS): string[] {
   return Array.from(
     new Set(
       input
@@ -610,12 +1024,45 @@ function isValidSolanaMint(mint: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint.trim());
 }
 
+function normalizeTrackedAssets(values: string[], max = WATCHLIST_MAX_TOKENS): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => normalizeTrackedAssetId(value))
+        .filter(Boolean)
+    )
+  ).slice(0, max);
+}
+
 function validateMints(mints: string[]): string[] {
-  return mints.filter((mint) => isValidSolanaMint(mint));
+  return normalizeTrackedAssets(mints, WATCHLIST_MAX_TOKENS);
+}
+
+function resolveSingleAgentMint(rawMint: string, rawMints: string): string {
+  const mint = normalizeTrackedAssetId(rawMint.trim());
+  if (mint) {
+    return isSupportedTrackedAsset(mint) ? mint : "";
+  }
+
+  const candidates = parseMintsCsv(rawMints, 3);
+  if (candidates.length !== 1) {
+    return "";
+  }
+
+  const valid = validateMints(candidates);
+  return valid.length === 1 ? valid[0] : "";
 }
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function firstPositiveNumber(values: unknown[]): number {
+  for (const value of values) {
+    const n = Number(value || 0);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
 }
 
 function getEffectiveTradeAmountUsd(
@@ -638,16 +1085,14 @@ function getEffectiveMode(
 ): { mode: "paper" | "live"; warnings: string[] } {
   const warnings: string[] = [];
   if (policy.mode !== execCfg.mode) {
-    warnings.push(
-      `mode mismatch: policy=${policy.mode}, execution=${execCfg.mode}; using paper until both match`
-    );
+    warnings.push(`mode mismatch: policy=${policy.mode}, execution=${execCfg.mode}; using execution mode`);
   }
 
-  if (execCfg.mode === "live" && userPlan !== "pro") {
+  if (execCfg.mode === "live" && !hasLiveExecutionAccess(userPlan)) {
     warnings.push("live mode requires premium plan");
   }
 
-  if (policy.mode === "live" && execCfg.mode === "live" && userPlan === "pro") {
+  if (execCfg.mode === "live" && hasLiveExecutionAccess(userPlan)) {
     return { mode: "live", warnings };
   }
 
@@ -665,11 +1110,47 @@ function buildAutoTradeDecision(input: {
   const confidence = Number(input.signal.confidence || 0);
   const killSwitch = (input.signal.killSwitch as Record<string, unknown>) || {};
   const killVerdict = String(killSwitch.verdict || "BLOCK");
-  const holderBehavior = (input.signal.holderBehavior as Record<string, unknown>) || {};
+  const killRisk = (killSwitch.risk as Record<string, unknown>) || {};
+  const holderBehavior =
+    (killRisk.holderBehavior as Record<string, unknown>) ||
+    (input.signal.holderBehavior as Record<string, unknown>) ||
+    {};
   const connectedPct = Number(holderBehavior.connectedHolderPct || 0);
+  const token = (input.signal.token as Record<string, unknown>) || {};
+  const market = (input.signal.market as Record<string, unknown>) || {};
+  const marketRegime = (input.signal.marketRegime as Record<string, unknown>) || {};
+  const marketRegimeCurrent = (marketRegime.current as Record<string, unknown>) || {};
+  const tradePlan = (input.signal.tradePlan as Record<string, unknown>) || {};
+  const liquidityUsd = Number(market.liquidityUsd || 0);
+  const volume24hUsd = Number(market.volume24hUsd || 0);
+  const participation = volume24hUsd / Math.max(1, liquidityUsd);
+  const spreadBps =
+    Number(market.estimatedSpreadBps || 0) > 0
+      ? Number(market.estimatedSpreadBps)
+      : estimateSpreadBps(liquidityUsd, volume24hUsd);
+  const adx = Number.isFinite(Number(marketRegimeCurrent.adx))
+    ? Number(marketRegimeCurrent.adx)
+    : null;
+  const volatilityIndex = Number.isFinite(Number(marketRegimeCurrent.volatilityIndex))
+    ? Number(marketRegimeCurrent.volatilityIndex)
+    : null;
+  const regimePolicy = deriveRegimePolicy({
+    adx,
+    volatilityIndex,
+    liquidityUsd,
+    participation,
+    connectedHolderPct: connectedPct,
+    spreadBps
+  });
   const reasons: string[] = [];
 
-  if (status !== "FAVORABLE") reasons.push(`status=${status} (requires FAVORABLE)`);
+  if (status === "HIGH_RISK" && !input.config.allowHighRiskEntries) {
+    reasons.push(`status=${status} (blocked)`);
+  } else if (status === "CAUTION" && !input.config.allowCautionEntries) {
+    reasons.push("status=CAUTION (requires FAVORABLE unless caution entries are enabled)");
+  } else if (status !== "FAVORABLE" && status !== "CAUTION" && status !== "HIGH_RISK") {
+    reasons.push(`status=${status} (unsupported for entries)`);
+  }
   if (patternScore < input.config.minPatternScore) {
     reasons.push(`patternScore ${patternScore.toFixed(2)} < ${input.config.minPatternScore}`);
   }
@@ -684,6 +1165,9 @@ function buildAutoTradeDecision(input: {
   if (input.config.requireKillSwitchPass && killVerdict !== "PASS") {
     reasons.push(`killSwitch verdict=${killVerdict} (requires PASS)`);
   }
+  if (!regimePolicy.allowEntry) {
+    reasons.push(`regimePolicy=${regimePolicy.style} (${regimePolicy.reason})`);
+  }
 
   const decision: AutoTradeDecision = {
     mint: input.mint,
@@ -693,7 +1177,31 @@ function buildAutoTradeDecision(input: {
     signalStatus: status,
     patternScore: Number(patternScore.toFixed(2)),
     confidence: Number(confidence.toFixed(2)),
-    tradePlan: (input.signal.tradePlan as Record<string, unknown>) || {}
+    killSwitchScore: Number.isFinite(Number(killSwitch.score)) ? Number(killSwitch.score) : 0,
+    connectedHolderPct: Number(connectedPct.toFixed(2)),
+    tradePlan,
+    token: {
+      mint: String(token.mint || input.mint),
+      symbol: String(token.symbol || ""),
+      name: String(token.name || "Unknown Token"),
+      imageUrl: String(token.imageUrl || "")
+    },
+    market: {
+      priceUsd: Number(market.priceUsd || 0),
+      liquidityUsd,
+      volume24hUsd,
+      participation: Number(participation.toFixed(4)),
+      spreadBps: Number(spreadBps.toFixed(2)),
+      priceChange5mPct: Number(market.priceChange5mPct || 0),
+      priceChange1hPct: Number(market.priceChange1hPct || 0)
+    },
+    marketRegime: {
+      timeframe: String(marketRegimeCurrent.timeframe || marketRegime.preferredTimeframe || "1h"),
+      regime: String(marketRegimeCurrent.regime || "Unavailable"),
+      volatilityIndex,
+      adx
+    },
+    regimePolicy
   };
 
   if (decision.decision === "BUY_CANDIDATE") {
@@ -701,6 +1209,54 @@ function buildAutoTradeDecision(input: {
   }
 
   return decision;
+}
+
+function resolveAdaptiveEntryTimeoutSec(
+  execCfg: ReturnType<typeof getAutoTradeExecutionConfig>,
+  decision?: AutoTradeDecision
+): number {
+  // Fast modes (short checks / scalp settings) should not wait long for pullbacks.
+  const checkInterval = Math.max(1, Number(execCfg.pollIntervalSec || 15));
+  let timeout = clampNumber(checkInterval * 3, ENTRY_TIMEOUT_MIN_SEC, ENTRY_TIMEOUT_MAX_SEC);
+
+  const vol = Number(decision?.marketRegime?.volatilityIndex ?? NaN);
+  const adx = Number(decision?.marketRegime?.adx ?? NaN);
+  if (Number.isFinite(vol) && vol >= 70) timeout *= 0.65;
+  if (Number.isFinite(vol) && vol > 0 && vol <= 35) timeout *= 1.2;
+  if (Number.isFinite(adx) && adx >= 35) timeout *= 0.8;
+
+  if (Number(execCfg.cooldownSec || 0) <= 12 || Number(execCfg.tpPct || 0) <= 5) {
+    timeout *= 0.75;
+  }
+
+  return Math.round(clampNumber(timeout, ENTRY_TIMEOUT_MIN_SEC, ENTRY_TIMEOUT_MAX_SEC));
+}
+
+function resolveAdaptiveExitPercents(
+  execCfg: ReturnType<typeof getAutoTradeExecutionConfig>,
+  decision?: AutoTradeDecision
+): { tpPct: number; slPct: number; trailingStopPct: number } {
+  let tpPct = Math.max(0.2, Number(execCfg.tpPct || 8));
+  let slPct = Math.max(0.2, Number(execCfg.slPct || 4));
+  let trailingStopPct = Math.max(0.2, Number(execCfg.trailingStopPct || 3));
+  const vol = Number(decision?.marketRegime?.volatilityIndex ?? NaN);
+  const adx = Number(decision?.marketRegime?.adx ?? NaN);
+
+  // Keep exits adaptive to current regime: tighter in quiet ranges, wider in trend expansions.
+  if (Number.isFinite(adx) && adx >= 25 && Number.isFinite(vol) && vol >= 60) {
+    tpPct *= 1.2;
+    slPct *= 1.1;
+    trailingStopPct *= 1.15;
+  } else if (Number.isFinite(adx) && adx < 20 && Number.isFinite(vol) && vol < 40) {
+    tpPct *= 0.85;
+    slPct *= 0.85;
+    trailingStopPct *= 0.8;
+  }
+
+  tpPct = Number(clampNumber(tpPct, 0.2, 60).toFixed(2));
+  slPct = Number(clampNumber(slPct, 0.2, 40).toFixed(2));
+  trailingStopPct = Number(clampNumber(trailingStopPct, 0.2, 30).toFixed(2));
+  return { tpPct, slPct, trailingStopPct };
 }
 
 function projectDecisionPnlPct(patternScore: number, confidence: number): number {
@@ -1144,7 +1700,17 @@ app.get("/api/profile/history", authRequired, enforceQuota("chat_calls"), (req: 
   const payments = listPremiumPaymentsByUser(req.user.id).slice(0, 50);
   const positions = listAutoTradePositions(req.user.id).slice(0, 100);
   const withdrawals = listWithdrawalRequests({ userId: req.user.id, limit: 100 });
-  return res.json({ user: req.user, payments, positions, withdrawals, usage });
+  const stats = getDashboardStats(req.user.id);
+  const performance = getAutoTradePerformance(req.user.id, 50);
+  return res.json({
+    user: req.user,
+    payments,
+    positions,
+    withdrawals,
+    recentSignals: (stats.recentSignals as Array<Record<string, unknown>>) || [],
+    recentRuns: (performance.recentRuns as Array<Record<string, unknown>>) || [],
+    usage
+  });
 });
 
 app.get("/api/withdrawals/me", authRequired, enforceQuota("chat_calls"), (req: AuthedRequest, res) => {
@@ -1211,8 +1777,12 @@ app.get("/api/health", async (_req, res) => {
   res.json({
     ok: true,
     app: "KOBECOIN AI Guardian",
-    role: "Solana signal scanner",
-    boundaries: ["Execution is optional and policy-gated", "Probabilistic signals"],
+    role: "Multi-chain paper scanner (Solana + BTC/ETH)",
+    boundaries: [
+      "Execution is optional and policy-gated",
+      "Probabilistic signals",
+      ...(PAPER_ONLY_MODE ? ["Paper-only mode enabled (live execution disabled)"] : [])
+    ],
     helius
   });
 });
@@ -1231,10 +1801,10 @@ function upsertWatchlist(req: AuthedRequest, res: express.Response) {
     return;
   }
 
-  const mints = parseMintsCsv(String(req.body.mints || ""), 5);
+  const mints = parseMintsCsv(String(req.body.mints || ""), WATCHLIST_MAX_TOKENS);
   const validMints = validateMints(mints);
   if (validMints.length === 0) {
-    res.status(400).json({ error: "at least 1 valid Solana mint is required" });
+    res.status(400).json({ error: "at least 1 valid token is required (Solana mint, BTC, ETH)" });
     return;
   }
 
@@ -1251,14 +1821,14 @@ app.post("/api/watchlist/add", authRequired, (req: AuthedRequest, res) => {
     return;
   }
 
-  const mint = String(req.body.mint || "").trim();
-  if (!mint || !isValidSolanaMint(mint)) {
-    res.status(400).json({ error: "valid mint is required" });
+  const mint = normalizeTrackedAssetId(String(req.body.mint || "").trim());
+  if (!mint) {
+    res.status(400).json({ error: "valid token is required (Solana mint, BTC, ETH)" });
     return;
   }
 
   const current = getWatchlist(req.user.id);
-  const next = Array.from(new Set([...current, mint])).slice(0, 5);
+  const next = Array.from(new Set([...current, mint])).slice(0, WATCHLIST_MAX_TOKENS);
   setWatchlist(req.user.id, next);
   res.json({ mints: next });
 });
@@ -1274,11 +1844,12 @@ app.post(
       }
 
       const mint = String(req.body.mint || "").trim();
-      if (!mint || !isValidSolanaMint(mint)) {
-        return res.status(400).json({ error: "valid mint is required" });
+      const normalized = normalizeTrackedAssetId(mint);
+      if (!normalized) {
+        return res.status(400).json({ error: "valid token is required (Solana mint, BTC, ETH)" });
       }
 
-      const output = await buildStoredSignal(req.user.id, mint);
+      const output = await buildStoredSignal(req.user.id, normalized);
       const usage = incrementUsage(req.user.id, "signal_calls");
       return res.json({ ...output, usage });
     } catch (error) {
@@ -1286,6 +1857,85 @@ app.post(
     }
   }
 );
+
+app.get("/api/token/market/live", authRequired, async (req: AuthedRequest, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const mint = normalizeTrackedAssetId(String(req.query.mint || "").trim());
+    if (!mint) {
+      return res.status(400).json({ error: "valid token is required (Solana mint, BTC, ETH)" });
+    }
+
+    const windowSec = Math.max(60, Math.min(900, Number(req.query.windowSec || 300)));
+
+    let market: Record<string, unknown> | null = null;
+    try {
+      market = await fetchRealtimeMarketSnapshot(mint);
+      const priceUsd = Number(market.priceUsd || 0);
+      if (Number.isFinite(priceUsd) && priceUsd > 0) {
+        livePriceCache.set(mint, {
+          priceUsd,
+          updatedAt: Date.now(),
+          market
+        });
+      }
+    } catch {
+      market = null;
+    }
+
+    const cached = livePriceCache.get(mint);
+    if (!market && !cached) {
+      return res.status(503).json({ error: "live market price unavailable for this mint" });
+    }
+
+    const effectiveMarket = market || cached?.market || {};
+    const pairAddress = String(effectiveMarket.pairAddress || "");
+    const timeframe = windowSec <= 90 ? "1m" : windowSec <= 300 ? "5m" : "15m";
+    const candleLimit = timeframe === "1m" ? 160 : timeframe === "5m" ? 120 : 80;
+    const candles = isSolanaTrackedAsset(mint)
+      ? pairAddress
+        ? await fetchCandlesFromGeckoTerminal({
+            pairAddress,
+            timeframe: timeframe === "1m" ? "5m" : timeframe,
+            limit: candleLimit
+          })
+        : []
+      : await fetchCandlesFromBinanceSymbol({
+          symbol: mint,
+          timeframe: timeframe === "1m" ? "5m" : timeframe,
+          limit: candleLimit
+        });
+
+    const points = candles.map((candle) => ({
+      ts: normalizeTsMs(Number(candle.ts || 0)),
+      price: Number(candle.close || 0)
+    }));
+
+    return res.json({
+      ts: new Date().toISOString(),
+      mint,
+      stale: !market,
+      market: effectiveMarket,
+      chart: {
+        source: points.length ? "candles" : "tick",
+        timeframe,
+        windowSec,
+        points
+      },
+      cache: cached
+        ? {
+            updatedAt: new Date(cached.updatedAt).toISOString(),
+            ageSec: Math.max(0, Math.floor((Date.now() - cached.updatedAt) / 1000))
+          }
+        : null
+    });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  }
+});
 
 app.post(
   "/api/watchlist/scan",
@@ -1387,10 +2037,10 @@ app.post(
         return res.status(401).json({ error: "unauthorized" });
       }
 
-      const mints = parseMintsCsv(String(req.body.mints || ""), 5);
+      const mints = parseMintsCsv(String(req.body.mints || ""), SIGNAL_STREAM_MAX_TOKENS);
       const validMints = validateMints(mints);
       if (validMints.length === 0) {
-        return res.status(400).json({ error: "at least one valid mint is required" });
+        return res.status(400).json({ error: "at least one valid token is required (Solana mint, BTC, ETH)" });
       }
 
       const items = await buildBatchSignals(req.user.id, validMints);
@@ -1434,20 +2084,53 @@ app.get(
         return res.status(401).json({ error: "unauthorized" });
       }
 
-      const mint = String(req.query.mint || "").trim();
+      const mint = normalizeTrackedAssetId(String(req.query.mint || "").trim());
       const limit = Math.min(50, Math.max(8, Number(req.query.limit || 40)));
-      if (!mint || !isValidSolanaMint(mint)) {
-        return res.status(400).json({ error: "valid mint is required" });
+      const requestedAnalysisMode = String(req.query.mode || "deep").toLowerCase();
+      const analysisMode =
+        requestedAnalysisMode === "sample"
+          ? "sample"
+          : requestedAnalysisMode === "deep"
+            ? "deep"
+            : "full";
+      if (!mint) {
+        return res.status(400).json({ error: "valid token is required (Solana mint, BTC, ETH)" });
+      }
+
+      if (!isSolanaTrackedAsset(mint)) {
+        const usage = incrementUsage(req.user.id, "signal_calls");
+        return res.json({
+          mint,
+          holderProfiles: [],
+          holderBehavior: {
+            connectedHolderPct: 0,
+            newWalletHolderPct: 0,
+            connectedGroupCount: 0,
+            avgWalletAgeDays: 0,
+            analyzedTopAccounts: 0,
+            connectedGroups: [],
+            analysisCoverage: {
+              topAccountsAnalyzed: 0,
+              buySellTxSamplePerAccount: 0,
+              accountsWithBuySellSampling: 0,
+              signatureSamplePerAccount: 0,
+              note: "Holder analytics are available for Solana tokens only in this build."
+            }
+          },
+          analysisMode,
+          usage
+        });
       }
 
       const context = await createEnigmaContext();
-      const risk = await context.tools.onchain.riskSignals(mint, { holderLimit: limit });
+      const risk = await context.tools.onchain.riskSignals(mint, { holderLimit: limit, analysisMode });
       const usage = incrementUsage(req.user.id, "signal_calls");
 
       return res.json({
         mint,
         holderProfiles: (risk.holderProfiles as Array<Record<string, unknown>>) || [],
         holderBehavior: (risk.holderBehavior as Record<string, unknown>) || {},
+        analysisMode,
         usage
       });
     } catch (error) {
@@ -1456,12 +2139,12 @@ app.get(
   }
 );
 
-app.get("/api/dashboard/stats", authRequired, enforceQuota("chat_calls"), (req: AuthedRequest, res) => {
+app.get("/api/dashboard/stats", authRequired, (req: AuthedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "unauthorized" });
   }
 
-  const usage = incrementUsage(req.user.id, "chat_calls");
+  const usage = getUsage(req.user.id);
   const stats = getDashboardStats(req.user.id);
   return res.json({ stats, usage });
 });
@@ -1481,17 +2164,27 @@ app.put("/api/autotrade/config", authRequired, (req: AuthedRequest, res) => {
 
   const current = getAutoTradeConfig(req.user.id);
   const modeInput = String(req.body.mode || current.mode).toLowerCase();
-  const mode: "paper" | "live" = modeInput === "live" ? "live" : "paper";
-  if (mode === "live" && req.user.plan !== "pro") {
+  const requestedMode: "paper" | "live" = modeInput === "live" ? "live" : "paper";
+  const mode: "paper" | "live" = PAPER_ONLY_MODE ? "paper" : requestedMode;
+  const forcedPaper = PAPER_ONLY_MODE && requestedMode === "live";
+  if (mode === "live" && !hasLiveExecutionAccess(req.user.plan)) {
     return res.status(403).json(premiumRequiredResponse());
   }
 
   const next = putAutoTradeConfig(req.user.id, {
     enabled: typeof req.body.enabled === "boolean" ? Boolean(req.body.enabled) : current.enabled,
     mode,
+    allowCautionEntries:
+      typeof req.body.allowCautionEntries === "boolean"
+        ? Boolean(req.body.allowCautionEntries)
+        : current.allowCautionEntries,
+    allowHighRiskEntries:
+      typeof req.body.allowHighRiskEntries === "boolean"
+        ? Boolean(req.body.allowHighRiskEntries)
+        : current.allowHighRiskEntries,
     minPatternScore: clampNumber(
       Number(req.body.minPatternScore ?? current.minPatternScore),
-      40,
+      0,
       95
     ),
     minConfidence: clampNumber(Number(req.body.minConfidence ?? current.minConfidence), 0.1, 0.99),
@@ -1511,18 +2204,24 @@ app.put("/api/autotrade/config", authRequired, (req: AuthedRequest, res) => {
   return res.json({
     config: next,
     note:
-      "Auto-trade policy updated. Use /api/autotrade/engine/tick for managed position open/close execution."
+      forcedPaper
+        ? "Paper-only mode is enabled. Live request was forced to paper."
+        : "Auto-trade policy updated. Use /api/autotrade/engine/tick for managed position open/close execution."
   });
 });
 
 app.post(
   "/api/autotrade/run",
   authRequired,
-  enforceQuota("signal_calls"),
   async (req: AuthedRequest, res) => {
+    let lockAcquired = false;
     try {
       if (!req.user) {
         return res.status(401).json({ error: "unauthorized" });
+      }
+      lockAcquired = acquireUserExecutionLock(autotradeRunLocks, req.user.id);
+      if (!lockAcquired) {
+        return res.status(429).json({ error: "autotrade run already in progress; retry shortly" });
       }
 
       const config = getAutoTradeConfig(req.user.id);
@@ -1531,19 +2230,39 @@ app.post(
         return res.status(400).json({ error: "autotrade is disabled", config });
       }
 
-      const configured = getWatchlist(req.user.id);
-      const reqMints = parseMintsCsv(String(req.body.mints || ""), 5);
-      const mints = validateMints(reqMints.length ? reqMints : configured);
-      if (mints.length === 0) {
-        return res.status(400).json({ error: "at least one valid mint is required" });
+      const agentMint = resolveSingleAgentMint(
+        String(req.body.mint || ""),
+        String(req.body.mints || "")
+      );
+      if (!agentMint) {
+        return res.status(400).json({ error: "exactly one valid agent token is required (Solana mint, BTC, ETH)" });
       }
+      const mints = [agentMint];
 
       const decisions = await evaluateAutoTradeDecisions(req.user.id, mints, config);
+      const requestedModel = String(req.body?.testModel || "").trim().toLowerCase();
+      const testModel =
+        requestedModel === "guardian_safe" ||
+        requestedModel === "guardian_balanced" ||
+        requestedModel === "guardian_fast"
+          ? requestedModel
+          : "guardian_balanced";
 
       const usage = incrementUsage(req.user.id, "signal_calls");
       const candidates = decisions.filter((item) => item.ok && item.decision === "BUY_CANDIDATE");
       const effectiveTradeAmountUsd = getEffectiveTradeAmountUsd(config, execCfg);
-      const modeState = getEffectiveMode(config, execCfg, req.user.plan);
+      const openExposureUsd = getOpenExposureUsd(req.user.id);
+      const paperBudgetUsd = Number(
+        Math.max(effectiveTradeAmountUsd, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)
+      );
+      const paperAvailableUsd = Number(Math.max(0, paperBudgetUsd - openExposureUsd).toFixed(2));
+      const baseModeState = getEffectiveMode(config, execCfg, req.user.plan);
+      const modeState = PAPER_ONLY_MODE
+        ? {
+            mode: "paper" as const,
+            warnings: [...baseModeState.warnings, "paper-only mode enabled: live execution is disabled"]
+          }
+        : baseModeState;
       const expectedPnlValues = candidates.map((item) =>
         projectDecisionPnlPct(Number(item.patternScore || 0), Number(item.confidence || 0))
       );
@@ -1554,10 +2273,18 @@ app.post(
             ).toFixed(2)
           )
         : 0;
-      const simulatedExposureUsd = Number((candidates.length * effectiveTradeAmountUsd).toFixed(2));
+      const projectedExposureUsd = Number((candidates.length * effectiveTradeAmountUsd).toFixed(2));
+      const simulatedExposureUsd = Number(
+        (
+          modeState.mode === "paper"
+            ? Math.min(projectedExposureUsd, paperAvailableUsd)
+            : projectedExposureUsd
+        ).toFixed(2)
+      );
       const runId = saveAutoTradeRun({
         userId: req.user.id,
         mode: modeState.mode,
+        testModel,
         scannedCount: mints.length,
         buyCandidates: candidates.length,
         skippedCount: decisions.length - candidates.length,
@@ -1567,7 +2294,9 @@ app.post(
 
       const modeNote =
         modeState.mode === "paper"
-          ? "paper mode: no orders are executed"
+          ? PAPER_ONLY_MODE
+            ? "paper-only mode: no live orders are executed"
+            : "paper mode: no orders are executed"
           : "live mode policy pass: route candidate orders into your Jupiter execution worker";
 
       return res.json({
@@ -1579,10 +2308,14 @@ app.post(
         scanned: mints.length,
         decisions,
         summary: {
+          testModel,
           buyCandidates: candidates.length,
           skipped: decisions.length - candidates.length,
           maxPositionUsd: config.maxPositionUsd,
           effectiveTradeAmountUsd,
+          paperBudgetUsd,
+          paperAvailableUsd,
+          openExposureUsd,
           simulatedExposureUsd,
           avgExpectedPnlPct
         },
@@ -1595,19 +2328,38 @@ app.post(
       });
     } catch (error) {
       return res.status(500).json({ error: (error as Error).message });
+    } finally {
+      if (lockAcquired && req.user) {
+        releaseUserExecutionLock(autotradeRunLocks, req.user.id);
+      }
     }
   }
 );
 
-app.get("/api/autotrade/performance", authRequired, enforceQuota("chat_calls"), (req: AuthedRequest, res) => {
+app.get("/api/autotrade/performance", authRequired, (req: AuthedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "unauthorized" });
   }
 
   const limit = Math.max(5, Math.min(100, Number(req.query.limit || 30)));
-  const usage = incrementUsage(req.user.id, "chat_calls");
+  const usage = getUsage(req.user.id);
   const performance = getAutoTradePerformance(req.user.id, limit);
   return res.json({ performance, usage });
+});
+
+app.post("/api/autotrade/performance/reset", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  const scopeRaw = String(req.body?.scope || "paper").toLowerCase();
+  const scope: "paper" | "live" | "all" =
+    scopeRaw === "live" || scopeRaw === "all" ? (scopeRaw as "paper" | "live" | "all") : "paper";
+
+  const deletedRuns = resetAutoTradeRuns(req.user.id, scope);
+  const usage = getUsage(req.user.id);
+  const performance = getAutoTradePerformance(req.user.id, 30);
+  return res.json({ ok: true, scope, deletedRuns, performance, usage });
 });
 
 app.get("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, res) => {
@@ -1625,14 +2377,21 @@ app.put("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, re
 
   const current = getAutoTradeExecutionConfig(req.user.id);
   const modeInput = String(req.body.mode || current.mode).toLowerCase();
-  const mode: "paper" | "live" = modeInput === "live" ? "live" : "paper";
-  if (mode === "live" && req.user.plan !== "pro") {
+  const requestedMode: "paper" | "live" = modeInput === "live" ? "live" : "paper";
+  const mode: "paper" | "live" = PAPER_ONLY_MODE ? "paper" : requestedMode;
+  const forcedPaper = PAPER_ONLY_MODE && requestedMode === "live";
+  if (mode === "live" && !hasLiveExecutionAccess(req.user.plan)) {
     return res.status(403).json(premiumRequiredResponse());
   }
 
   const next = putAutoTradeExecutionConfig(req.user.id, {
     enabled: typeof req.body.enabled === "boolean" ? Boolean(req.body.enabled) : current.enabled,
     mode,
+    paperBudgetUsd: clampNumber(
+      Number(req.body.paperBudgetUsd ?? current.paperBudgetUsd),
+      10,
+      1_000_000
+    ),
     tradeAmountUsd: clampNumber(Number(req.body.tradeAmountUsd ?? current.tradeAmountUsd), 1, 50000),
     maxOpenPositions: clampNumber(Number(req.body.maxOpenPositions ?? current.maxOpenPositions), 1, 50),
     tpPct: clampNumber(Number(req.body.tpPct ?? current.tpPct), 0.2, 200),
@@ -1644,36 +2403,306 @@ app.put("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, re
     ),
     maxHoldMinutes: clampNumber(Number(req.body.maxHoldMinutes ?? current.maxHoldMinutes), 1, 10080),
     cooldownSec: clampNumber(Number(req.body.cooldownSec ?? current.cooldownSec), 0, 86400),
-    pollIntervalSec: clampNumber(Number(req.body.pollIntervalSec ?? current.pollIntervalSec), 5, 3600)
+    pollIntervalSec: clampNumber(Number(req.body.pollIntervalSec ?? current.pollIntervalSec), 2, 3600)
   });
 
   return res.json({
     config: next,
     note:
-      "Execution config updated. For real on-chain live execution, connect dedicated signer + router worker."
+      forcedPaper
+        ? "Paper-only mode is enabled. Live request was forced to paper."
+        : "Execution config updated. For real on-chain live execution, connect dedicated signer + router worker."
   });
 });
 
-app.get("/api/autotrade/positions", authRequired, enforceQuota("chat_calls"), (req: AuthedRequest, res) => {
+app.get("/api/autotrade/positions", authRequired, (req: AuthedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "unauthorized" });
   }
 
   const statusRaw = String(req.query.status || "").toUpperCase();
   const status = statusRaw === "OPEN" || statusRaw === "CLOSED" ? statusRaw : undefined;
-  const usage = incrementUsage(req.user.id, "chat_calls");
+  const usage = getUsage(req.user.id);
   const positions = listAutoTradePositions(req.user.id, status as "OPEN" | "CLOSED" | undefined);
   return res.json({ positions, usage });
+});
+
+app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res) => {
+  let lockAcquired = false;
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    const nowMs = Date.now();
+    const safetyState = getExecutionSafetyState(req.user.id);
+    pruneSafetyErrors(safetyState, nowMs);
+    lockAcquired = acquireUserExecutionLock(autotradeMonitorLocks, req.user.id);
+    if (!lockAcquired) {
+      return res.status(429).json({ error: "monitor tick already in progress; retry shortly" });
+    }
+
+    const execCfg = getAutoTradeExecutionConfig(req.user.id);
+    const openPositions = listAutoTradePositions(req.user.id, "OPEN");
+    const monitorMode: "paper" | "live" =
+      openPositions.some((position) => position.mode === "live") && process.env.ENIGMA_EXECUTION_ENABLED === "1"
+        ? "live"
+        : execCfg.mode === "live" && process.env.ENIGMA_EXECUTION_ENABLED === "1"
+          ? "live"
+          : "paper";
+    if (!openPositions.length) {
+      const usage = getUsage(req.user.id);
+      return res.json({
+        ts: new Date().toISOString(),
+        mode: monitorMode,
+        openCount: 0,
+        updatedCount: 0,
+        ticks: [],
+        positions: [],
+        safety: {
+          maxTotalExposureUsd: SAFETY_MAX_TOTAL_EXPOSURE_USD,
+          maxDailyLossUsd: SAFETY_MAX_DAILY_LOSS_USD,
+          maxHourlyLossUsd: SAFETY_MAX_HOURLY_LOSS_USD,
+          maxTokenDailyLossUsd: SAFETY_MAX_TOKEN_DAILY_LOSS_USD,
+          maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
+          maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
+          paperBudgetUsd: Number(Math.max(1, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
+          paperAvailableUsd: Number(Math.max(0, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
+          openExposureUsd: 0,
+          dailyRealizedLossUsd: getDailyRealizedLossUsd(req.user.id, nowMs),
+          hourlyRealizedLossUsd: getWindowRealizedLossUsd(req.user.id, 60 * 60 * 1000, nowMs),
+          lossStreak: getConsecutiveLossStreak(req.user.id),
+          pausedUntil: safetyState.pausedUntil ? new Date(safetyState.pausedUntil).toISOString() : null,
+          errorCountWindow: safetyState.errorTimestamps.length
+        },
+        usage
+      });
+    }
+
+    const monitorLimit = Math.min(15, openPositions.length);
+    const requestedSweeps = clampNumber(
+      Number(
+        req.body?.sweeps ??
+          (req.body?.eventDriven ? 3 : 1)
+      ),
+      1,
+      4
+    );
+    const sweepIntervalMs = clampNumber(Number(req.body?.intervalMs || 250), 100, 2000);
+    const liveEnabled = process.env.ENIGMA_EXECUTION_ENABLED === "1";
+    const actions: Array<Record<string, unknown>> = [];
+    const ticksByPosition = new Map<
+      number,
+      { positionId: number; mint: string; markPriceUsd: number; pnlPct: number | null }
+    >();
+    let latestOpen = openPositions.slice();
+
+    for (let sweep = 0; sweep < requestedSweeps; sweep += 1) {
+      const selected = latestOpen.slice(0, Math.min(monitorLimit, latestOpen.length));
+      if (!selected.length) break;
+      const updates = await Promise.allSettled(
+        selected.map(async (position) => {
+          const market = await fetchRealtimeMarketSnapshot(position.mint);
+          const marketRecord = (market as Record<string, unknown>) || {};
+          const markPriceUsd = Number(marketRecord.priceUsd || 0);
+          if (!Number.isFinite(markPriceUsd) || markPriceUsd <= 0) {
+            return null;
+          }
+          const marked = updateAutoTradePositionMark(req.user!.id, position.id, markPriceUsd);
+          if (!marked) return null;
+
+          const entry = Number(marked.entryPriceUsd || 0);
+          const highWater = Number(marked.highWaterPriceUsd || markPriceUsd);
+          const tpPrice = entry * (1 + Number(marked.tpPct || 0) / 100);
+          let slPrice = entry * (1 - Number(marked.slPct || 0) / 100);
+          const breakevenTriggerPrice = entry * (1 + BREAKEVEN_TRIGGER_PCT / 100);
+          if (markPriceUsd >= breakevenTriggerPrice) {
+            slPrice = Math.max(slPrice, entry * (1 + BREAKEVEN_LOCK_PCT / 100));
+          }
+          const trailingFloor = highWater * (1 - Number(marked.trailingStopPct || 0) / 100);
+          const elapsedMinutes = minutesSince(marked.opened_at);
+          let closeReason = "";
+
+          if (markPriceUsd <= slPrice) closeReason = "SL_HIT";
+          else if (markPriceUsd >= tpPrice) closeReason = "TP_HIT";
+          else if (markPriceUsd <= trailingFloor && highWater > entry) closeReason = "TRAILING_STOP";
+          else if (elapsedMinutes >= Number(marked.maxHoldMinutes || 0)) closeReason = "MAX_HOLD_TIME";
+
+          if (closeReason) {
+            const spreadBps =
+              Number(marketRecord.estimatedSpreadBps || 0) > 0
+                ? Number(marketRecord.estimatedSpreadBps)
+                : estimateSpreadBps(
+                    Number(marketRecord.liquidityUsd || 0),
+                    Number(marketRecord.volume24hUsd || 0)
+                  );
+            const closeFill = simulateExecutionFill({
+              side: "SELL",
+              mode: marked.mode,
+              referencePriceUsd: markPriceUsd,
+              requestedNotionalUsd: Number(marked.sizeUsd || 0),
+              spreadBps,
+              volatilityIndex: null,
+              pollIntervalSec: 2
+            });
+            const effectiveClosePrice = Number(closeFill.fillPriceUsd || markPriceUsd);
+
+            if (marked.mode === "live" && liveEnabled) {
+              try {
+                const sellResponse = await executeUltraSell({ mint: marked.mint });
+                actions.push({
+                  type: "LIVE_SELL",
+                  positionId: marked.id,
+                  mint: marked.mint,
+                  markPriceUsd,
+                  closeFillPriceUsd: effectiveClosePrice,
+                  entryPriceUsd: marked.entryPriceUsd,
+                  sizeUsd: marked.sizeUsd,
+                  signature: String(
+                    (sellResponse.execution as Record<string, unknown>)?.signature || ""
+                  ),
+                  status: String((sellResponse.execution as Record<string, unknown>)?.status || "UNKNOWN")
+                });
+              } catch (error) {
+                recordExecutionError(req.user!.id);
+                actions.push({
+                  type: "ERROR",
+                  positionId: marked.id,
+                  mint: marked.mint,
+                  reason: `live sell failed: ${(error as Error).message}`
+                });
+                return {
+                  positionId: marked.id,
+                  mint: marked.mint,
+                  markPriceUsd,
+                  pnlPct: marked.pnlPct
+                };
+              }
+              recordExecutionSuccess(req.user!.id);
+            }
+
+            const closed = closeAutoTradePosition({
+              userId: req.user!.id,
+              positionId: marked.id,
+              markPriceUsd: effectiveClosePrice,
+              closeReason
+            });
+            if (closed) {
+              const meta = positionExecutionMeta.get(closed.id);
+              const exitNotionalUsd = Number((Number(closed.qtyTokens || 0) * effectiveClosePrice).toFixed(4));
+              const attribution = computePnlAttribution({
+                entryNotionalUsd: Number(closed.sizeUsd || 0),
+                exitNotionalUsd,
+                entryReferencePriceUsd: Number(meta?.entryReferencePriceUsd || closed.entryPriceUsd || 0),
+                exitReferencePriceUsd: markPriceUsd,
+                entryFillCostUsd: Number(meta?.entryFillCostUsd || 0),
+                exitFillCostUsd: Number(closeFill.totalCostUsd || 0)
+              });
+              positionExecutionMeta.delete(closed.id);
+              actions.push({
+                type: "CLOSE",
+                positionId: closed.id,
+                mint: closed.mint,
+                reason: closeReason,
+                markPriceUsd,
+                exitFillPriceUsd: effectiveClosePrice,
+                entryPriceUsd: closed.entryPriceUsd,
+                sizeUsd: closed.sizeUsd,
+                pnlPct: Number((closed.pnlPct || 0).toFixed(2)),
+                realizedAfterCostsPct: Number(attribution.netRealizedPct || 0),
+                expectedPnlPct: Number(meta?.expectedPnlPct || 0),
+                attribution,
+                mode: closed.mode
+              });
+            }
+            return null;
+          }
+
+          return {
+            positionId: marked.id,
+            mint: marked.mint,
+            markPriceUsd,
+            pnlPct: marked.pnlPct
+          };
+        })
+      );
+
+      for (const entry of updates) {
+        if (entry.status !== "fulfilled") continue;
+        if (!entry.value) continue;
+        ticksByPosition.set(entry.value.positionId, entry.value);
+      }
+
+      latestOpen = listAutoTradePositions(req.user.id, "OPEN");
+      if (!latestOpen.length) break;
+      if (sweep < requestedSweeps - 1) {
+        await new Promise((resolve) => setTimeout(resolve, sweepIntervalMs));
+      }
+    }
+
+    const ticks = Array.from(ticksByPosition.values());
+
+    const usage = getUsage(req.user.id);
+    latestOpen = listAutoTradePositions(req.user.id, "OPEN");
+    const openExposureUsd = Number(
+      latestOpen.reduce((sum, position) => sum + Number(position.sizeUsd || 0), 0).toFixed(2)
+    );
+    const paperBudgetUsd = Number(Math.max(1, Number(execCfg.paperBudgetUsd || 100)).toFixed(2));
+    const paperAvailableUsd = Number(Math.max(0, paperBudgetUsd - openExposureUsd).toFixed(2));
+    const dailyRealizedLossUsd = getDailyRealizedLossUsd(req.user.id);
+    const hourlyRealizedLossUsd = getWindowRealizedLossUsd(req.user.id, 60 * 60 * 1000);
+    const lossStreak = getConsecutiveLossStreak(req.user.id);
+    const latestSafetyState = getExecutionSafetyState(req.user.id);
+    pruneSafetyErrors(latestSafetyState);
+    return res.json({
+      ts: new Date().toISOString(),
+      mode: monitorMode,
+      openCount: latestOpen.length,
+      sweeps: requestedSweeps,
+      updatedCount: ticks.length,
+      ticks,
+      actions,
+      positions: latestOpen,
+      safety: {
+        maxTotalExposureUsd: SAFETY_MAX_TOTAL_EXPOSURE_USD,
+        maxDailyLossUsd: SAFETY_MAX_DAILY_LOSS_USD,
+        maxHourlyLossUsd: SAFETY_MAX_HOURLY_LOSS_USD,
+        maxTokenDailyLossUsd: SAFETY_MAX_TOKEN_DAILY_LOSS_USD,
+        maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
+        maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
+        paperBudgetUsd,
+        paperAvailableUsd,
+        openExposureUsd,
+        dailyRealizedLossUsd,
+        hourlyRealizedLossUsd,
+        lossStreak,
+        pausedUntil: latestSafetyState.pausedUntil
+          ? new Date(latestSafetyState.pausedUntil).toISOString()
+          : null,
+        errorCountWindow: latestSafetyState.errorTimestamps.length
+      },
+      usage
+    });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  } finally {
+    if (lockAcquired && req.user) {
+      releaseUserExecutionLock(autotradeMonitorLocks, req.user.id);
+    }
+  }
 });
 
 app.post(
   "/api/autotrade/engine/tick",
   authRequired,
-  enforceQuota("signal_calls"),
   async (req: AuthedRequest, res) => {
+    let lockAcquired = false;
     try {
       if (!req.user) {
         return res.status(401).json({ error: "unauthorized" });
+      }
+      lockAcquired = acquireUserExecutionLock(autotradeTickLocks, req.user.id);
+      if (!lockAcquired) {
+        return res.status(429).json({ error: "engine tick already in progress; retry shortly" });
       }
 
       const policy = getAutoTradeConfig(req.user.id);
@@ -1683,12 +2712,21 @@ app.post(
       }
 
       const liveEnabled = process.env.ENIGMA_EXECUTION_ENABLED === "1";
-      if ((execCfg.mode === "live" || policy.mode === "live") && req.user.plan !== "pro") {
+      if ((execCfg.mode === "live" || policy.mode === "live") && !hasLiveExecutionAccess(req.user.plan)) {
         return res.status(403).json(premiumRequiredResponse());
       }
-      const modeState = getEffectiveMode(policy, execCfg, req.user.plan);
+      const baseModeState = getEffectiveMode(policy, execCfg, req.user.plan);
+      const modeState = PAPER_ONLY_MODE
+        ? {
+            mode: "paper" as const,
+            warnings: [...baseModeState.warnings, "paper-only mode enabled: live execution is disabled"]
+          }
+        : baseModeState;
       const executionMode: "paper" | "live" =
-        modeState.mode === "live" && liveEnabled ? "live" : "paper";
+        modeState.mode === "live" && liveEnabled && !PAPER_ONLY_MODE ? "live" : "paper";
+      const nowMs = Date.now();
+      const safetyState = getExecutionSafetyState(req.user.id);
+      pruneSafetyErrors(safetyState, nowMs);
       const modeWarnings = modeState.warnings.slice();
       if (modeState.mode === "live" && !liveEnabled) {
         modeWarnings.push(
@@ -1697,12 +2735,15 @@ app.post(
       }
       const effectiveTradeAmountUsd = getEffectiveTradeAmountUsd(policy, execCfg);
 
-      const configured = getWatchlist(req.user.id);
-      const reqMints = parseMintsCsv(String(req.body.mints || ""), 5);
-      const mints = validateMints(reqMints.length ? reqMints : configured);
-      if (mints.length === 0) {
-        return res.status(400).json({ error: "at least one valid mint is required" });
+      const agentMint = resolveSingleAgentMint(
+        String(req.body.mint || ""),
+        String(req.body.mints || "")
+      );
+      if (!agentMint) {
+        return res.status(400).json({ error: "exactly one valid agent token is required (Solana mint, BTC, ETH)" });
       }
+      const mints = [agentMint];
+      const fallbackKey = entryFallbackKey(req.user.id, agentMint);
 
       const actions: Array<Record<string, unknown>> = [];
       const openBefore = listAutoTradePositions(req.user.id, "OPEN");
@@ -1711,6 +2752,12 @@ app.post(
       for (const position of openPositions) {
         const built = await buildStoredSignal(req.user.id, position.mint);
         const market = (built.signal.market as Record<string, unknown>) || {};
+        const openDecision = buildAutoTradeDecision({
+          mint: position.mint,
+          signalId: built.signalId,
+          signal: built.signal,
+          config: policy
+        });
         const markPrice = Number(market.priceUsd || 0);
         if (!Number.isFinite(markPrice) || markPrice <= 0) {
           continue;
@@ -1720,17 +2767,46 @@ app.post(
         const entry = Number(marked.entryPriceUsd || 0);
         const highWater = Number(marked.highWaterPriceUsd || markPrice);
         const elapsedMinutes = minutesSince(marked.opened_at);
-        const tpPrice = entry * (1 + Number(marked.tpPct || 0) / 100);
-        const slPrice = entry * (1 - Number(marked.slPct || 0) / 100);
-        const trailingFloor = highWater * (1 - Number(marked.trailingStopPct || 0) / 100);
+        const exitPct = resolveAdaptiveExitPercents(
+          {
+            ...execCfg,
+            tpPct: Number(marked.tpPct || execCfg.tpPct),
+            slPct: Number(marked.slPct || execCfg.slPct),
+            trailingStopPct: Number(marked.trailingStopPct || execCfg.trailingStopPct)
+          },
+          openDecision
+        );
+        const tpPrice = entry * (1 + exitPct.tpPct / 100);
+        let slPrice = entry * (1 - exitPct.slPct / 100);
+        const breakevenTriggerPrice = entry * (1 + BREAKEVEN_TRIGGER_PCT / 100);
+        if (markPrice >= breakevenTriggerPrice) {
+          slPrice = Math.max(slPrice, entry * (1 + BREAKEVEN_LOCK_PCT / 100));
+        }
+        const trailingFloor = highWater * (1 - exitPct.trailingStopPct / 100);
         let closeReason = "";
 
         if (markPrice <= slPrice) closeReason = "SL_HIT";
         else if (markPrice >= tpPrice) closeReason = "TP_HIT";
         else if (markPrice <= trailingFloor && highWater > entry) closeReason = "TRAILING_STOP";
         else if (elapsedMinutes >= Number(marked.maxHoldMinutes || 0)) closeReason = "MAX_HOLD_TIME";
+        else if (SAFETY_EXIT_ON_HOSTILE_REGIME && openDecision.regimePolicy?.hostile) closeReason = "REGIME_KILL_SWITCH";
 
         if (closeReason) {
+          const spreadBps =
+            Number(openDecision.market?.spreadBps || 0) > 0
+              ? Number(openDecision.market?.spreadBps || 0)
+              : estimateSpreadBps(Number(market.liquidityUsd || 0), Number(market.volume24hUsd || 0));
+          const closeFill = simulateExecutionFill({
+            side: "SELL",
+            mode: executionMode,
+            referencePriceUsd: markPrice,
+            requestedNotionalUsd: Number(marked.sizeUsd || 0),
+            spreadBps,
+            volatilityIndex: Number(openDecision.marketRegime?.volatilityIndex ?? NaN),
+            pollIntervalSec: Number(execCfg.pollIntervalSec || 5)
+          });
+          const effectiveClosePrice = Number(closeFill.fillPriceUsd || markPrice);
+
           if (executionMode === "live") {
             try {
               const sellResponse = await executeUltraSell({ mint: marked.mint });
@@ -1738,10 +2814,16 @@ app.post(
                 type: "LIVE_SELL",
                 positionId: marked.id,
                 mint: marked.mint,
+                markPriceUsd: markPrice,
+                closeFillPriceUsd: effectiveClosePrice,
+                entryPriceUsd: marked.entryPriceUsd,
+                sizeUsd: marked.sizeUsd,
                 signature: String((sellResponse.execution as Record<string, unknown>)?.signature || ""),
                 status: String((sellResponse.execution as Record<string, unknown>)?.status || "UNKNOWN")
               });
+              recordExecutionSuccess(req.user.id);
             } catch (error) {
+              recordExecutionError(req.user.id);
               actions.push({
                 type: "ERROR",
                 positionId: marked.id,
@@ -1755,16 +2837,36 @@ app.post(
           const closed = closeAutoTradePosition({
             userId: req.user.id,
             positionId: marked.id,
-            markPriceUsd: markPrice,
+            markPriceUsd: effectiveClosePrice,
             closeReason
           });
           if (closed) {
+            const entryMeta = positionExecutionMeta.get(closed.id);
+            const exitNotionalUsd = Number(
+              (Number(closed.qtyTokens || 0) * Number(effectiveClosePrice || 0)).toFixed(4)
+            );
+            const attribution = computePnlAttribution({
+              entryNotionalUsd: Number(closed.sizeUsd || 0),
+              exitNotionalUsd,
+              entryReferencePriceUsd: Number(entryMeta?.entryReferencePriceUsd || closed.entryPriceUsd || 0),
+              exitReferencePriceUsd: markPrice,
+              entryFillCostUsd: Number(entryMeta?.entryFillCostUsd || 0),
+              exitFillCostUsd: Number(closeFill.totalCostUsd || 0)
+            });
+            positionExecutionMeta.delete(closed.id);
             actions.push({
               type: "CLOSE",
               positionId: closed.id,
               mint: closed.mint,
               reason: closeReason,
+              markPriceUsd: markPrice,
+              exitFillPriceUsd: effectiveClosePrice,
+              entryPriceUsd: closed.entryPriceUsd,
+              sizeUsd: closed.sizeUsd,
               pnlPct: Number((closed.pnlPct || 0).toFixed(2)),
+              expectedPnlPct: Number(entryMeta?.expectedPnlPct || 0),
+              realizedAfterCostsPct: Number(attribution.netRealizedPct || 0),
+              attribution,
               mode: executionMode
             });
           }
@@ -1772,43 +2874,244 @@ app.post(
       }
 
       openPositions = listAutoTradePositions(req.user.id, "OPEN");
-      const openMintSet = new Set(openPositions.map((item) => item.mint));
+      if (openPositions.length > 0) {
+        entryFallbackState.delete(fallbackKey);
+      }
       const capacity = Math.max(0, Number(execCfg.maxOpenPositions || 0) - openPositions.length);
       let decisions: Array<{ ok: boolean } & AutoTradeDecision> = [];
+      const openExposureUsd = Number(
+        openPositions.reduce((sum, position) => sum + Number(position.sizeUsd || 0), 0).toFixed(2)
+      );
+      const paperBudgetUsd = Number(
+        Math.max(effectiveTradeAmountUsd, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)
+      );
+      const paperAvailableUsd = Number(Math.max(0, paperBudgetUsd - openExposureUsd).toFixed(2));
+      const dailyRealizedLossUsd = getDailyRealizedLossUsd(req.user.id, nowMs);
+      const safetyPaused =
+        executionMode === "live" && safetyState.pausedUntil > nowMs;
+      const lossLimitReached =
+        executionMode === "live" && dailyRealizedLossUsd >= SAFETY_MAX_DAILY_LOSS_USD;
+      const remainingExposureUsd = Number(
+        Math.max(0, SAFETY_MAX_TOTAL_EXPOSURE_USD - openExposureUsd).toFixed(2)
+      );
+      const exposureCapacity =
+        executionMode === "live"
+          ? Math.max(0, Math.floor(remainingExposureUsd / Math.max(0.0001, effectiveTradeAmountUsd)))
+          : Math.max(0, Math.floor(paperAvailableUsd / Math.max(0.0001, effectiveTradeAmountUsd)));
 
       if (capacity > 0 && policy.enabled) {
         decisions = await evaluateAutoTradeDecisions(
           req.user.id,
-          mints.filter((mint) => !openMintSet.has(mint)),
+          mints,
           policy
         );
+
+        const primary = decisions.find((item) => item.ok && item.mint === agentMint);
+        const primaryRegimeHostile = Boolean(primary?.regimePolicy?.hostile);
+        const hourlyLossUsd = getWindowRealizedLossUsd(req.user.id, 60 * 60 * 1000, nowMs);
+        const tokenHourlyLossUsd = getTokenWindowRealizedLossUsd(
+          req.user.id,
+          agentMint,
+          60 * 60 * 1000,
+          nowMs
+        );
+        const tokenDailyLossUsd = getTokenWindowRealizedLossUsd(
+          req.user.id,
+          agentMint,
+          24 * 60 * 60 * 1000,
+          nowMs
+        );
+        const lossStreak = getConsecutiveLossStreak(req.user.id);
+        if (lossStreak >= SAFETY_LOSS_STREAK_THRESHOLD) {
+          safetyState.pausedUntil = Math.max(
+            safetyState.pausedUntil,
+            nowMs + SAFETY_LOSS_STREAK_PAUSE_SEC * 1000
+          );
+        }
 
         const lastOpenedAt = openPositions.length
           ? Math.max(...openPositions.map((item) => Date.parse(item.opened_at) || 0))
           : 0;
         const cooldownReady = Date.now() - lastOpenedAt >= Number(execCfg.cooldownSec || 0) * 1000;
 
-        if (cooldownReady) {
-          const buyCandidates = decisions
-            .filter((item) => item.ok && item.decision === "BUY_CANDIDATE")
-            .slice(0, capacity);
+        if (safetyPaused) {
+          actions.push({
+            type: "INFO",
+            note: `safety pause active until ${new Date(safetyState.pausedUntil).toLocaleTimeString()}`
+          });
+        } else if (hourlyLossUsd >= SAFETY_MAX_HOURLY_LOSS_USD) {
+          actions.push({
+            type: "INFO",
+            note: `hourly loss cap reached (${SAFETY_MAX_HOURLY_LOSS_USD} USD), no new positions opened`
+          });
+        } else if (tokenHourlyLossUsd >= SAFETY_MAX_TOKEN_HOURLY_LOSS_USD) {
+          actions.push({
+            type: "INFO",
+            note: `token hourly loss cap reached (${SAFETY_MAX_TOKEN_HOURLY_LOSS_USD} USD), no new positions opened`
+          });
+        } else if (tokenDailyLossUsd >= SAFETY_MAX_TOKEN_DAILY_LOSS_USD) {
+          actions.push({
+            type: "INFO",
+            note: `token daily loss cap reached (${SAFETY_MAX_TOKEN_DAILY_LOSS_USD} USD), no new positions opened`
+          });
+        } else if (lossStreak >= SAFETY_LOSS_STREAK_THRESHOLD) {
+          actions.push({
+            type: "INFO",
+            note: `loss streak pause active (${lossStreak} consecutive losses)`
+          });
+        } else if (lossLimitReached) {
+          actions.push({
+            type: "INFO",
+            note: `daily loss cap reached (${SAFETY_MAX_DAILY_LOSS_USD} USD), no new positions opened`
+          });
+        } else if (SAFETY_EXIT_ON_HOSTILE_REGIME && primaryRegimeHostile) {
+          actions.push({
+            type: "INFO",
+            note: "global regime kill-switch active (hostile regime), no new positions opened"
+          });
+        } else if (executionMode === "live" && exposureCapacity <= 0) {
+          actions.push({
+            type: "INFO",
+            note: `exposure cap reached (${SAFETY_MAX_TOTAL_EXPOSURE_USD} USD), no new positions opened`
+          });
+        } else if (executionMode === "paper" && exposureCapacity <= 0) {
+          actions.push({
+            type: "INFO",
+            note: `paper budget fully allocated (${paperBudgetUsd} USD), waiting for position exits`
+          });
+        } else if (cooldownReady) {
+          const slotCap = Math.max(0, Math.min(capacity, Math.max(0, exposureCapacity)));
+          let availableEntryBudgetUsd =
+            executionMode === "live" ? remainingExposureUsd : paperAvailableUsd;
+          const candidateEntries: Array<{
+            candidate: { ok: boolean } & AutoTradeDecision;
+            trigger: ReturnType<typeof chooseAdaptiveEntryTrigger>;
+          }> = [];
 
-          for (const candidate of buyCandidates) {
-            const entryPrice = Number(candidate.entryPriceUsd || 0);
+          if (slotCap > 0 && primary && primary.ok) {
+            const state = entryFallbackState.get(fallbackKey) || {
+              startedAt: nowMs,
+              lastSeenAt: nowMs,
+              cycles: 0
+            };
+            state.lastSeenAt = nowMs;
+            state.cycles = Number.isFinite(state.cycles) ? state.cycles : 0;
+            const timeoutSec = resolveAdaptiveEntryTimeoutSec(execCfg, primary);
+            const elapsedSec = Math.max(0, Math.floor((nowMs - state.startedAt) / 1000));
+
+            const tradePlan = (primary.tradePlan || {}) as Record<string, unknown>;
+            const buyZone = (tradePlan.buyZone as Record<string, unknown>) || {};
+            const support = Array.isArray(tradePlan.support) ? tradePlan.support : [];
+            const resistance = Array.isArray(tradePlan.resistance) ? tradePlan.resistance : [];
+            const trigger = chooseAdaptiveEntryTrigger({
+              marketPriceUsd: Number(primary.entryPriceUsd || primary.market?.priceUsd || 0),
+              buyZoneLow: Number(buyZone.low || 0),
+              buyZoneHigh: Number(buyZone.high || 0),
+              resistance1: Number(resistance[0] || 0),
+              support1: Number(support[0] || 0),
+              change5mPct: Number(primary.market?.priceChange5mPct || 0),
+              breakoutMinMove5mPct: ENTRY_BREAKOUT_5M_PCT,
+              adx: Number(primary.marketRegime?.adx ?? NaN),
+              volatilityIndex: Number(primary.marketRegime?.volatilityIndex ?? NaN),
+              elapsedSec,
+              timeoutSec,
+              fallbackCycle: state.cycles
+            });
+
+            const minConfidenceForFallback = Math.max(
+              ENTRY_FALLBACK_CONFIDENCE_FLOOR,
+              ENTRY_FALLBACK_MIN_CONFIDENCE - state.cycles * ENTRY_FALLBACK_CONFIDENCE_DECAY
+            );
+            const confidenceReady = Number(primary.confidence || 0) >= minConfidenceForFallback;
+            const statusFallbackAllowed =
+              String(primary.signalStatus || "") !== "HIGH_RISK" || policy.allowHighRiskEntries;
+
+            const directReady = primary.decision === "BUY_CANDIDATE" && trigger.trigger !== "none";
+            const timeoutReady =
+              trigger.trigger === "timeout" && confidenceReady && statusFallbackAllowed;
+
+            if (directReady || timeoutReady) {
+              candidateEntries.push({ candidate: primary, trigger });
+              if (trigger.trigger === "timeout") {
+                state.cycles += 1;
+              } else {
+                state.cycles = 0;
+              }
+              state.startedAt = nowMs;
+            } else {
+              const waitRemainingSec = Math.max(0, timeoutSec - elapsedSec);
+              actions.push({
+                type: "INFO",
+                note: `${trigger.note}: timeout in ${waitRemainingSec}s (conf ${Number(
+                  primary.confidence || 0
+                ).toFixed(2)} / need ${minConfidenceForFallback.toFixed(2)})`
+              });
+            }
+
+            entryFallbackState.set(fallbackKey, state);
+          }
+
+          for (const entry of candidateEntries.slice(0, slotCap)) {
+            if (!Number.isFinite(availableEntryBudgetUsd) || availableEntryBudgetUsd < 1) {
+              actions.push({
+                type: "INFO",
+                note:
+                  executionMode === "paper"
+                    ? "paper budget exhausted for this cycle"
+                    : "exposure cap exhausted for this cycle"
+              });
+              break;
+            }
+            const candidate = entry.candidate;
+            const entryPrice = Number(candidate.entryPriceUsd || candidate.market?.priceUsd || 0);
             if (!Number.isFinite(entryPrice) || entryPrice <= 0) continue;
+            const tradePlan = (candidate.tradePlan || {}) as Record<string, unknown>;
+            const support = Array.isArray(tradePlan.support) ? tradePlan.support : [];
+            const stopLoss = firstPositiveNumber([
+              tradePlan.stopLoss,
+              support[1],
+              support[0],
+              entryPrice * (1 - Number(execCfg.slPct || 0) / 100)
+            ]);
+            const spreadBps = Number(candidate.market?.spreadBps || 0);
+            const maxPositionCapUsd = Number(
+              Math.min(
+                effectiveTradeAmountUsd,
+                availableEntryBudgetUsd > 0 ? availableEntryBudgetUsd : effectiveTradeAmountUsd
+              ).toFixed(2)
+            );
+            const sizing = computeDynamicPositionSize({
+              entryPriceUsd: entryPrice,
+              stopPriceUsd: stopLoss,
+              maxPositionCapUsd,
+              maxRiskPerTradeUsd: Math.min(SAFETY_MAX_LOSS_PER_TRADE_USD, maxPositionCapUsd),
+              spreadBps,
+              volatilityIndex: Number(candidate.marketRegime?.volatilityIndex ?? NaN),
+              regimeRiskMultiplier: Number(candidate.regimePolicy?.riskMultiplier || 1)
+            });
+            const triggerMultiplier = Math.max(0.1, Number(entry.trigger.sizeMultiplier || 1));
+            let requestedAmountUsd = Number((sizing.sizeUsd * triggerMultiplier).toFixed(2));
+            requestedAmountUsd = Number(
+              Math.min(requestedAmountUsd, maxPositionCapUsd, remainingExposureUsd || requestedAmountUsd).toFixed(2)
+            );
+            if (!Number.isFinite(requestedAmountUsd) || requestedAmountUsd < 1) continue;
+
             if (executionMode === "live") {
               try {
                 const buyResponse = await executeUltraBuy({
                   outputMint: candidate.mint,
-                  amountUsd: effectiveTradeAmountUsd
+                  amountUsd: requestedAmountUsd
                 });
                 actions.push({
                   type: "LIVE_BUY",
                   mint: candidate.mint,
+                  requestedAmountUsd,
                   signature: String((buyResponse.execution as Record<string, unknown>)?.signature || ""),
                   status: String((buyResponse.execution as Record<string, unknown>)?.status || "UNKNOWN")
                 });
+                recordExecutionSuccess(req.user.id);
               } catch (error) {
+                recordExecutionError(req.user.id);
                 actions.push({
                   type: "ERROR",
                   mint: candidate.mint,
@@ -1818,33 +3121,66 @@ app.post(
               }
             }
 
-            const qty = Number((effectiveTradeAmountUsd / entryPrice).toFixed(8));
+            const fill = simulateExecutionFill({
+              side: "BUY",
+              mode: executionMode,
+              referencePriceUsd: entryPrice,
+              requestedNotionalUsd: requestedAmountUsd,
+              spreadBps,
+              volatilityIndex: Number(candidate.marketRegime?.volatilityIndex ?? NaN),
+              pollIntervalSec: Number(execCfg.pollIntervalSec || 5)
+            });
+            const executedNotionalUsd = Number(fill.executedNotionalUsd || 0);
+            if (!Number.isFinite(executedNotionalUsd) || executedNotionalUsd < 1) continue;
+            availableEntryBudgetUsd = Number(
+              Math.max(0, availableEntryBudgetUsd - executedNotionalUsd).toFixed(2)
+            );
+            const fillPrice = Number(fill.fillPriceUsd || entryPrice);
+            const qty = Number((executedNotionalUsd / fillPrice).toFixed(8));
+            const adaptiveExit = resolveAdaptiveExitPercents(execCfg, candidate);
             const created = createAutoTradePosition({
               userId: req.user.id,
               mint: candidate.mint,
               mode: executionMode,
               entrySignalId: candidate.signalId || null,
-              entryPriceUsd: entryPrice,
-              sizeUsd: effectiveTradeAmountUsd,
+              entryPriceUsd: fillPrice,
+              sizeUsd: executedNotionalUsd,
               qtyTokens: qty,
-              tpPct: Number(execCfg.tpPct || 0),
-              slPct: Number(execCfg.slPct || 0),
-              trailingStopPct: Number(execCfg.trailingStopPct || 0),
+              tpPct: adaptiveExit.tpPct,
+              slPct: adaptiveExit.slPct,
+              trailingStopPct: adaptiveExit.trailingStopPct,
               maxHoldMinutes: Number(execCfg.maxHoldMinutes || 0)
+            });
+            positionExecutionMeta.set(created.id, {
+              entryReferencePriceUsd: entryPrice,
+              entryFillCostUsd: Number(fill.totalCostUsd || 0),
+              expectedPnlPct: projectDecisionPnlPct(
+                Number(candidate.patternScore || 0),
+                Number(candidate.confidence || 0)
+              )
             });
 
             actions.push({
               type: "OPEN",
               positionId: created.id,
               mint: created.mint,
+              trigger: entry.trigger.trigger,
+              strategy: candidate.regimePolicy?.style || "TREND",
               entryPriceUsd: created.entryPriceUsd,
+              referencePriceUsd: entryPrice,
               sizeUsd: created.sizeUsd,
               qtyTokens: created.qtyTokens,
+              spreadBps: Number(spreadBps || 0),
+              stopDistancePct: Number(sizing.stopDistancePct || 0),
+              riskBudgetUsd: Number(sizing.riskBudgetUsd || 0),
+              expectedPnlPct: projectDecisionPnlPct(
+                Number(candidate.patternScore || 0),
+                Number(candidate.confidence || 0)
+              ),
+              executionCostsUsd: Number(fill.totalCostUsd || 0),
+              fillRatio: Number(fill.fillRatio || 1),
               mode: executionMode,
-              note:
-                executionMode === "paper"
-                  ? "paper simulated order opened"
-                  : "live slot opened (connect signer/router worker for on-chain submits)"
+              note: `${entry.trigger.note}; policy ${candidate.regimePolicy?.style || "N/A"}`
             });
           }
         } else {
@@ -1858,6 +3194,27 @@ app.post(
       const usage = incrementUsage(req.user.id, "signal_calls");
       const openAfter = listAutoTradePositions(req.user.id, "OPEN");
       const closedRecent = listAutoTradePositions(req.user.id, "CLOSED").slice(0, 10);
+      const openExposureAfterUsd = Number(
+        openAfter.reduce((sum, position) => sum + Number(position.sizeUsd || 0), 0).toFixed(2)
+      );
+      const paperAvailableAfterUsd = Number(
+        Math.max(0, Math.max(effectiveTradeAmountUsd, Number(execCfg.paperBudgetUsd || 100)) - openExposureAfterUsd).toFixed(2)
+      );
+      const dailyRealizedLossAfterUsd = getDailyRealizedLossUsd(req.user.id);
+      const hourlyRealizedLossAfterUsd = getWindowRealizedLossUsd(req.user.id, 60 * 60 * 1000);
+      const tokenDailyRealizedLossAfterUsd = getTokenWindowRealizedLossUsd(
+        req.user.id,
+        agentMint,
+        24 * 60 * 60 * 1000
+      );
+      const tokenHourlyRealizedLossAfterUsd = getTokenWindowRealizedLossUsd(
+        req.user.id,
+        agentMint,
+        60 * 60 * 1000
+      );
+      const lossStreakAfter = getConsecutiveLossStreak(req.user.id);
+      const latestSafetyState = getExecutionSafetyState(req.user.id);
+      pruneSafetyErrors(latestSafetyState);
 
       return res.json({
         ts: new Date().toISOString(),
@@ -1874,10 +3231,34 @@ app.post(
           open: openAfter,
           recentlyClosed: closedRecent
         },
+        safety: {
+          maxTotalExposureUsd: SAFETY_MAX_TOTAL_EXPOSURE_USD,
+          maxDailyLossUsd: SAFETY_MAX_DAILY_LOSS_USD,
+          maxHourlyLossUsd: SAFETY_MAX_HOURLY_LOSS_USD,
+          maxTokenDailyLossUsd: SAFETY_MAX_TOKEN_DAILY_LOSS_USD,
+          maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
+          maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
+          paperBudgetUsd: Number(Math.max(effectiveTradeAmountUsd, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
+          paperAvailableUsd: paperAvailableAfterUsd,
+          openExposureUsd: openExposureAfterUsd,
+          dailyRealizedLossUsd: dailyRealizedLossAfterUsd,
+          hourlyRealizedLossUsd: hourlyRealizedLossAfterUsd,
+          tokenDailyRealizedLossUsd: tokenDailyRealizedLossAfterUsd,
+          tokenHourlyRealizedLossUsd: tokenHourlyRealizedLossAfterUsd,
+          lossStreak: lossStreakAfter,
+          pausedUntil: latestSafetyState.pausedUntil
+            ? new Date(latestSafetyState.pausedUntil).toISOString()
+            : null,
+          errorCountWindow: latestSafetyState.errorTimestamps.length
+        },
         usage
       });
     } catch (error) {
       return res.status(500).json({ error: (error as Error).message });
+    } finally {
+      if (lockAcquired && req.user) {
+        releaseUserExecutionLock(autotradeTickLocks, req.user.id);
+      }
     }
   }
 );

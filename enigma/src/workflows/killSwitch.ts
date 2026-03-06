@@ -12,8 +12,6 @@ export async function killSwitch(
     risk: Record<string, unknown>;
   }>
 > {
-  context.tools.logger.info(`Running kill-switch score for mint ${mint}`);
-
   const result = await context.tools.onchain.killSwitchScore(mint);
 
   return {

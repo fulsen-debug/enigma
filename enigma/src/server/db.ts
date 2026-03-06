@@ -18,6 +18,8 @@ export interface UsageRecord {
 export interface AutoTradeConfigRecord {
   enabled: boolean;
   mode: "paper" | "live";
+  allowCautionEntries: boolean;
+  allowHighRiskEntries: boolean;
   minPatternScore: number;
   minConfidence: number;
   maxConnectedHolderPct: number;
@@ -30,6 +32,7 @@ export interface AutoTradeConfigRecord {
 export interface AutoTradeExecutionConfigRecord {
   enabled: boolean;
   mode: "paper" | "live";
+  paperBudgetUsd: number;
   tradeAmountUsd: number;
   maxOpenPositions: number;
   tpPct: number;
@@ -98,6 +101,11 @@ const dbPath = resolve(process.cwd(), process.env.ENIGMA_DB_PATH || "./enigma_da
 mkdirSync(dirname(dbPath), { recursive: true });
 
 const db = new DatabaseSync(dbPath);
+const AUTOTRADE_RUN_RETENTION = Math.max(
+  100,
+  Number(process.env.ENIGMA_AUTOTRADE_RUN_RETENTION || 1200)
+);
+const WATCHLIST_STORAGE_MAX = Math.max(25, Number(process.env.ENIGMA_WATCHLIST_MAX_TOKENS || 200));
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -251,6 +259,21 @@ CREATE TABLE IF NOT EXISTS withdrawal_requests (
   updated_at TEXT NOT NULL
 );
 `);
+
+function ensureColumnExists(table: string, column: string, definition: string): void {
+  const rows = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as Array<{ name?: string }>;
+  const exists = rows.some((row) => String(row.name || "") === column);
+  if (!exists) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumnExists("autotrade_configs", "allow_caution_entries", "INTEGER NOT NULL DEFAULT 0");
+ensureColumnExists("autotrade_configs", "allow_high_risk_entries", "INTEGER NOT NULL DEFAULT 0");
+ensureColumnExists("autotrade_runs", "test_model", "TEXT NOT NULL DEFAULT 'guardian_balanced'");
+ensureColumnExists("autotrade_execution_configs", "paper_budget_usd", "REAL NOT NULL DEFAULT 100");
 
 export function getUserByWallet(wallet: string): UserRecord | null {
   const row = db
@@ -681,7 +704,10 @@ export function resolveForecast(input: {
 
 export function setWatchlist(userId: number, mints: string[]): void {
   const now = new Date().toISOString();
-  const deduped = Array.from(new Set(mints.map((value) => value.trim()).filter(Boolean))).slice(0, 5);
+  const deduped = Array.from(new Set(mints.map((value) => value.trim()).filter(Boolean))).slice(
+    0,
+    WATCHLIST_STORAGE_MAX
+  );
   if (deduped.length === 0) {
     throw new Error("watchlist must contain at least one mint");
   }
@@ -703,7 +729,7 @@ export function getWatchlist(userId: number): string[] {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean)
-    .slice(0, 5);
+    .slice(0, WATCHLIST_STORAGE_MAX);
 }
 
 export function getDashboardStats(userId: number): Record<string, unknown> {
@@ -755,7 +781,8 @@ export function getAutoTradeConfig(userId: number): AutoTradeConfigRecord {
   const row = db
     .prepare(
       `SELECT enabled, mode, min_pattern_score, min_confidence, max_connected_holder_pct,
-              require_kill_switch_pass, max_position_usd, scan_interval_sec, updated_at
+              require_kill_switch_pass, allow_caution_entries, allow_high_risk_entries,
+              max_position_usd, scan_interval_sec, updated_at
        FROM autotrade_configs WHERE user_id = ?`
     )
     .get(userId) as
@@ -766,6 +793,8 @@ export function getAutoTradeConfig(userId: number): AutoTradeConfigRecord {
         min_confidence: number;
         max_connected_holder_pct: number;
         require_kill_switch_pass: number;
+        allow_caution_entries: number;
+        allow_high_risk_entries: number;
         max_position_usd: number;
         scan_interval_sec: number;
         updated_at: string;
@@ -777,19 +806,22 @@ export function getAutoTradeConfig(userId: number): AutoTradeConfigRecord {
     db.prepare(
       `INSERT INTO autotrade_configs (
         user_id, enabled, mode, min_pattern_score, min_confidence,
-        max_connected_holder_pct, require_kill_switch_pass, max_position_usd, scan_interval_sec, updated_at
-      ) VALUES (?, 0, 'paper', 72, 0.75, 22, 1, 50, 30, ?)`
+        max_connected_holder_pct, require_kill_switch_pass, allow_caution_entries, allow_high_risk_entries,
+        max_position_usd, scan_interval_sec, updated_at
+      ) VALUES (?, 0, 'paper', 0, 0.45, 60, 0, 1, 1, 25, 10, ?)`
     ).run(userId, now);
 
     return {
       enabled: false,
       mode: "paper",
-      minPatternScore: 72,
-      minConfidence: 0.75,
-      maxConnectedHolderPct: 22,
-      requireKillSwitchPass: true,
-      maxPositionUsd: 50,
-      scanIntervalSec: 30,
+      allowCautionEntries: true,
+      allowHighRiskEntries: true,
+      minPatternScore: 0,
+      minConfidence: 0.45,
+      maxConnectedHolderPct: 60,
+      requireKillSwitchPass: false,
+      maxPositionUsd: 25,
+      scanIntervalSec: 10,
       updated_at: now
     };
   }
@@ -797,12 +829,14 @@ export function getAutoTradeConfig(userId: number): AutoTradeConfigRecord {
   return {
     enabled: Boolean(row.enabled),
     mode: row.mode === "live" ? "live" : "paper",
-    minPatternScore: Number(row.min_pattern_score || 72),
-    minConfidence: Number(row.min_confidence || 0.75),
-    maxConnectedHolderPct: Number(row.max_connected_holder_pct || 22),
+    allowCautionEntries: Boolean(row.allow_caution_entries),
+    allowHighRiskEntries: Boolean(row.allow_high_risk_entries),
+    minPatternScore: Number(row.min_pattern_score ?? 0),
+    minConfidence: Number(row.min_confidence ?? 0.45),
+    maxConnectedHolderPct: Number(row.max_connected_holder_pct ?? 60),
     requireKillSwitchPass: Boolean(row.require_kill_switch_pass),
-    maxPositionUsd: Number(row.max_position_usd || 50),
-    scanIntervalSec: Number(row.scan_interval_sec || 30),
+    maxPositionUsd: Number(row.max_position_usd ?? 25),
+    scanIntervalSec: Number(row.scan_interval_sec ?? 10),
     updated_at: row.updated_at
   };
 }
@@ -812,6 +846,8 @@ export function putAutoTradeConfig(
   input: {
     enabled: boolean;
     mode: "paper" | "live";
+    allowCautionEntries: boolean;
+    allowHighRiskEntries: boolean;
     minPatternScore: number;
     minConfidence: number;
     maxConnectedHolderPct: number;
@@ -824,8 +860,9 @@ export function putAutoTradeConfig(
   db.prepare(
     `INSERT INTO autotrade_configs (
       user_id, enabled, mode, min_pattern_score, min_confidence, max_connected_holder_pct,
-      require_kill_switch_pass, max_position_usd, scan_interval_sec, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      require_kill_switch_pass, allow_caution_entries, allow_high_risk_entries,
+      max_position_usd, scan_interval_sec, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       enabled = excluded.enabled,
       mode = excluded.mode,
@@ -833,6 +870,8 @@ export function putAutoTradeConfig(
       min_confidence = excluded.min_confidence,
       max_connected_holder_pct = excluded.max_connected_holder_pct,
       require_kill_switch_pass = excluded.require_kill_switch_pass,
+      allow_caution_entries = excluded.allow_caution_entries,
+      allow_high_risk_entries = excluded.allow_high_risk_entries,
       max_position_usd = excluded.max_position_usd,
       scan_interval_sec = excluded.scan_interval_sec,
       updated_at = excluded.updated_at`
@@ -844,6 +883,8 @@ export function putAutoTradeConfig(
     input.minConfidence,
     input.maxConnectedHolderPct,
     input.requireKillSwitchPass ? 1 : 0,
+    input.allowCautionEntries ? 1 : 0,
+    input.allowHighRiskEntries ? 1 : 0,
     input.maxPositionUsd,
     input.scanIntervalSec,
     now
@@ -855,6 +896,7 @@ export function putAutoTradeConfig(
 export function saveAutoTradeRun(input: {
   userId: number;
   mode: "paper" | "live";
+  testModel?: string;
   scannedCount: number;
   buyCandidates: number;
   skippedCount: number;
@@ -865,13 +907,14 @@ export function saveAutoTradeRun(input: {
   const result = db
     .prepare(
       `INSERT INTO autotrade_runs (
-        user_id, mode, scanned_count, buy_candidates, skipped_count,
+        user_id, mode, test_model, scanned_count, buy_candidates, skipped_count,
         simulated_exposure_usd, expected_pnl_pct, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.userId,
       input.mode,
+      String(input.testModel || "guardian_balanced"),
       input.scannedCount,
       input.buyCandidates,
       input.skippedCount,
@@ -880,14 +923,39 @@ export function saveAutoTradeRun(input: {
       now
     );
 
+  db.prepare(
+    `DELETE FROM autotrade_runs
+     WHERE user_id = ?
+       AND id NOT IN (
+         SELECT id
+         FROM autotrade_runs
+         WHERE user_id = ?
+         ORDER BY id DESC
+         LIMIT ?
+       )`
+  ).run(input.userId, input.userId, AUTOTRADE_RUN_RETENTION);
+
   return Number(result.lastInsertRowid);
+}
+
+export function resetAutoTradeRuns(userId: number, scope: "paper" | "live" | "all" = "paper"): number {
+  let result: { changes: number };
+  if (scope === "all") {
+    result = db.prepare(`DELETE FROM autotrade_runs WHERE user_id = ?`).run(userId) as { changes: number };
+  } else {
+    result = db
+      .prepare(`DELETE FROM autotrade_runs WHERE user_id = ? AND mode = ?`)
+      .run(userId, scope) as { changes: number };
+  }
+
+  return Number(result?.changes || 0);
 }
 
 export function getAutoTradePerformance(userId: number, limit = 30): Record<string, unknown> {
   const safeLimit = Math.max(5, Math.min(100, Number(limit || 30)));
   const recentRuns = db
     .prepare(
-      `SELECT id, mode, scanned_count, buy_candidates, skipped_count, simulated_exposure_usd, expected_pnl_pct, created_at
+      `SELECT id, mode, test_model, scanned_count, buy_candidates, skipped_count, simulated_exposure_usd, expected_pnl_pct, created_at
        FROM autotrade_runs
        WHERE user_id = ?
        ORDER BY id DESC
@@ -896,6 +964,7 @@ export function getAutoTradePerformance(userId: number, limit = 30): Record<stri
     .all(userId, safeLimit) as Array<{
     id: number;
     mode: string;
+    test_model: string;
     scanned_count: number;
     buy_candidates: number;
     skipped_count: number;
@@ -925,6 +994,33 @@ export function getAutoTradePerformance(userId: number, limit = 30): Record<stri
     avg_expected_pnl_pct: number | null;
   };
 
+  const modelRows = db
+    .prepare(
+      `SELECT
+         test_model,
+         COUNT(*) as runs,
+         SUM(scanned_count) as scanned,
+         SUM(buy_candidates) as buy_candidates,
+         SUM(skipped_count) as skipped,
+         SUM(simulated_exposure_usd) as total_exposure_usd,
+         AVG(expected_pnl_pct) as avg_expected_pnl_pct,
+         SUM(CASE WHEN expected_pnl_pct > 0 THEN 1 ELSE 0 END) as success_runs
+       FROM autotrade_runs
+       WHERE user_id = ?
+       GROUP BY test_model
+       ORDER BY runs DESC, test_model ASC`
+    )
+    .all(userId) as Array<{
+    test_model: string;
+    runs: number;
+    scanned: number | null;
+    buy_candidates: number | null;
+    skipped: number | null;
+    total_exposure_usd: number | null;
+    avg_expected_pnl_pct: number | null;
+    success_runs: number | null;
+  }>;
+
   const runs = Number(totals.runs || 0);
   const buyCandidates = Number(totals.buy_candidates || 0);
   const scanned = Number(totals.scanned || 0);
@@ -941,20 +1037,42 @@ export function getAutoTradePerformance(userId: number, limit = 30): Record<stri
     recentRuns: recentRuns.map((row) => ({
       id: row.id,
       mode: row.mode === "live" ? "live" : "paper",
+      testModel: String(row.test_model || "guardian_balanced"),
       scannedCount: row.scanned_count,
       buyCandidates: row.buy_candidates,
       skippedCount: row.skipped_count,
       simulatedExposureUsd: Number(row.simulated_exposure_usd.toFixed(2)),
       expectedPnlPct: Number(row.expected_pnl_pct.toFixed(2)),
       created_at: row.created_at
-    }))
+    })),
+    modelComparison: modelRows.map((row) => {
+      const runsByModel = Number(row.runs || 0);
+      const scannedByModel = Number(row.scanned || 0);
+      const buyCandidatesByModel = Number(row.buy_candidates || 0);
+      const successRuns = Number(row.success_runs || 0);
+      return {
+        testModel: String(row.test_model || "guardian_balanced"),
+        runs: runsByModel,
+        scanned: scannedByModel,
+        buyCandidates: buyCandidatesByModel,
+        skipped: Number(row.skipped || 0),
+        successRuns,
+        failRuns: Math.max(0, runsByModel - successRuns),
+        runSuccessRatePct: runsByModel ? Number(((successRuns / runsByModel) * 100).toFixed(2)) : 0,
+        acceptanceRatePct: scannedByModel
+          ? Number(((buyCandidatesByModel / scannedByModel) * 100).toFixed(2))
+          : 0,
+        totalExposureUsd: Number((row.total_exposure_usd || 0).toFixed(2)),
+        avgExpectedPnlPct: Number((row.avg_expected_pnl_pct || 0).toFixed(2))
+      };
+    })
   };
 }
 
 export function getAutoTradeExecutionConfig(userId: number): AutoTradeExecutionConfigRecord {
   const row = db
     .prepare(
-      `SELECT enabled, mode, trade_amount_usd, max_open_positions, tp_pct, sl_pct, trailing_stop_pct,
+      `SELECT enabled, mode, paper_budget_usd, trade_amount_usd, max_open_positions, tp_pct, sl_pct, trailing_stop_pct,
               max_hold_minutes, cooldown_sec, poll_interval_sec, updated_at
        FROM autotrade_execution_configs WHERE user_id = ?`
     )
@@ -962,6 +1080,7 @@ export function getAutoTradeExecutionConfig(userId: number): AutoTradeExecutionC
     | {
         enabled: number;
         mode: string;
+        paper_budget_usd: number;
         trade_amount_usd: number;
         max_open_positions: number;
         tp_pct: number;
@@ -978,22 +1097,23 @@ export function getAutoTradeExecutionConfig(userId: number): AutoTradeExecutionC
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO autotrade_execution_configs (
-        user_id, enabled, mode, trade_amount_usd, max_open_positions, tp_pct, sl_pct, trailing_stop_pct,
+        user_id, enabled, mode, paper_budget_usd, trade_amount_usd, max_open_positions, tp_pct, sl_pct, trailing_stop_pct,
         max_hold_minutes, cooldown_sec, poll_interval_sec, updated_at
-      ) VALUES (?, 0, 'paper', 25, 3, 8, 4, 3, 120, 30, 15, ?)`
+      ) VALUES (?, 0, 'paper', 100, 5, 8, 1.8, 1.0, 0.6, 20, 5, 5, ?)`
     ).run(userId, now);
 
     return {
       enabled: false,
       mode: "paper",
-      tradeAmountUsd: 25,
-      maxOpenPositions: 3,
-      tpPct: 8,
-      slPct: 4,
-      trailingStopPct: 3,
-      maxHoldMinutes: 120,
-      cooldownSec: 30,
-      pollIntervalSec: 15,
+      paperBudgetUsd: 100,
+      tradeAmountUsd: 5,
+      maxOpenPositions: 8,
+      tpPct: 1.8,
+      slPct: 1.0,
+      trailingStopPct: 0.6,
+      maxHoldMinutes: 20,
+      cooldownSec: 5,
+      pollIntervalSec: 5,
       updated_at: now
     };
   }
@@ -1001,14 +1121,15 @@ export function getAutoTradeExecutionConfig(userId: number): AutoTradeExecutionC
   return {
     enabled: Boolean(row.enabled),
     mode: row.mode === "live" ? "live" : "paper",
-    tradeAmountUsd: Number(row.trade_amount_usd || 25),
-    maxOpenPositions: Number(row.max_open_positions || 3),
-    tpPct: Number(row.tp_pct || 8),
-    slPct: Number(row.sl_pct || 4),
-    trailingStopPct: Number(row.trailing_stop_pct || 3),
-    maxHoldMinutes: Number(row.max_hold_minutes || 120),
-    cooldownSec: Number(row.cooldown_sec || 30),
-    pollIntervalSec: Number(row.poll_interval_sec || 15),
+    paperBudgetUsd: Number(row.paper_budget_usd ?? 100),
+    tradeAmountUsd: Number(row.trade_amount_usd ?? 5),
+    maxOpenPositions: Number(row.max_open_positions ?? 8),
+    tpPct: Number(row.tp_pct ?? 1.8),
+    slPct: Number(row.sl_pct ?? 1.0),
+    trailingStopPct: Number(row.trailing_stop_pct ?? 0.6),
+    maxHoldMinutes: Number(row.max_hold_minutes ?? 20),
+    cooldownSec: Number(row.cooldown_sec ?? 5),
+    pollIntervalSec: Number(row.poll_interval_sec ?? 5),
     updated_at: row.updated_at
   };
 }
@@ -1018,6 +1139,7 @@ export function putAutoTradeExecutionConfig(
   input: {
     enabled: boolean;
     mode: "paper" | "live";
+    paperBudgetUsd: number;
     tradeAmountUsd: number;
     maxOpenPositions: number;
     tpPct: number;
@@ -1031,12 +1153,13 @@ export function putAutoTradeExecutionConfig(
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO autotrade_execution_configs (
-      user_id, enabled, mode, trade_amount_usd, max_open_positions, tp_pct, sl_pct, trailing_stop_pct,
+      user_id, enabled, mode, paper_budget_usd, trade_amount_usd, max_open_positions, tp_pct, sl_pct, trailing_stop_pct,
       max_hold_minutes, cooldown_sec, poll_interval_sec, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       enabled = excluded.enabled,
       mode = excluded.mode,
+      paper_budget_usd = excluded.paper_budget_usd,
       trade_amount_usd = excluded.trade_amount_usd,
       max_open_positions = excluded.max_open_positions,
       tp_pct = excluded.tp_pct,
@@ -1050,6 +1173,7 @@ export function putAutoTradeExecutionConfig(
     userId,
     input.enabled ? 1 : 0,
     input.mode,
+    input.paperBudgetUsd,
     input.tradeAmountUsd,
     input.maxOpenPositions,
     input.tpPct,

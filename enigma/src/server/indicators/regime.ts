@@ -43,6 +43,13 @@ function strategyHint(regime: RegimeLabel): string {
   return "Wait for sufficient data";
 }
 
+function thresholdExplanation(adx: number, volatilityIndex: number, regime: RegimeLabel): string {
+  return (
+    `Thresholds: ADX>=25 indicates trend strength; Volatility Index>=60 indicates expansion. ` +
+    `Observed ADX=${adx.toFixed(2)}, Volatility Index=${volatilityIndex.toFixed(2)} -> ${regime}.`
+  );
+}
+
 export function computeMarketRegimeFromCandles(input: {
   candles: Candle[];
   atrPeriod?: number;
@@ -98,6 +105,7 @@ export function computeMarketRegimeFromCandles(input: {
       volatilityWindow,
       candleCount: (input.candles || []).length,
       atrSampleSize: vol.sampleSize
-    }
+    },
+    note: thresholdExplanation(Number(adx.adx), Number(vol.index), regime)
   };
 }

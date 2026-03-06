@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <radialGradient id="g1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(256 256) rotate(90) scale(256)">
+      <stop stop-color="#1A1538"/>
+      <stop offset="1" stop-color="#080716"/>
+    </radialGradient>
+    <linearGradient id="g2" x1="80" y1="60" x2="430" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#73E4FF"/>
+      <stop offset="0.5" stop-color="#7B5BFF"/>
+      <stop offset="1" stop-color="#C66CFF"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#g1)"/>
+  <path d="M256 62L408 150V326L256 414L104 326V150L256 62Z" stroke="url(#g2)" stroke-width="18" fill="rgba(26,21,56,0.7)" filter="url(#glow)"/>
+  <circle cx="256" cy="230" r="64" fill="url(#g2)" opacity="0.94"/>
+  <rect x="176" y="304" width="160" height="52" rx="26" fill="url(#g2)"/>
+  <text x="256" y="337" text-anchor="middle" fill="#F5F7FF" font-family="Rajdhani, Arial" font-size="34" font-weight="700">AI</text>
+</svg>

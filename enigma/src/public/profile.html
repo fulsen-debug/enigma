@@ -31,6 +31,11 @@
       </section>
 
       <section class="doc-card">
+        <h2>Connected Wallet Activity Timeline</h2>
+        <div id="signal-timeline" class="table-wrap"></div>
+      </section>
+
+      <section class="doc-card">
         <h2>Withdraw Funds</h2>
         <label for="withdraw-wallet">Destination Wallet</label>
         <input id="withdraw-wallet" type="text" placeholder="Default is your connected wallet" />
@@ -62,6 +67,7 @@
       const paymentHistory = document.querySelector("#payment-history");
       const positionHistory = document.querySelector("#position-history");
       const withdrawHistory = document.querySelector("#withdraw-history");
+      const signalTimeline = document.querySelector("#signal-timeline");
       const withdrawWallet = document.querySelector("#withdraw-wallet");
       const withdrawLamports = document.querySelector("#withdraw-lamports");
       const withdrawSubmit = document.querySelector("#withdraw-submit");
@@ -187,12 +193,65 @@
           </table>`;
       }
 
+      function renderTimeline(signals, runs) {
+        if (!signalTimeline) return;
+        const signalRows = (signals || []).map((s) => ({
+          type: "Scan",
+          time: String(s.created_at || ""),
+          mint: String(s.mint || ""),
+          status: String(s.action || "N/A"),
+          confidence: Number(s.confidence || 0) * 100,
+          score: Number(s.score || 0),
+          note: String(s.verdict || "N/A")
+        }));
+        const runRows = (runs || []).map((r) => ({
+          type: "Paper Run",
+          time: String(r.created_at || ""),
+          mint: "-",
+          status: `${String(r.mode || "paper")}`,
+          confidence: null,
+          score: Number(r.buyCandidates || 0),
+          note: `${Number(r.scannedCount || 0)} scanned, ${Number(r.buyCandidates || 0)} candidates`
+        }));
+        const rows = [...signalRows, ...runRows]
+          .filter((row) => row.time)
+          .sort((a, b) => Date.parse(b.time) - Date.parse(a.time))
+          .slice(0, 120);
+
+        if (!rows.length) {
+          signalTimeline.innerHTML = `<div class="msg">No timeline activity yet.</div>`;
+          return;
+        }
+
+        signalTimeline.innerHTML = `
+          <table class="paper-results-table">
+            <thead><tr><th>Time</th><th>Type</th><th>Mint</th><th>Status</th><th>Confidence</th><th>Score</th><th>Note</th></tr></thead>
+            <tbody>
+              ${rows
+                .map(
+                  (row) => `
+                <tr>
+                  <td>${new Date(row.time).toLocaleString()}</td>
+                  <td>${row.type}</td>
+                  <td>${row.mint === "-" ? "-" : `<code>${row.mint.slice(0, 6)}...${row.mint.slice(-6)}</code>`}</td>
+                  <td>${row.status}</td>
+                  <td>${row.confidence === null ? "-" : `${row.confidence.toFixed(1)}%`}</td>
+                  <td>${Number(row.score || 0).toFixed(2)}</td>
+                  <td>${row.note}</td>
+                </tr>`
+                )
+                .join("")}
+            </tbody>
+          </table>`;
+      }
+
       async function refreshAll() {
         const [overviewData, historyData] = await Promise.all([
           api("/api/profile/overview"),
           api("/api/profile/history")
         ]);
         renderOverview(overviewData);
+        renderTimeline(historyData.recentSignals || [], historyData.recentRuns || []);
         renderPayments(historyData.payments || []);
         renderPositions(historyData.positions || []);
         renderWithdrawals(historyData.withdrawals || []);

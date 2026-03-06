@@ -49,24 +49,29 @@
       </section>
 
       <section class="doc-card">
-        <h2>4) Trading Console: Manual Test First</h2>
+        <h2>4) Trading Console: Test Mode First</h2>
         <ol>
-          <li>Open the <code>Trading Console (Manual + Agent)</code> section.</li>
-          <li>In <code>Manual Test Flow (Paper)</code>, set decision thresholds and risk size.</li>
-          <li>Run <code>Run One Manual Test</code> before enabling any loop.</li>
-          <li>Check decisions, expected equity curve, drawdown profile, and scanner <code>Market Regime</code> context.</li>
+          <li>Open <code>Trading Console (Test + Live Agent)</code>.</li>
+          <li>Set <code>Agent Token Mint</code> (single token for both Test and Live agent loops).</li>
+          <li>In <code>Test Mode (Paper)</code>, click <code>Apply $25 Beginner Preset</code>.</li>
+          <li>Pick a tempo preset (<code>1m Scalp</code>, <code>5m Momentum</code>, or <code>15m Cycle</code>) if you want faster accumulation loops.</li>
+          <li>Optional for faster entries: enable <code>Allow CAUTION entries</code> under Advanced Test Rules.</li>
+          <li>Click <code>Run Test Mode</code> and let it run for several cycles.</li>
+          <li>Review entries/exits in <code>Trade Activity (Buy/Sell Visual)</code> and table results.</li>
         </ol>
+        <p><strong>Note:</strong> Watchlist is scanner-only.</p>
       </section>
 
       <section class="doc-card">
-        <h2>5) Autopilot Engine (PRO for Live)</h2>
+        <h2>5) Live Agent (PRO for Real Execution)</h2>
         <ol>
-          <li>Configure <code>Autopilot Execution Engine</code> (mode, size, TP/SL/trailing, hold time).</li>
-          <li>Apply an exit preset (<code>Scalp</code>, <code>Balanced</code>, <code>Swing</code>) if needed.</li>
-          <li>Run <code>Run One Engine Tick</code> first to confirm behavior.</li>
-          <li>Start <code>Start Engine Loop</code> only after stable paper outcomes.</li>
+          <li>Set <code>Trade Size USD</code>, <code>Max Open Positions</code>, and <code>Entry Check Interval</code>.</li>
+          <li>Layered same-token entries are allowed until <code>Max Open Positions</code> is reached.</li>
+          <li>Choose an exit preset (<code>Scalp</code>, <code>Balanced</code>, <code>Swing</code>).</li>
+          <li>Click <code>Run Live Agent</code> after test mode is stable.</li>
+          <li>Use <code>Stop Live Agent</code> any time to halt autonomous ticks.</li>
         </ol>
-        <p>Live mode requires PRO plan and backend live execution enabled.</p>
+        <p>Live execution requires PRO plan and backend flag <code>ENIGMA_EXECUTION_ENABLED=1</code>.</p>
       </section>
 
       <section class="doc-card">

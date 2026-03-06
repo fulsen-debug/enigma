@@ -37,6 +37,7 @@ export interface AgentTools {
       mint: string,
       options?: {
         holderLimit?: number;
+        analysisMode?: "sample" | "deep" | "full";
       }
     ): Promise<Record<string, unknown>>;
     killSwitchScore(mint: string): Promise<Record<string, unknown>>;

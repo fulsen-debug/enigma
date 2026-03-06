@@ -10,6 +10,9 @@ import {
 
 const JUP_API_BASE = "https://api.jup.ag/ultra/v1";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const BUY_INPUT_MINT = String(process.env.ENIGMA_BUY_INPUT_MINT || SOL_MINT).trim();
+let solPriceCache: { value: number; expiresAt: number } | null = null;
 
 function optionalApiKeyHeader(): Record<string, string> {
   const apiKey = String(process.env.JUPITER_API_KEY || "").trim();
@@ -72,7 +75,8 @@ async function signAndExecute(
   const transactionBase64 = String(orderResponse.transaction || "").trim();
   const requestId = String(orderResponse.requestId || "").trim();
   if (!transactionBase64 || !requestId) {
-    throw new Error("Jupiter order response missing transaction/requestId");
+    const details = JSON.stringify(orderResponse).slice(0, 240);
+    throw new Error(`Jupiter order response missing transaction/requestId: ${details}`);
   }
 
   const tx = VersionedTransaction.deserialize(Buffer.from(transactionBase64, "base64"));
@@ -91,16 +95,55 @@ async function signAndExecute(
   return executeResponse;
 }
 
+async function fetchSolUsdPrice(): Promise<number> {
+  const now = Date.now();
+  if (solPriceCache && solPriceCache.expiresAt > now) {
+    return solPriceCache.value;
+  }
+
+  const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${SOL_MINT}`, {
+    headers: { Accept: "application/json" }
+  });
+  if (!response.ok) {
+    throw new Error(`failed to fetch SOL price (HTTP ${response.status})`);
+  }
+
+  const payload = (await response.json()) as Record<string, unknown>;
+  const pairs = Array.isArray(payload.pairs) ? (payload.pairs as Array<Record<string, unknown>>) : [];
+  const solanaPairs = pairs.filter((pair) => String(pair.chainId || "") === "solana");
+  const best = solanaPairs.sort((a, b) => {
+    const la = Number((a.liquidity as Record<string, unknown> | undefined)?.usd || 0);
+    const lb = Number((b.liquidity as Record<string, unknown> | undefined)?.usd || 0);
+    return lb - la;
+  })[0];
+  const price = Number(best?.priceUsd || 0);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new Error("SOL price unavailable");
+  }
+
+  solPriceCache = { value: price, expiresAt: now + 15_000 };
+  return price;
+}
+
 export async function executeUltraBuy(input: {
   outputMint: string;
   amountUsd: number;
 }): Promise<Record<string, unknown>> {
   const wallet = traderWallet();
-  const amountNative = String(Math.max(1, Math.floor(input.amountUsd * 1_000_000)));
+  let amountNative = "0";
+  if (BUY_INPUT_MINT === USDC_MINT) {
+    amountNative = String(Math.max(1, Math.floor(input.amountUsd * 1_000_000)));
+  } else if (BUY_INPUT_MINT === SOL_MINT) {
+    const solPriceUsd = await fetchSolUsdPrice();
+    const amountSol = Math.max(0.00001, input.amountUsd / Math.max(0.00001, solPriceUsd));
+    amountNative = String(Math.max(10_000, Math.floor(amountSol * 1_000_000_000)));
+  } else {
+    throw new Error(`unsupported ENIGMA_BUY_INPUT_MINT=${BUY_INPUT_MINT}`);
+  }
 
   const orderUrl =
     `${JUP_API_BASE}/order` +
-    `?inputMint=${USDC_MINT}` +
+    `?inputMint=${BUY_INPUT_MINT}` +
     `&outputMint=${encodeURIComponent(input.outputMint)}` +
     `&amount=${amountNative}` +
     `&taker=${wallet.publicKey.toBase58()}`;
@@ -115,7 +158,7 @@ export async function executeUltraBuy(input: {
   const executeResponse = await signAndExecute(wallet, orderResponse);
   return {
     side: "BUY",
-    inputMint: USDC_MINT,
+    inputMint: BUY_INPUT_MINT,
     outputMint: input.outputMint,
     amountUsd: input.amountUsd,
     order: orderResponse,
@@ -152,7 +195,7 @@ export async function executeUltraSell(input: { mint: string }): Promise<Record<
   const orderUrl =
     `${JUP_API_BASE}/order` +
     `?inputMint=${encodeURIComponent(input.mint)}` +
-    `&outputMint=${USDC_MINT}` +
+    `&outputMint=${encodeURIComponent(BUY_INPUT_MINT)}` +
     `&amount=${amountRaw.toString()}` +
     `&taker=${wallet.publicKey.toBase58()}`;
 
@@ -167,7 +210,7 @@ export async function executeUltraSell(input: { mint: string }): Promise<Record<
   return {
     side: "SELL",
     inputMint: input.mint,
-    outputMint: USDC_MINT,
+    outputMint: BUY_INPUT_MINT,
     amountRaw: amountRaw.toString(),
     order: orderResponse,
     execution: executeResponse

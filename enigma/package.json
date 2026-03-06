@@ -17,6 +17,7 @@
     "lint": "eslint . --ext .ts",
     "test": "bash ./scripts/smoke-test.sh && npm run -s test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
+    "env:check": "bash ./scripts/check-backend-env.sh",
     "qa:extended": "bash ./scripts/extended-qa.sh",
     "qa": "npm run build && npm run test && npm run qa:extended"
   },
