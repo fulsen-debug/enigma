@@ -48,10 +48,9 @@
         <h2>3) Daily Workflow</h2>
         <ol>
           <li>Connect wallet</li>
-          <li>Build watchlist (up to 5 mints)</li>
-          <li>Run dynamic scan with interval and duration</li>
+          <li>Run a random scan or paste one token for manual scan</li>
           <li>Review verdict, Market Regime panel (Volatility Index + ADX), and risk details before considering entry</li>
-          <li>Enable alerts to detect status flips while in position</li>
+          <li>Use alerts to detect important status or risk changes while monitoring</li>
         </ol>
       </section>
 
@@ -95,14 +94,12 @@
       </section>
 
       <section class="doc-card">
-        <h2>8) Trading Console (Test + Live Agent)</h2>
+        <h2>8) Trading Console (Paper Agent)</h2>
         <ul>
-          <li>Set one <code>Agent Token Mint</code> for Test/Live agent loops. This is single-token mode.</li>
-          <li>Watchlist is scanner-only and does not drive Test/Live agent loops.</li>
-          <li>Use the beginner-safe top controls only: <code>Operating Preset</code>, <code>Run Test</code>, <code>Run Live</code>, <code>Stop</code>.</li>
-          <li><code>Beginner</code> preset is default for safer pacing, <code>Balanced</code> is medium pace, <code>Fast Scalp</code> is the highest-frequency mode.</li>
-          <li>Use <code>Run Test</code> first, then validate results in the buy/sell visual activity panel.</li>
-          <li>Use <code>Run Live</code> only after test results are stable for that agent token.</li>
+          <li>Set one <code>Agent Token Mint</code> for the paper agent loop. This is single-token mode.</li>
+          <li>Scanner and agent are separate. Scanner does quick token analysis; agent manages one selected token.</li>
+          <li>Use the top controls only: <code>Paper Budget</code>, <code>Test Amount Per Trade</code>, <code>Check Every (sec)</code>, <code>Run Test</code>, and <code>Stop</code>.</li>
+          <li>Use <code>Run Test</code>, then validate results in the buy/sell visual activity panel.</li>
           <li>Engine now uses a regime policy matrix (ADX + Volatility + liquidity/spread + holder risk) to auto-select breakout/trend/mean-revert or no-trade mode.</li>
           <li>Entry logic is multi-trigger: pullback entry, momentum continuation, and timeout fallback (reduced size) to avoid waiting forever.</li>
           <li>Position sizing is dynamic: risk-budget and stop-distance based, then reduced when volatility/spread rises.</li>
@@ -113,7 +110,7 @@
           <li>Layered same-token entries are supported up to <code>Max Open Positions</code> with <code>Open Cooldown</code> control.</li>
           <li><code>Check Every (sec)</code> controls reaction speed: lower values react faster to TP/SL/trailing events, higher values reduce API load.</li>
           <li>Engine guardrails auto-adjust invalid combinations so <code>SL</code> and <code>Trailing Stop</code> stay below <code>TP</code>.</li>
-          <li>Live execution requires PRO plan and backend flag <code>ENIGMA_EXECUTION_ENABLED=1</code>.</li>
+          <li>Live execution is not part of this first release surface.</li>
         </ul>
       </section>
 
@@ -121,9 +118,10 @@
         <h2>9) Holder Behavior Coverage Limits</h2>
         <p>The holder panel is intentionally transparent about analysis depth.</p>
         <ul>
-          <li>Buy/sell counts sample recent token-account transactions, not full wallet lifetime history.</li>
-          <li>Cluster links use recent signature overlap on top holder accounts.</li>
-          <li>Use Solscan/Birdeye for deeper historical forensic checks before large entries.</li>
+          <li>Holder concentration uses <code>getTokenLargestAccounts</code> top-20 largest token accounts through Helius-compatible RPC with standard RPC fallback.</li>
+          <li>Wallet buy/sell activity prefers <code>Helius</code> parsed wallet history when <code>HELIUS_API_KEY</code> or <code>HELIUS_API_KEYS</code> is configured; otherwise it falls back to RPC transaction parsing.</li>
+          <li>Cluster links and bundle/coordinated-risk verdicts remain AIG inference built on top of verified provider inputs.</li>
+          <li>Scanner share cards and X share text include both verified facts and inferred conclusions.</li>
         </ul>
       </section>
 

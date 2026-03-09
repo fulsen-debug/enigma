@@ -18,9 +18,25 @@ interface HolderNode {
   recentSignatures: string[];
 }
 
+interface HeliusWalletIdentity {
+  address?: string;
+  type?: string;
+  name?: string;
+  category?: string;
+  tags?: string[];
+}
+
+interface HeliusWalletFunding {
+  funder?: string;
+  funderName?: string;
+  funderType?: string;
+  timestamp?: number;
+}
+
 interface HolderActivity {
   buyTxCount: number;
   sellTxCount: number;
+  source: "helius" | "rpc";
 }
 
 interface AccountMeta {
@@ -71,6 +87,18 @@ const DEFAULT_ANALYSIS_MODE: "sample" | "deep" | "full" =
     : DEFAULT_ANALYSIS_MODE_RAW === "deep"
       ? "deep"
       : "full";
+const HELIUS_API_KEYS = unique([
+  ...String(process.env.HELIUS_API_KEYS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
+  String(process.env.HELIUS_API_KEY || "").trim()
+]);
+const HELIUS_API_KEY = HELIUS_API_KEYS[0] || "";
+const HELIUS_REST_BASE = "https://api.helius.xyz";
+const HELIUS_RPC_URLS = HELIUS_API_KEYS.map(
+  (key) => `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(key)}`
+);
 
 function parseWalletLabels(): Record<string, string> {
   const raw = String(process.env.ENIGMA_WALLET_LABELS || "").trim();
@@ -92,6 +120,46 @@ function unique(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+async function fetchJsonWithTimeout<T>(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = DEFAULT_RPC_TIMEOUT_MS
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return (await response.json()) as T;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchHeliusJson<T>(
+  pathBuilder: (apiKey: string) => string,
+  options: RequestInit = {},
+  timeoutMs = DEFAULT_RPC_TIMEOUT_MS
+): Promise<T> {
+  if (!HELIUS_API_KEYS.length) {
+    throw new Error("Missing HELIUS_API_KEY/HELIUS_API_KEYS");
+  }
+  let lastError: Error | null = null;
+  for (const apiKey of HELIUS_API_KEYS) {
+    try {
+      return await fetchJsonWithTimeout<T>(pathBuilder(apiKey), options, timeoutMs);
+    } catch (error) {
+      lastError = error as Error;
+    }
+  }
+  throw lastError || new Error("All Helius API keys failed");
+}
+
 function sanitizeRpcEndpoint(endpoint: string): string {
   try {
     const url = new URL(endpoint);
@@ -109,6 +177,7 @@ function buildRpcUrls(primaryRpcUrl?: string): string[] {
 
   const urls = unique([
     primaryRpcUrl || "",
+    ...HELIUS_RPC_URLS,
     ...configuredFallbacks,
     "https://api.mainnet-beta.solana.com"
   ]);
@@ -457,9 +526,9 @@ async function tokenAccountBuySellActivity(
       else if (delta < 0) sellTxCount += 1;
     }
 
-    return { buyTxCount, sellTxCount };
+    return { buyTxCount, sellTxCount, source: "rpc" };
   } catch {
-    return { buyTxCount: 0, sellTxCount: 0 };
+    return { buyTxCount: 0, sellTxCount: 0, source: "rpc" };
   }
 }
 
@@ -508,9 +577,107 @@ async function ownerAddressBuySellActivity(
       else if (delta < 0) sellTxCount += 1;
     }
 
-    return { buyTxCount, sellTxCount };
+    return { buyTxCount, sellTxCount, source: "rpc" };
   } catch {
-    return { buyTxCount: 0, sellTxCount: 0 };
+    return { buyTxCount: 0, sellTxCount: 0, source: "rpc" };
+  }
+}
+
+async function heliusBatchWalletIdentity(
+  owners: string[]
+): Promise<Record<string, HeliusWalletIdentity>> {
+  if (!HELIUS_API_KEYS.length || owners.length === 0) return {};
+  try {
+    const json = await fetchHeliusJson<{
+      wallets?: Array<Record<string, unknown>>;
+      data?: Array<Record<string, unknown>>;
+    }>(
+      (apiKey) =>
+        `${HELIUS_REST_BASE}/v1/wallet/batch-identity?api-key=${encodeURIComponent(apiKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ addresses: owners })
+      }
+    );
+    const items = Array.isArray(json.wallets) ? json.wallets : Array.isArray(json.data) ? json.data : [];
+    const out: Record<string, HeliusWalletIdentity> = {};
+    items.forEach((item) => {
+      const address = String(item.address || item.wallet || "").trim();
+      if (!address) return;
+      out[address] = {
+        address,
+        type: String(item.type || item.walletType || "").trim() || undefined,
+        name: String(item.name || item.label || "").trim() || undefined,
+        category: String(item.category || item.classification || "").trim() || undefined,
+        tags: Array.isArray(item.tags) ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean) : undefined
+      };
+    });
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function heliusWalletFunding(address: string): Promise<HeliusWalletFunding | null> {
+  if (!HELIUS_API_KEYS.length || !address) return null;
+  try {
+    const json = await fetchHeliusJson<Record<string, unknown>>(
+      (apiKey) =>
+        `${HELIUS_REST_BASE}/v1/wallet/${address}/funded-by?api-key=${encodeURIComponent(apiKey)}`,
+      { headers: { accept: "application/json" } }
+    );
+    const data = (json.data as Record<string, unknown> | undefined) || json;
+    return {
+      funder: String(data.funder || data.address || "").trim() || undefined,
+      funderName: String(data.funderName || data.name || data.label || "").trim() || undefined,
+      funderType: String(data.funderType || data.type || "").trim() || undefined,
+      timestamp: Number(data.timestamp || data.time || 0) || undefined
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function heliusOwnerBuySellActivity(
+  owner: string,
+  mint: string,
+  limit: number
+): Promise<HolderActivity | null> {
+  if (!HELIUS_API_KEYS.length || !owner || !mint) return null;
+  try {
+    const json = await fetchHeliusJson<Array<Record<string, unknown>>>(
+      (apiKey) =>
+        `${HELIUS_REST_BASE}/v0/addresses/${owner}/transactions?api-key=${encodeURIComponent(
+          apiKey
+        )}&limit=${Math.max(5, Math.min(100, limit))}`,
+      { headers: { accept: "application/json" } },
+      Math.max(DEFAULT_RPC_TIMEOUT_MS, 15000)
+    );
+
+    let buyTxCount = 0;
+    let sellTxCount = 0;
+    json.forEach((entry) => {
+      const tokenTransfers = Array.isArray(entry.tokenTransfers)
+        ? (entry.tokenTransfers as Array<Record<string, unknown>>)
+        : [];
+      let buySeen = false;
+      let sellSeen = false;
+      tokenTransfers.forEach((transfer) => {
+        const transferMint = String(transfer.mint || "").trim();
+        if (transferMint !== mint) return;
+        const fromUser = String(transfer.fromUserAccount || transfer.fromTokenAccount || "").trim();
+        const toUser = String(transfer.toUserAccount || transfer.toTokenAccount || "").trim();
+        if (toUser === owner) buySeen = true;
+        if (fromUser === owner) sellSeen = true;
+      });
+      if (buySeen) buyTxCount += 1;
+      if (sellSeen) sellTxCount += 1;
+    });
+
+    return { buyTxCount, sellTxCount, source: "helius" };
+  } catch {
+    return null;
   }
 }
 
@@ -567,6 +734,7 @@ export function createOnchainTool(rpcUrl?: string) {
   const primaryRpc = rpc.urls[0];
   const knownWalletLabels = parseWalletLabels();
   const riskCache = new Map<string, { expiresAt: number; data: Record<string, unknown> }>();
+  const heliusFundingCache = new Map<string, Promise<HeliusWalletFunding | null>>();
 
   return {
     async riskSignals(
@@ -581,11 +749,11 @@ export function createOnchainTool(rpcUrl?: string) {
           mint,
           concentrationRisk: "unknown",
           suspiciousPatterns: [],
-          note: "Missing SOLANA_RPC_URL/HELIUS_API_KEY; returning placeholder signals."
+          note: "Missing SOLANA_RPC_URL/HELIUS_API_KEY/HELIUS_API_KEYS; returning placeholder signals."
         };
       }
 
-      const holderLimit = Math.min(50, Math.max(8, Number(options?.holderLimit || 10)));
+      const holderLimit = Math.min(20, Math.max(8, Number(options?.holderLimit || 10)));
       const requestedMode = String(options?.analysisMode || "").trim().toLowerCase();
       const analysisMode: "sample" | "deep" | "full" =
         requestedMode === "sample"
@@ -683,6 +851,9 @@ export function createOnchainTool(rpcUrl?: string) {
           rpc.call,
           Array.from(new Set(holderNodes.map((holder) => holder.owner)))
         );
+        const ownerIdentities = await heliusBatchWalletIdentity(
+          Array.from(new Set(holderNodes.map((holder) => holder.owner)))
+        );
         const lpCandidateTokenAccount = pickLpCandidateTokenAccount({
           holders: holderNodes,
           totalSupply,
@@ -692,6 +863,9 @@ export function createOnchainTool(rpcUrl?: string) {
         const top3WithLp = largestAccounts.value.slice(0, 3);
         const topRawWithLp = top3WithLp.reduce((sum, holder) => sum + Number(holder.amount || 0), 0);
         const top3WithLpPct = pct(topRawWithLp, totalSupply);
+        const lpCandidateOwner = holderNodes.find(
+          (holder) => holder.tokenAccount === lpCandidateTokenAccount
+        )?.owner || "";
         const top10WithLp = largestAccounts.value.slice(0, 10);
         const top10RawWithLp = top10WithLp.reduce((sum, holder) => sum + Number(holder.amount || 0), 0);
         const top10WithLpPct = pct(top10RawWithLp, totalSupply);
@@ -709,22 +883,28 @@ export function createOnchainTool(rpcUrl?: string) {
           (sum, holder) => sum + Number(holder.amount || 0),
           0
         );
-        const top10Pct = pct(top10RawExcludingLp, totalSupply);
+        let top10Pct = pct(top10RawExcludingLp, totalSupply);
+        const top20WithLp = largestAccounts.value.slice(0, 20);
+        const top20RawWithLp = top20WithLp.reduce((sum, holder) => sum + Number(holder.amount || 0), 0);
+        const top20WithLpPct = pct(top20RawWithLp, totalSupply);
+        const top20ExcludingLp = concentrationPool.slice(0, 20);
+        const top20RawExcludingLp = top20ExcludingLp.reduce(
+          (sum, holder) => sum + Number(holder.amount || 0),
+          0
+        );
+        const top20Pct = pct(top20RawExcludingLp, totalSupply);
 
         let concentrationRisk = "low";
-        if (top10Pct >= 80) concentrationRisk = "high";
-        else if (top10Pct >= 55) concentrationRisk = "medium";
-        if (top10Pct >= 80) riskFlags.push("Top-10 holder concentration (excluding LP candidate) is elevated");
-        if (!lpCandidateTokenAccount) {
-          riskFlags.push("LP candidate not confidently identified; concentration may include LP account");
-        }
 
         const freshHolders = holderNodes.filter(
           (holder) => holder.walletAgeDays !== null && holder.walletAgeDays <= 14
         );
         const freshRaw = freshHolders.reduce((sum, holder) => sum + holder.amountRaw, 0);
 
-        const groups = connectedGroups(holderNodes).filter((group) => group.length >= 2);
+        const holderNodesExcludingLp = lpCandidateTokenAccount
+          ? holderNodes.filter((holder) => holder.tokenAccount !== lpCandidateTokenAccount)
+          : holderNodes;
+        const groups = connectedGroups(holderNodesExcludingLp).filter((group) => group.length >= 2);
         const connectedAccounts = groups.flat();
         const connectedRaw = connectedAccounts.reduce((sum, holder) => sum + holder.amountRaw, 0);
         const groupByOwner = new Map<string, number>();
@@ -749,12 +929,17 @@ export function createOnchainTool(rpcUrl?: string) {
             walletAgeSignatureSamplePerOwner: signatureSamplePerAccount,
             mode: analysisMode,
             fullHistory: false,
+            dataSources: {
+              topHolders: HELIUS_API_KEY ? "helius-rpc-top20" : "rpc-top20",
+              holderActivity: HELIUS_API_KEY ? "helius+rpc" : "rpc",
+              walletLabels: HELIUS_API_KEY ? "helius+heuristic" : "heuristic"
+            },
             note:
               analysisMode === "full"
                 ? "Full holder mode: scans holder owner-address history across available RPC pages for analyzed holders. Data may still be bounded by RPC/provider retention and configured caps."
                 : analysisMode === "deep"
-                  ? "Deep holder review mode: wallet age and buy/sell counts scan older owner-address signatures with pagination, but still not complete lifetime history."
-                  : "Fast scan mode: behavior metrics are sampled from recent token-account activity and are not full lifetime wallet history."
+                  ? "Deep holder review mode: uses Helius parsed wallet history when available, with RPC fallback. Coverage can still be bounded by provider retention."
+                  : "Fast scan mode: holder concentration uses Helius-compatible getTokenLargestAccounts top-20 accounts with RPC fallback; wallet activity prefers Helius parsed history with RPC fallback."
           },
           connectedGroups: groups.map((group, idx) => ({
             id: idx + 1,
@@ -772,8 +957,13 @@ export function createOnchainTool(rpcUrl?: string) {
 
         const activityByTokenAccount = await Promise.all(
           holderNodes.slice(0, buySellHolderLimit).map(async (holder) => {
+            const heliusActivity =
+              analysisMode === "sample" || analysisMode === "deep" || analysisMode === "full"
+                ? await heliusOwnerBuySellActivity(holder.owner, mint, buySellSignatureLimit)
+                : null;
             const activity =
-              analysisMode === "deep" || analysisMode === "full"
+              heliusActivity ||
+              (analysisMode === "deep" || analysisMode === "full"
                 ? await ownerAddressBuySellActivity(
                     rpc.call,
                     holder.owner,
@@ -784,7 +974,7 @@ export function createOnchainTool(rpcUrl?: string) {
                     rpc.call,
                     holder.tokenAccount,
                     buySellSignatureLimit
-                  );
+                  ));
             return { tokenAccount: holder.tokenAccount, activity };
           })
         );
@@ -798,7 +988,11 @@ export function createOnchainTool(rpcUrl?: string) {
           const connectedGroupId = groupByOwner.get(holder.owner) || 0;
           const isLpCandidate =
             Boolean(lpCandidateTokenAccount) && holder.tokenAccount === lpCandidateTokenAccount;
-          const activity = activityMap.get(holder.tokenAccount) || { buyTxCount: 0, sellTxCount: 0 };
+          const activity = activityMap.get(holder.tokenAccount) || { buyTxCount: 0, sellTxCount: 0, source: "rpc" as const };
+          if (!heliusFundingCache.has(holder.owner)) {
+            heliusFundingCache.set(holder.owner, heliusWalletFunding(holder.owner));
+          }
+          const identity = ownerIdentities[holder.owner];
           const walletLabel = inferWalletSource({
             configuredLabel: knownWalletLabels[holder.owner],
             owner: holder.owner,
@@ -826,15 +1020,102 @@ export function createOnchainTool(rpcUrl?: string) {
             tokenAccount: holder.tokenAccount,
             amountUi: holder.amountUi,
             amountPct,
+            isLpCandidate,
             walletAgeDays: holder.walletAgeDays,
             connectedGroupId,
             recentTxCount: holder.recentSignatures.length,
             walletSource: walletLabel,
+            walletSourceProvider:
+              knownWalletLabels[holder.owner] ? "configured" : identity?.name ? "helius-identity" : "heuristic",
             buyTxCount: activity.buyTxCount,
             sellTxCount: activity.sellTxCount,
+            activitySource: activity.source,
             tags
           };
         });
+
+        const fundingResults = await Promise.all(
+          holderProfiles.map(async (holder) => ({
+            owner: holder.owner,
+            funding: (await heliusFundingCache.get(holder.owner)) || null
+          }))
+        );
+        const fundingByOwner = new Map(
+          fundingResults.map((entry) => [entry.owner, entry.funding])
+        );
+        holderProfiles.forEach((holder) => {
+          const identity = ownerIdentities[holder.owner];
+          const funding = fundingByOwner.get(holder.owner);
+          if (!knownWalletLabels[holder.owner] && identity?.name) {
+            holder.walletSource = identity.name;
+            holder.walletSourceProvider = "helius-identity";
+          } else if (!knownWalletLabels[holder.owner] && funding?.funderName) {
+            holder.walletSource = funding.funderName;
+            holder.walletSourceProvider = "helius-funded-by";
+          }
+        });
+
+        if (top10Pct >= 80) concentrationRisk = "high";
+        else if (top10Pct >= 55) concentrationRisk = "medium";
+        if (top10Pct >= 80) riskFlags.push("Top-10 holder concentration (excluding LP candidate) is elevated");
+        if (!lpCandidateTokenAccount) {
+          riskFlags.push("LP candidate not confidently identified; concentration may include LP account");
+        }
+
+        const sourceBreakdownMap = new Map<string, { label: string; holderCount: number; holdPct: number }>();
+        holderProfiles.forEach((holder) => {
+          const label = String(holder.walletSource || "unattributed-wallet").trim() || "unattributed-wallet";
+          const key = label.toLowerCase();
+          const current = sourceBreakdownMap.get(key) || { label, holderCount: 0, holdPct: 0 };
+          current.holderCount += 1;
+          current.holdPct += Number(holder.amountPct || 0);
+          sourceBreakdownMap.set(key, current);
+        });
+        const fundingSourceBreakdown = Array.from(sourceBreakdownMap.entries())
+          .map(([, stats]) => ({
+            source: stats.label,
+            holderCount: stats.holderCount,
+            holdPct: Number(stats.holdPct.toFixed(2))
+          }))
+          .sort((a, b) => b.holdPct - a.holdPct);
+
+        const topClusterPct = Number(
+          Math.max(
+            0,
+            ...holderBehavior.connectedGroups.map((group) => Number(group.holdPct || 0))
+          ).toFixed(2)
+        );
+        const bundledBuyerCount = holderProfiles.filter(
+          (holder) =>
+            !holder.isLpCandidate &&
+            Number(holder.connectedGroupId || 0) > 0 &&
+            (String(holder.walletSource || "").includes("clustered") || (holder.tags || []).includes("new-wallet"))
+        ).length;
+        let bundleRiskScore = 0;
+        bundleRiskScore += Math.min(30, top10Pct * 0.18);
+        bundleRiskScore += Math.min(28, Number(holderBehavior.connectedHolderPct || 0) * 0.7);
+        bundleRiskScore += Math.min(18, Number(holderBehavior.newWalletHolderPct || 0) * 0.45);
+        bundleRiskScore += Math.min(16, topClusterPct * 0.45);
+        if (!lpCandidateTokenAccount) bundleRiskScore += 6;
+        if (bundledBuyerCount >= 4) bundleRiskScore += 8;
+        bundleRiskScore = Math.max(0, Math.min(100, Math.round(bundleRiskScore)));
+        const bundleRiskVerdict =
+          bundleRiskScore >= 70 ? "HIGH" : bundleRiskScore >= 45 ? "CAUTION" : "LOW";
+        const bundleRiskReasons: string[] = [];
+        if (topClusterPct >= 20) bundleRiskReasons.push(`largest linked cluster controls ${topClusterPct.toFixed(2)}%`);
+        if (Number(holderBehavior.connectedHolderPct || 0) >= 20) {
+          bundleRiskReasons.push(
+            `connected holders control ${Number(holderBehavior.connectedHolderPct || 0).toFixed(2)}%`
+          );
+        }
+        if (Number(holderBehavior.newWalletHolderPct || 0) >= 12) {
+          bundleRiskReasons.push(
+            `${Number(holderBehavior.newWalletHolderPct || 0).toFixed(2)}% held by new wallets`
+          );
+        }
+        if (!lpCandidateTokenAccount) {
+          bundleRiskReasons.push("LP account not confidently separated from top holders");
+        }
 
         if (holderBehavior.newWalletHolderPct >= 20) {
           riskFlags.push("High share held by recently observed wallets");
@@ -851,16 +1132,27 @@ export function createOnchainTool(rpcUrl?: string) {
           top3HolderSharePctWithLp: Number(top3WithLpPct.toFixed(2)),
           top10HolderSharePct: Number(top10Pct.toFixed(2)),
           top10HolderSharePctWithLp: Number(top10WithLpPct.toFixed(2)),
+          top20HolderSharePct: Number(top20Pct.toFixed(2)),
+          top20HolderSharePctWithLp: Number(top20WithLpPct.toFixed(2)),
           concentrationWindow: "top10",
           concentrationMode: lpCandidateTokenAccount
             ? "top10_excluding_lp_candidate"
             : "top10_lp_candidate_unconfirmed",
           lpCandidateTokenAccount: lpCandidateTokenAccount || null,
+          lpCandidateOwner: lpCandidateOwner || null,
+          concentrationSource: HELIUS_API_KEY ? "helius-rpc-top20" : "rpc-top20",
+          analyzedHolderCount: largestAccounts.value.length,
           totalSupplyRaw: totalSupply,
           hasMintAuthority,
           hasFreezeAuthority,
           mintAuthority,
           freezeAuthority,
+          topClusterHolderSharePct: topClusterPct,
+          topClusterMode: lpCandidateTokenAccount ? "excluding_lp_candidate" : "lp_candidate_unconfirmed",
+          fundingSourceBreakdown,
+          bundleRiskScore,
+          bundleRiskVerdict,
+          bundleRiskReasons,
           holderBehavior,
           holderProfiles,
           sampleTopHolders: largestAccounts.value.slice(0, 8)
@@ -965,7 +1257,7 @@ export function createOnchainTool(rpcUrl?: string) {
 
     async rpcHealth(): Promise<Record<string, unknown>> {
       if (!primaryRpc) {
-        return { ok: false, message: "Missing SOLANA_RPC_URL/HELIUS_API_KEY" };
+        return { ok: false, message: "Missing SOLANA_RPC_URL/HELIUS_API_KEY/HELIUS_API_KEYS" };
       }
 
       const endpoint = sanitizeRpcEndpoint(primaryRpc);

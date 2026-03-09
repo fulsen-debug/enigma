@@ -16,8 +16,16 @@ function resolveRpcUrl(config: AgentConfig): string | undefined {
     return process.env.SOLANA_RPC_URL;
   }
 
-  if (process.env.HELIUS_API_KEY) {
-    return `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
+  const heliusKeys = [
+    ...String(process.env.HELIUS_API_KEYS || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    String(process.env.HELIUS_API_KEY || "").trim()
+  ].filter(Boolean);
+
+  if (heliusKeys.length) {
+    return `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(heliusKeys[0])}`;
   }
 
   return config.onchain?.rpcUrl;

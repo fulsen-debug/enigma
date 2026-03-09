@@ -29,7 +29,6 @@
             <img
               class="brand-logo"
               src="/assets/icon.png"
-              data-logo-png="/assets/logo-mark.png"
               alt="AI Guardian logo"
               onerror="this.style.display='none'; this.parentElement.classList.add('brand-logo-missing');"
             />
@@ -52,12 +51,12 @@
 
         <section class="panel workspace-scanner">
           <h2>2) Scanner Tools</h2>
-          <p class="muted small">Use Random Token Ideas to build the scan set. Manual scan runs one token instantly.</p>
+          <p class="muted small">Scanner runs one token at a time. Use random scan or manual token scan.</p>
 
           <div class="watchlist-tools">
             <h3 class="watchlist-tools-title">Random + Manual Tools</h3>
             <div class="watchlist-tools-inner">
-              <button id="discover-tokens" class="secondary">Add Random Token Ideas</button>
+              <button id="discover-tokens" class="secondary">Scan Random Token</button>
               <div id="discovery-list" class="discovery-list"></div>
 
               <label for="manual-mint">Manual token scan</label>
@@ -70,34 +69,13 @@
         </section>
 
         <section class="panel workspace-scanner">
-          <h2>3) Scan Controls</h2>
-          <label for="scanner-run-mode">Scanner mode</label>
-          <select id="scanner-run-mode">
-            <option value="manual" selected>Manual scan (available)</option>
-            <option value="dynamic">Dynamic scan (premium)</option>
-          </select>
-          <p id="scanner-mode-note" class="small muted">Manual mode active. Use Scanner Tools -> Manual token scan.</p>
-          <div id="dynamic-scan-controls">
-          <label for="scan-speed">Standard scan speed</label>
-          <select id="scan-speed">
-            <option value="15">Fast (15s)</option>
-            <option value="30" selected>Standard (30s)</option>
-            <option value="60">Calm (60s)</option>
-            <option value="custom">Custom</option>
-          </select>
-          <label for="scan-seconds">Refresh interval (seconds)</label>
-          <input id="scan-seconds" type="number" min="10" max="3600" value="30" />
-          <p id="scan-speed-note" class="small muted">Standard = 30 seconds per scan batch.</p>
-          <label for="scan-hours">Run duration (hours, max 24)</label>
-          <input id="scan-hours" type="number" min="1" max="24" value="24" />
-          <button id="start-scan">Start Dynamic Scan</button>
-          <button id="stop-scan" class="secondary">Stop Scan</button>
-          </div>
+          <h2>3) Scanner Scope</h2>
+          <p id="scanner-mode-note" class="small muted">Scanner Workspace is one-token-at-a-time in this first release. Use Random Scan or Manual token scan. Holder behavior uses rolling recent transactions, not full lifetime wallet history.</p>
         </section>
 
         <section class="panel workspace-scanner">
           <h2>4) Alerts</h2>
-          <p class="muted">Get immediate warnings for status flips during dynamic scans.</p>
+          <p class="muted">Get immediate warnings when signal status or risk posture changes during scanner and agent activity.</p>
           <label class="checkbox-row"><input id="alert-favorable" type="checkbox" checked /> Favorable alerts</label>
           <label class="checkbox-row"><input id="alert-high-risk" type="checkbox" checked /> High-risk alerts</label>
           <label class="checkbox-row"><input id="alert-sound" type="checkbox" checked /> Sound buzz</label>
@@ -150,7 +128,7 @@
             <button id="show-agent-workspace" class="secondary workspace-toggle-btn">Agent Workspace</button>
             <button id="show-profile-workspace" class="secondary workspace-toggle-btn">Profile & History</button>
           </div>
-          <p id="workspace-summary" class="small muted">Scanner workspace: add random tokens, run scans, and review risk cards.</p>
+          <p id="workspace-summary" class="small muted">Scanner workspace: run one-token random/manual scans and review risk cards.</p>
         </section>
 
         <section class="panel workspace-profile">
@@ -200,7 +178,7 @@
         </section>
 
         <section class="panel workspace-scanner">
-          <h2>Watchlist Heatmap</h2>
+          <h2>Scan Heatmap</h2>
           <div id="heatmap-strip" class="heatmap-strip"></div>
         </section>
 
@@ -243,7 +221,7 @@
           <p class="muted">
             Paper-only flow: Run starts autonomous monitoring for 1 Agent Token, Stop ends the loop.
           </p>
-          <p class="small muted">Watchlist is scanner-only. Test Mode and Live Agent trade logic uses the Agent Token set below (1 token only).</p>
+          <p class="small muted">Scanner and agent token inputs are separate. Test Mode and Live Agent use the Agent Token set below (1 token only).</p>
 
           <div class="agent-target-row">
             <div>
@@ -276,180 +254,62 @@
             </section>
 
             <section class="agent-simple-controls">
-              <h3>Quick Start Controls</h3>
-              <p class="small muted">Run Test now executes all 3 models each cycle (Safe, Balanced, Fast) for one token.</p>
-              <div class="agent-quick-steps">
-                <span class="step-chip">1) Save Token</span>
-                <span class="step-chip">2) Choose Preset</span>
-                <span class="step-chip">3) Run Test</span>
-              </div>
+              <h3>AIG Autopilot</h3>
+              <p class="small muted">
+                Single-model paper trader. Set your total budget, amount per trade, and check cadence. AIG Core handles entries, exits, and pauses automatically.
+              </p>
               <div class="trade-config-grid">
                 <div>
-                  <label for="agent-operating-preset">Operating Profile</label>
-                  <select id="agent-operating-preset">
-                    <option value="beginner">Conservative</option>
-                    <option value="balanced">Balanced</option>
-                    <option value="fast_scalp">Fast</option>
-                  </select>
+                  <label for="paper-budget">Paper Budget (USD)</label>
+                  <input id="paper-budget" type="number" min="10" max="1000000" value="100" />
+                </div>
+                <div>
+                  <label for="paper-max-position">Test Amount Per Trade (USD)</label>
+                  <input id="paper-max-position" type="number" min="1" max="50000" value="25" />
+                </div>
+                <div>
+                  <label for="paper-interval">Check Every (sec)</label>
+                  <input id="paper-interval" type="number" min="10" max="3600" value="30" />
                 </div>
               </div>
               <div class="paper-actions">
                 <button id="agent-run-test">Run Test</button>
                 <button id="agent-stop-all" class="secondary">Stop</button>
               </div>
+              <p class="small muted">
+                Trade Activity shows actual paper BUY and SELL fills, win/loss count, realized PnL, unrealized PnL, and any current block reason.
+              </p>
             </section>
           </div>
+          <div class="agent-hidden-rule-inputs" aria-hidden="true" hidden>
+            <input id="paper-min-pattern" type="number" min="0" max="95" value="68" />
+            <input id="paper-min-confidence" type="number" min="0.1" max="0.99" step="0.01" value="0.72" />
+            <input id="paper-max-connected" type="number" min="1" max="80" value="25" />
+            <input id="paper-allow-caution" type="checkbox" checked />
+            <input id="paper-allow-high-risk" type="checkbox" />
+            <input id="engine-amount" type="number" min="1" max="50000" value="25" />
+            <input id="engine-max-open" type="number" min="1" max="50" value="1" />
+            <input id="engine-poll" type="number" min="2" max="3600" value="15" />
+            <input id="engine-tp" type="number" min="0.2" max="200" step="0.1" value="8" />
+            <input id="engine-sl" type="number" min="0.2" max="99" step="0.1" value="4" />
+            <input id="engine-trailing" type="number" min="0.1" max="99" step="0.1" value="3" />
+            <input id="engine-hold-minutes" type="number" min="1" max="10080" value="120" />
+            <input id="engine-cooldown" type="number" min="0" max="86400" value="30" />
+            <button id="paper-start-loop" type="button">Run Test Mode</button>
+            <button id="paper-stop-loop" type="button">Stop Test Mode</button>
+            <button id="engine-start-loop" type="button">Live Agent (Disabled)</button>
+            <button id="engine-stop-loop" type="button">Stop Live Agent</button>
+          </div>
 
-          <details class="trade-advanced agent-advanced-panel">
-            <summary>Advanced Agent Controls (Optional)</summary>
-            <div class="quick-amount-row agent-tempo-row">
-              <span class="small muted">Quick Trading Tempo</span>
-              <div class="quick-amount-buttons">
-                <button type="button" class="secondary quick-amount-btn" data-agent-tempo="scalp_1m">1m Scalp</button>
-                <button type="button" class="secondary quick-amount-btn" data-agent-tempo="momentum_5m">5m Momentum</button>
-                <button type="button" class="secondary quick-amount-btn" data-agent-tempo="cycle_15m">15m Cycle</button>
+          <div id="engine-summary" class="msg agent-engine-summary">Engine idle.</div>
+
+          <section class="trade-advanced agent-activity-panel agent-monitor-panel">
+            <div class="agent-monitor-header">
+              <div>
+                <h3>Paper Trade Monitor</h3>
+                <p class="small muted">Live paper monitoring for executed BUY/SELL actions, realized PnL, open positions, and latest token analysis.</p>
               </div>
             </div>
-            <p class="small muted">
-              Tempo preset updates test/live check interval, open cooldown, exit rules, and max open slots.
-            </p>
-
-            <div class="trade-console-grid">
-              <article class="trade-console-card">
-                <h3>Test Mode (Paper)</h3>
-                <p class="small muted">
-                  Automatic simulation: scans your Agent Token by interval and simulates buy/sell decisions. No real money is used.
-                </p>
-                <div class="quick-amount-row">
-                  <span class="small muted">Test Risk Size</span>
-                  <div class="quick-amount-buttons" data-target-input="paper-max-position">
-                    <button type="button" class="secondary quick-amount-btn" data-amount="25">$25</button>
-                    <button type="button" class="secondary quick-amount-btn" data-amount="50">$50</button>
-                    <button type="button" class="secondary quick-amount-btn" data-amount="100">$100</button>
-                  </div>
-                </div>
-                <div class="trade-config-grid">
-                  <div>
-                    <label for="paper-max-position">Test Amount Per Trade (USD)</label>
-                    <input id="paper-max-position" type="number" min="1" max="50000" value="25" />
-                  </div>
-                  <div>
-                    <label for="paper-budget">Paper Budget (USD)</label>
-                    <input id="paper-budget" type="number" min="10" max="1000000" value="100" />
-                  </div>
-                  <div>
-                    <label for="paper-interval">Check Every (sec)</label>
-                    <input id="paper-interval" type="number" min="10" max="3600" value="30" />
-                  </div>
-                </div>
-                <p class="small muted">
-                  Auto-comparison mode: every cycle runs ENIGMA Safe, ENIGMA Balanced, and ENIGMA Fast.
-                </p>
-                <div class="agent-hidden-rule-inputs" aria-hidden="true">
-                  <div class="trade-config-grid">
-                    <div>
-                      <label for="paper-min-pattern">Minimum Quality Score (0 = Off)</label>
-                      <input id="paper-min-pattern" type="number" min="0" max="95" value="74" />
-                    </div>
-                    <div>
-                      <label for="paper-min-confidence">Minimum Confidence (0-1)</label>
-                      <input id="paper-min-confidence" type="number" min="0.1" max="0.99" step="0.01" value="0.78" />
-                    </div>
-                    <div>
-                      <label for="paper-max-connected">Maximum Connected Wallet %</label>
-                      <input id="paper-max-connected" type="number" min="1" max="80" value="20" />
-                    </div>
-                  </div>
-                  <label class="checkbox-row">
-                    <input id="paper-allow-caution" type="checkbox" />
-                    Allow CAUTION entries (faster, higher risk)
-                  </label>
-                  <label class="checkbox-row">
-                    <input id="paper-allow-high-risk" type="checkbox" />
-                    Allow HIGH_RISK entries (extreme risk, force execution)
-                  </label>
-                </div>
-                <div class="paper-actions legacy-action">
-                  <button id="paper-start-loop">Run Test Mode</button>
-                  <button id="paper-stop-loop" class="secondary">Stop Test Mode</button>
-                </div>
-              </article>
-
-              <article class="trade-console-card" style="display:none" aria-hidden="true">
-                <h3>Live Mode (Agent)</h3>
-                <p class="small muted">
-                  Automatic agent loop: scans your Agent Token and applies open/close rules continuously. Live execution needs PRO + execution enabled.
-                </p>
-                <div class="trade-config-grid">
-                  <div>
-                    <label for="engine-amount">Trade Size USD</label>
-                    <input id="engine-amount" type="number" min="1" max="50000" value="25" />
-                  </div>
-                  <div>
-                    <label for="engine-max-open">Max Open Positions</label>
-                    <input id="engine-max-open" type="number" min="1" max="50" value="3" />
-                  </div>
-                  <div>
-                    <label for="engine-poll">Entry Check Interval (sec)</label>
-                    <input id="engine-poll" type="number" min="2" max="3600" value="15" />
-                  </div>
-                </div>
-                <div class="quick-amount-row">
-                  <span class="small muted">Quick Trade Size</span>
-                  <div class="quick-amount-buttons" data-target-input="engine-amount">
-                    <button type="button" class="secondary quick-amount-btn" data-amount="25">$25</button>
-                    <button type="button" class="secondary quick-amount-btn" data-amount="50">$50</button>
-                    <button type="button" class="secondary quick-amount-btn" data-amount="100">$100</button>
-                  </div>
-                </div>
-                <div class="quick-amount-row">
-                  <span class="small muted">Exit Strategy Presets</span>
-                  <div class="quick-amount-buttons">
-                    <button type="button" class="secondary quick-amount-btn" data-engine-preset="scalp">Scalp</button>
-                    <button type="button" class="secondary quick-amount-btn" data-engine-preset="balanced">Balanced</button>
-                    <button type="button" class="secondary quick-amount-btn" data-engine-preset="swing">Swing</button>
-                  </div>
-                </div>
-                <details class="trade-advanced">
-                  <summary>Advanced Live Exit Rules</summary>
-                  <div class="trade-config-grid">
-                    <div>
-                      <label for="engine-tp">Take Profit %</label>
-                      <input id="engine-tp" type="number" min="0.2" max="200" step="0.1" value="8" />
-                    </div>
-                    <div>
-                      <label for="engine-sl">Stop Loss %</label>
-                      <input id="engine-sl" type="number" min="0.2" max="99" step="0.1" value="4" />
-                    </div>
-                    <div>
-                      <label for="engine-trailing">Trailing Stop %</label>
-                      <input id="engine-trailing" type="number" min="0.1" max="99" step="0.1" value="3" />
-                    </div>
-                    <div>
-                      <label for="engine-hold-minutes">Max Hold Minutes</label>
-                      <input id="engine-hold-minutes" type="number" min="1" max="10080" value="120" />
-                    </div>
-                    <div>
-                      <label for="engine-cooldown">Open Cooldown (sec)</label>
-                      <input id="engine-cooldown" type="number" min="0" max="86400" value="30" />
-                    </div>
-                  </div>
-                </details>
-                <div class="paper-actions legacy-action">
-                  <button id="engine-start-loop">Run Live Agent</button>
-                  <button id="engine-stop-loop" class="secondary">Stop Live Agent</button>
-                </div>
-                <div id="engine-summary" class="msg">Engine idle.</div>
-              </article>
-            </div>
-
-            <p class="small muted execution-note">
-              Logic order: scan -> policy gate -> candidate selection -> buy/sell execution rules. Paper mode only.
-            </p>
-          </details>
-
-          <details class="trade-advanced agent-activity-panel">
-            <summary>Activity & History (Optional)</summary>
             <div class="agent-history-grid">
               <div class="agent-activity-section">
                 <h3>Test Simulation History</h3>
@@ -481,7 +341,7 @@
               <h3>Latest Scanner Report (Agent Token)</h3>
               <div id="agent-scanner-summary" class="table-wrap"></div>
             </div>
-          </details>
+          </section>
         </section>
 
         <section class="panel workspace-shared">
@@ -495,8 +355,12 @@
     <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
     <div id="fullscreen-loader" class="fullscreen-loader" hidden aria-hidden="true">
       <div class="fullscreen-loader-card" role="status" aria-live="assertive" aria-atomic="true">
-        <div class="fullscreen-loader-spinner" aria-hidden="true"></div>
-        <h3>Processing</h3>
+        <div class="fullscreen-loader-visual" aria-hidden="true">
+          <span class="fullscreen-loader-halo"></span>
+          <img id="fullscreen-loader-logo" class="fullscreen-loader-logo" src="/assets/icon.png" alt="" />
+          <span class="fullscreen-loader-spinner"></span>
+        </div>
+        <h3>AI Guardian Processing</h3>
         <p id="fullscreen-loader-text">Crunching scanner data...</p>
       </div>
     </div>

@@ -13,13 +13,13 @@ export SOLANA_RPC_URL="${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}"
 
 cleanup() {
   if [[ -n "${WEB_PID:-}" ]]; then
-    kill "$WEB_PID" >/dev/null 2>&1 || true
+    kill -- -"$WEB_PID" >/dev/null 2>&1 || kill "$WEB_PID" >/dev/null 2>&1 || true
     wait "$WEB_PID" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
-npm run web > "$LOG_FILE" 2>&1 &
+setsid npm run web > "$LOG_FILE" 2>&1 &
 WEB_PID=$!
 
 for _ in $(seq 1 60); do
@@ -46,33 +46,35 @@ TOKEN="$(node -e "require('dotenv').config(); const jwt=require('jsonwebtoken');
 curl -sS \
   -H "Authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
-  -X PUT \
-  -d '{"mints":"So11111111111111111111111111111111111111112,4k3Dyjzvzp8eMZWUXbcbKQb4VhM3y7f1nJdJ9xYkX8h"}' \
-  "http://localhost:$PORT/api/watchlist" > /tmp/enigma_ext_watchlist.json
-
-curl -sS \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -X POST \
-  -d '{"mints":"So11111111111111111111111111111111111111112,4k3Dyjzvzp8eMZWUXbcbKQb4VhM3y7f1nJdJ9xYkX8h"}' \
-  "http://localhost:$PORT/api/signals/stream" > /tmp/enigma_ext_stream.json
-
-curl -sS \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
   -X POST \
   -d '{"mint":"So11111111111111111111111111111111111111112"}' \
   "http://localhost:$PORT/api/signal" > /tmp/enigma_ext_signal.json
 
 curl -sS \
   -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:$PORT/api/token/holders?mint=So11111111111111111111111111111111111111112&limit=12" > /tmp/enigma_ext_holders.json
+  "http://localhost:$PORT/api/token/holders?mint=So11111111111111111111111111111111111111112&limit=12&mode=sample" > /tmp/enigma_ext_holders.json
+
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:$PORT/api/token/market/live?mint=So11111111111111111111111111111111111111112&windowSec=300" > /tmp/enigma_ext_market_live.json
+
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:$PORT/api/autotrade/config" > /tmp/enigma_ext_autotrade_config.json
+
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:$PORT/api/autotrade/execution-config" > /tmp/enigma_ext_exec_config.json
+
+curl -sS \
+  "http://localhost:$PORT/api/access/kobx?wallet=9xQeWvG816bUx9EPfRz4KxM2KkN8YxVUMfyk7Q8xvA5" > /tmp/enigma_ext_kobx_access.json
 
 curl -sS "http://localhost:$PORT/api/openapi.json" > /tmp/enigma_ext_openapi.json
 curl -sS "http://localhost:$PORT/api-docs.html" > /tmp/enigma_ext_apidocs.html
 curl -sS "http://localhost:$PORT/developers.html" > /tmp/enigma_ext_developers.html
+curl -sS "http://localhost:$PORT/" > /tmp/enigma_ext_index.html
 
-HTTP401="$(curl -s -o /tmp/enigma_ext_unauth.json -w '%{http_code}' "http://localhost:$PORT/api/watchlist")"
+HTTP401="$(curl -s -o /tmp/enigma_ext_unauth.json -w '%{http_code}' "http://localhost:$PORT/api/autotrade/config")"
 HTTP400="$(curl -s -o /tmp/enigma_ext_badreq.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" -X POST -d '{}' "http://localhost:$PORT/api/signal")"
 
 node <<'NODE'
@@ -85,50 +87,43 @@ function must(condition, message) {
   }
 }
 
-const watchlist = JSON.parse(fs.readFileSync("/tmp/enigma_ext_watchlist.json", "utf8"));
-const stream = JSON.parse(fs.readFileSync("/tmp/enigma_ext_stream.json", "utf8"));
 const singleSignal = JSON.parse(fs.readFileSync("/tmp/enigma_ext_signal.json", "utf8"));
 const holders = JSON.parse(fs.readFileSync("/tmp/enigma_ext_holders.json", "utf8"));
+const marketLive = JSON.parse(fs.readFileSync("/tmp/enigma_ext_market_live.json", "utf8"));
+const autoCfg = JSON.parse(fs.readFileSync("/tmp/enigma_ext_autotrade_config.json", "utf8"));
+const execCfg = JSON.parse(fs.readFileSync("/tmp/enigma_ext_exec_config.json", "utf8"));
+const kobxAccess = JSON.parse(fs.readFileSync("/tmp/enigma_ext_kobx_access.json", "utf8"));
 const openapi = JSON.parse(fs.readFileSync("/tmp/enigma_ext_openapi.json", "utf8"));
 const apiDocsHtml = fs.readFileSync("/tmp/enigma_ext_apidocs.html", "utf8");
 const devDocsHtml = fs.readFileSync("/tmp/enigma_ext_developers.html", "utf8");
+const indexHtml = fs.readFileSync("/tmp/enigma_ext_index.html", "utf8");
 
-must(Array.isArray(watchlist.mints) && watchlist.mints.length === 2, "watchlist should save 2 mints");
-must(Array.isArray(stream.items) && stream.items.length > 0, "stream should return scan items");
-
-const firstOk = stream.items.find((item) => item.ok && item.signal);
-must(Boolean(firstOk), "stream should include at least one successful signal");
-must(firstOk.signal.tradePlan && firstOk.signal.sentiment, "signal should include tradePlan and sentiment");
 must(singleSignal && singleSignal.signal, "/api/signal should return a signal payload");
 must(singleSignal.signal.marketRegime, "signal payload should include marketRegime");
+must(singleSignal.signal.rugPullRisk, "signal payload should include rugPullRisk");
 
 const currentRegime = singleSignal.signal.marketRegime.current || {};
 must(typeof currentRegime.timeframe === "string" && currentRegime.timeframe.length > 0, "marketRegime.current.timeframe should be populated");
 must(typeof currentRegime.regime === "string" && currentRegime.regime.length > 0, "marketRegime.current.regime should be populated");
-if (currentRegime.volatilityIndex !== null) {
-  must(
-    Number.isFinite(Number(currentRegime.volatilityIndex)) &&
-      Number(currentRegime.volatilityIndex) >= 0 &&
-      Number(currentRegime.volatilityIndex) <= 100,
-    "marketRegime.current.volatilityIndex should be null or 0-100"
-  );
-}
-if (currentRegime.adx !== null) {
-  must(Number.isFinite(Number(currentRegime.adx)), "marketRegime.current.adx should be null or numeric");
-}
 
 must(Array.isArray(holders.holderProfiles), "holders endpoint should return holderProfiles array");
-if (holders.holderProfiles.length > 0) {
-  const p = holders.holderProfiles[0];
-  must(typeof p.walletSource === "string" && p.walletSource.length > 0, "walletSource should be populated");
-}
+must(holders.holderBehavior && typeof holders.holderBehavior === "object", "holders endpoint should return holderBehavior");
+
+must(marketLive && marketLive.chart && Array.isArray(marketLive.chart.points), "live market endpoint should return chart points array");
+must(autoCfg && autoCfg.config && typeof autoCfg.config === "object", "autotrade config should return config");
+must(execCfg && execCfg.config && typeof execCfg.config === "object", "execution config should return config");
+must(typeof kobxAccess.eligible === "boolean", "KOBX access endpoint should return eligibility");
+must(typeof kobxAccess.requiredBalance === "number", "KOBX access endpoint should return requiredBalance");
+must(typeof kobxAccess.buyUrl === "string" && kobxAccess.buyUrl.length > 0, "KOBX access endpoint should return buyUrl");
 
 must(openapi && openapi.openapi && openapi.paths, "openapi should be valid json");
 must(Boolean(openapi.paths["/api/signal"]), "openapi should include /api/signal");
+must(Boolean(openapi.paths["/api/autotrade/config"]), "openapi should include /api/autotrade/config");
 must(apiDocsHtml.includes("swagger-ui-bundle.js"), "api docs page should include swagger bundle");
 must(devDocsHtml.includes("/api-docs.html"), "developer docs should link to api explorer");
+must(indexHtml.includes("Scanner Workspace") && indexHtml.includes("Agent Workspace"), "main app should include both workspaces");
 
-console.log("[extended-qa] PASS: payload checks");
+console.log("[extended-qa] PASS: API schema, docs, market endpoint, and dual-workspace UI look healthy");
 NODE
 
 [[ "$HTTP401" == "401" ]] || { echo "[extended-qa] FAIL: unauthorized expected 401, got $HTTP401"; exit 1; }

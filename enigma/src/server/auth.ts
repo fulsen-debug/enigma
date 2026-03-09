@@ -7,6 +7,7 @@ import type { Request, Response, NextFunction } from "express";
 import { createOrTouchUser, getUsage, getUserById } from "./db.js";
 
 const JWT_SECRET = process.env.ENIGMA_JWT_SECRET || "dev-secret-change-in-production";
+export const AUTH_COOKIE_NAME = "enigma_session";
 if (process.env.NODE_ENV === "production" && JWT_SECRET === "dev-secret-change-in-production") {
   throw new Error("ENIGMA_JWT_SECRET must be set in production.");
 }
@@ -47,10 +48,36 @@ export function issueToken(user: AuthUser): string {
   });
 }
 
+function parseCookieHeader(header: string): Record<string, string> {
+  return header
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((acc, part) => {
+      const eqIndex = part.indexOf("=");
+      if (eqIndex <= 0) return acc;
+      const key = decodeURIComponent(part.slice(0, eqIndex).trim());
+      const value = decodeURIComponent(part.slice(eqIndex + 1).trim());
+      acc[key] = value;
+      return acc;
+    }, {});
+}
+
+export function extractAuthToken(req: Request): string {
+  const authHeader = req.headers.authorization || "";
+  if (authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7);
+  }
+
+  const cookieHeader = String(req.headers.cookie || "").trim();
+  if (!cookieHeader) return "";
+  const cookies = parseCookieHeader(cookieHeader);
+  return String(cookies[AUTH_COOKIE_NAME] || "").trim();
+}
+
 export function authRequired(req: AuthedRequest, res: Response, next: NextFunction): void {
   try {
-    const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+    const token = extractAuthToken(req);
     if (!token) {
       res.status(401).json({ error: "missing auth token" });
       return;

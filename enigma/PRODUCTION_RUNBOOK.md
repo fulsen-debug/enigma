@@ -1,48 +1,95 @@
 # Production Runbook
 
-## Goal
-Ship safely with mandatory review + QA gates before deployment.
+## Release Shape
 
-## Pre-deploy Quality Gate
-Run all checks locally:
+AI Guardian first release ships:
+- `Scanner Workspace`: quick one-token analysis
+- `Agent Workspace`: autonomous paper trading for one selected token
+
+It does not ship public live execution.
+
+## Pre-Deploy Gate
+
+Run locally:
 
 ```bash
 npm run qa
 ```
 
-This runs:
+This covers:
 - build
 - smoke test
-- extended QA test suite
+- unit tests
+- extended API/web QA
 
-## Environment Requirements
+Run these checks serially. Do not run smoke and extended QA in parallel against the same SQLite file.
+
+## Required Environment
+
 - `NODE_ENV=production`
-- `ENIGMA_JWT_SECRET` must be set to a non-default secure value
-- `HELIUS_API_KEY` or `SOLANA_RPC_URL` configured
-- `ENIGMA_DB_PATH` points to persistent storage
+- `ENIGMA_JWT_SECRET` set to a strong non-default value
+- `HELIUS_API_KEY` / `HELIUS_API_KEYS` or `SOLANA_RPC_URL`
+- `ENIGMA_DB_PATH` pointing to persistent storage
 
-## Render Deployment
-1. Ensure CI (`Enigma CI`) is green on `main`.
-2. Merge PR with completed QA checklist.
-3. Render deploys via `render.yaml`.
-4. Verify `/api/health` after deploy.
+Recommended:
+- persistent disk mounted at `/var/data`
+- `ENIGMA_DB_PATH=/var/data/enigma_data.sqlite`
+- `ENIGMA_EXECUTION_ENABLED=0`
 
-## Post-deploy Verification
-Run quick checks:
+## Deployment Target
+
+Current recommended host:
+- Render
+
+Expected flow:
+1. push to `main`
+2. deploy using `render.yaml`
+3. verify service health
+4. attach custom domain
+
+## Post-Deploy Verification
+
+Check:
 
 ```bash
 curl -sS https://<your-domain>/api/health
 ```
 
-Then verify in UI:
-- wallet auth
-- watchlist save
-- watchlist scan
-- holders view
-- alert feed
+Then verify in the browser:
+1. homepage loads
+2. wallet connect works
+3. random scan works
+4. manual token scan works
+5. holder table renders
+6. AIG Forensics renders verified concentration / wallet activity source note
+7. Download PNG and Share on X buttons render for scanner cards
+6. agent workspace loads config/history
+7. paper test starts and logs actions
+8. refresh preserves login via cookie session
+
+## Cookie/Auth Verification
+
+This release uses server-issued `HttpOnly` cookie auth for the web app.
+
+Confirm:
+- login works
+- refresh keeps the session
+- browser JS does not store the JWT in `localStorage`
 
 ## Rollback
-If critical issues appear:
-1. Roll back to previous Render deploy.
-2. Keep incident notes: timestamp, endpoint, error pattern.
-3. Open follow-up patch PR with regression test.
+
+If deployment is bad:
+1. rollback to previous Render deploy
+2. record timestamp and failing route/UI flow
+3. patch forward with a regression test
+
+## Operational Boundaries
+
+Do not market this deployment as:
+- market-wide autonomous live trading
+- LLM-driven execution
+- guaranteed-profit automation
+
+Market it as:
+- fast scanner for traders
+- autonomous paper agent for one selected token

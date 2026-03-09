@@ -30,11 +30,11 @@
         <p><strong>KOBECOIN AI Guardian</strong> is a Solana risk-intelligence layer designed for traders and trading platforms.</p>
         <ul>
           <li>Pre-entry token behavior analysis (kill-switch, concentration, authorities, connected holders)</li>
-          <li>Live scanner watchlist monitoring and status flips</li>
+          <li>One-token scanner workflow for fast discretionary review</li>
           <li>Holder behavior table for deeper due diligence</li>
-          <li>Execution-ready architecture via external routers (for example Jupiter Ultra)</li>
+          <li>Paper-agent execution architecture for one selected token</li>
         </ul>
-        <p><strong>Boundary:</strong> Kobecoin AI Guardian defaults to non-execution mode. Auto execution is opt-in and should run only with dedicated risk-configured bot wallets.</p>
+        <p><strong>Boundary:</strong> This first release is paper-first. Public live execution is not part of the shipped product surface.</p>
       </section>
 
       <section class="doc-card">
@@ -44,6 +44,7 @@ PORT=3000
 HOST=0.0.0.0
 ENIGMA_JWT_SECRET=&lt;strong-random-secret&gt;
 HELIUS_API_KEY=&lt;key&gt;
+HELIUS_API_KEYS=&lt;key1,key2,key3&gt;
 # Optional alternative:
 # SOLANA_RPC_URL=&lt;https-rpc-endpoint&gt;
 
@@ -71,7 +72,8 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
           <li><strong>Operator-only keys:</strong> all env keys on this page are for KOBECOIN backend operations.</li>
           <li><strong>User-side:</strong> users only connect wallet and use app flows; they do not provide Helius/Jupiter/admin keys.</li>
           <li>Set <code>ENIGMA_JWT_SECRET</code> to a long random value.</li>
-          <li>Configure either <code>HELIUS_API_KEY</code> or <code>SOLANA_RPC_URL</code>.</li>
+          <li>Configure <code>HELIUS_API_KEY</code> or <code>HELIUS_API_KEYS</code> for parsed wallet activity, funding-source checks, wallet identity enrichment, and Helius-compatible RPC top-20 holder concentration.</li>
+          <li>Configure either <code>HELIUS_API_KEY</code> or <code>SOLANA_RPC_URL</code> for Solana RPC access.</li>
           <li>Use persistent storage for SQLite data in production.</li>
           <li>Put the service behind TLS + reverse proxy (Nginx/Cloudflare/load balancer).</li>
           <li>Set <code>ENIGMA_PREMIUM_TELEGRAM</code> and <code>ENIGMA_ADMIN_TOKEN</code> for premium onboarding.</li>
@@ -84,8 +86,9 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
         <ol>
           <li>Create nonce: <code>POST /api/auth/nonce</code></li>
           <li>Wallet signs nonce message</li>
-          <li>Verify signature: <code>POST /api/auth/verify</code> and get JWT</li>
-          <li>Send JWT in <code>Authorization: Bearer &lt;token&gt;</code> to protected endpoints</li>
+          <li>Verify signature: <code>POST /api/auth/verify</code></li>
+          <li>Server sets an <code>HttpOnly</code> session cookie for the browser app</li>
+          <li>Bearer tokens remain supported for scripts and QA tooling</li>
         </ol>
         <pre><code>curl -X POST https://your-domain.com/api/auth/nonce \
   -H "content-type: application/json" \
@@ -112,7 +115,8 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
             <tbody>
               <tr><td><code>/api/health</code></td><td>GET</td><td>No</td><td>Service + RPC health</td></tr>
               <tr><td><code>/api/auth/nonce</code></td><td>POST</td><td>No</td><td>Create wallet login nonce</td></tr>
-              <tr><td><code>/api/auth/verify</code></td><td>POST</td><td>No</td><td>Verify signature and issue JWT</td></tr>
+              <tr><td><code>/api/auth/verify</code></td><td>POST</td><td>No</td><td>Verify signature and create browser session</td></tr>
+              <tr><td><code>/api/auth/logout</code></td><td>POST</td><td>No</td><td>Clear browser session cookie</td></tr>
               <tr><td><code>/api/admin/users/plan</code></td><td>POST</td><td>Admin token</td><td>Upgrade user to premium (<code>pro</code>)</td></tr>
               <tr><td><code>/api/admin/users/balance</code></td><td>POST</td><td>Admin token</td><td>Set user managed balance</td></tr>
               <tr><td><code>/api/admin/withdrawals</code></td><td>GET</td><td>Admin token</td><td>List withdrawal requests</td></tr>
@@ -125,11 +129,7 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
               <tr><td><code>/api/profile/history</code></td><td>GET</td><td>Yes</td><td>Premium payments, bot positions, withdrawals</td></tr>
               <tr><td><code>/api/withdrawals/me</code></td><td>GET</td><td>Yes</td><td>User withdrawal list + balance</td></tr>
               <tr><td><code>/api/withdrawals/request</code></td><td>POST</td><td>Yes</td><td>Create withdrawal request</td></tr>
-              <tr><td><code>/api/watchlist</code></td><td>GET/PUT/POST</td><td>Yes</td><td>Read/update watchlist</td></tr>
-              <tr><td><code>/api/watchlist/add</code></td><td>POST</td><td>Yes</td><td>Append one mint</td></tr>
               <tr><td><code>/api/signal</code></td><td>POST</td><td>Yes</td><td>Single-token scan</td></tr>
-              <tr><td><code>/api/watchlist/scan</code></td><td>POST</td><td>Yes</td><td>Scan saved scanner watchlist</td></tr>
-              <tr><td><code>/api/signals/stream</code></td><td>POST</td><td>Yes</td><td>Scan passed mint list</td></tr>
               <tr><td><code>/api/discovery/suggest</code></td><td>POST</td><td>Yes</td><td>New token candidate suggestions</td></tr>
               <tr><td><code>/api/token/holders</code></td><td>GET</td><td>Yes</td><td>Holder profile table + behavior</td></tr>
               <tr><td><code>/api/token/market/live</code></td><td>GET</td><td>Yes</td><td>Realtime price snapshot + chart points (no signal quota)</td></tr>
@@ -153,7 +153,7 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
           <li>Client calls <code>/api/signal</code> before entry.</li>
           <li>Policy engine decides: allow / caution / block.</li>
           <li>If allowed, trader executes via exchange/router (Jupiter Ultra or other).</li>
-          <li>Post-entry, scanner loops <code>/api/watchlist/scan</code> for alerts and risk drift.</li>
+          <li>Post-entry, client re-checks the token with <code>/api/signal</code> and <code>/api/token/holders</code> as needed for risk drift.</li>
         </ol>
         <p>This preserves control for the trader while enabling semi-automated risk handling.</p>
       </section>
@@ -197,8 +197,8 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
           <li>Open <code>chrome://extensions</code>, enable Developer Mode.</li>
           <li>Load unpacked folder <code>&lt;project-root&gt;/extension</code>.</li>
           <li>Set API base URL + JWT in popup.</li>
-          <li>Enable auto-scan and open side panel for live history.</li>
-          <li>Open Pump.fun token page; extension detects mint, scans, and can add it to watchlist in one click.</li>
+          <li>Open the side panel for one-token scan history and analysis.</li>
+          <li>Open Pump.fun token page; extension detects mint and scans it in one click.</li>
         </ol>
       </section>
 
@@ -212,7 +212,7 @@ npm run build
 npm run enigma -- --help</code></pre>
         <p>Typical commands:</p>
         <pre><code>npm run enigma -- risk-check --mint &lt;TOKEN_MINT&gt;
-npm run enigma -- daily-brief --watchlist "SOL,BONK,WIF"
+npm run enigma -- daily-brief
 npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</code></pre>
       </section>
 
@@ -221,7 +221,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
         <p>Recommended commercial model for KOBECOIN:</p>
         <ul>
           <li>Issue customer API keys at gateway layer (mapped to tenant account).</li>
-          <li>Tier plans by request volume, watchlist size, and SLA priority.</li>
+          <li>Tier plans by request volume, latency target, and SLA priority.</li>
           <li>Expose partner dashboard with usage, errors, and latency.</li>
           <li>Offer webhook alerts and premium support tiers for trading desks.</li>
         </ul>
@@ -236,7 +236,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
               </tr>
             </thead>
             <tbody>
-              <tr><td>Starter</td><td>Solo traders</td><td>Low</td><td>Signal scan + watchlist</td></tr>
+              <tr><td>Starter</td><td>Solo traders</td><td>Low</td><td>Signal scan + discovery</td></tr>
               <tr><td>Pro</td><td>Active trading teams</td><td>Medium</td><td>Priority queue + alerts + holders</td></tr>
               <tr><td>Enterprise</td><td>Platforms / brokers</td><td>Custom</td><td>SLA, tenant isolation, dedicated support</td></tr>
             </tbody>
@@ -334,7 +334,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
   -H "authorization: Bearer &lt;JWT&gt;" \
   -H "content-type: application/json" \
   -d '{"mint":"So11111111111111111111111111111111111111112"}'</code></pre>
-        <p><strong>Security policy:</strong> never paste private keys into browser UI or app server config. Use dedicated signer/HSM worker for production live execution.</p>
+        <p><strong>Security policy:</strong> never paste private keys into browser UI or client code. Keep operator credentials server-side only.</p>
         <p><strong>Premium policy:</strong> keep live mode as <code>pro</code> only. Users contact your Telegram, then you upgrade them using the admin endpoint.</p>
         <p><strong>Optional auto-upgrade:</strong> users can pay on-chain and submit tx signature to <code>/api/premium/verify-payment</code> for automatic activation.</p>
       </section>
@@ -352,7 +352,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
       </section>
 
       <section class="doc-card">
-        <h2>15) Agent Execution v2 (No-LLM Deterministic Path)</h2>
+        <h2>15) Agent Execution (Deterministic Path)</h2>
         <ul>
           <li><strong>Decision path:</strong> execution uses deterministic numeric rules only (no chat/LLM dependency in trade open/close decisions).</li>
           <li><strong>Regime policy matrix:</strong> combines <code>ADX</code>, <code>VolatilityIndex</code>, liquidity, participation, estimated spread, and holder risk to switch style: <code>BREAKOUT</code>, <code>TREND</code>, <code>MEAN_REVERT</code>, <code>NO_TRADE</code>.</li>

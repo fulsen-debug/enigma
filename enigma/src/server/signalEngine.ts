@@ -654,7 +654,7 @@ export async function generateSignal(context: AgentContext, assetId: string): Pr
         status === "FAVORABLE"
           ? "Potential entry candidate if price respects support and risk is controlled"
           : status === "CAUTION"
-            ? "Watchlist candidate; wait for confirmation near support"
+            ? "Monitor candidate; wait for confirmation near support"
             : "Avoid entry until risk profile improves",
       buyZone: { low: entryLow, high: entryHigh },
       support: [support1, support2],

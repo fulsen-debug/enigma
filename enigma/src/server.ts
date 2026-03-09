@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createEnigmaContext } from "./agent/enigma.js";
 import {
+  AUTH_COOKIE_NAME,
   authRequired,
   enforceQuota,
   generateNonce,
@@ -28,7 +29,6 @@ import {
   getUsage,
   getDashboardStats,
   getWithdrawalRequestById,
-  getWatchlist,
   incrementUsage,
   listPremiumPaymentsByUser,
   listAutoTradePositions,
@@ -43,7 +43,6 @@ import {
   setUserPlanByWallet,
   saveAutoTradeRun,
   saveSignal,
-  setWatchlist,
   updateWithdrawalRequestStatus,
   updateAutoTradePositionMark
 } from "./server/db.js";
@@ -68,23 +67,48 @@ import {
 
 function validateRuntimeConfig(): { mode: string; hasRpc: boolean } {
   const mode = String(process.env.NODE_ENV || "development");
-  const hasRpc = Boolean(String(process.env.HELIUS_API_KEY || "").trim()) ||
+  const hasRpc = Boolean(String(process.env.HELIUS_API_KEYS || "").trim()) ||
+    Boolean(String(process.env.HELIUS_API_KEY || "").trim()) ||
     Boolean(String(process.env.SOLANA_RPC_URL || "").trim());
 
   if (!hasRpc && mode === "production") {
-    throw new Error("Production requires HELIUS_API_KEY or SOLANA_RPC_URL.");
+    throw new Error("Production requires HELIUS_API_KEY/HELIUS_API_KEYS or SOLANA_RPC_URL.");
   }
 
   if (!hasRpc) {
-    console.warn("[config] HELIUS_API_KEY/SOLANA_RPC_URL missing. RPC checks may fail.");
+    console.warn("[config] HELIUS_API_KEY/HELIUS_API_KEYS/SOLANA_RPC_URL missing. RPC checks may fail.");
   }
 
   return { mode, hasRpc };
 }
 
+function getHeliusApiKeys(): string[] {
+  return Array.from(
+    new Set(
+      [
+        ...String(process.env.HELIUS_API_KEYS || "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+        String(process.env.HELIUS_API_KEY || "").trim()
+      ].filter(Boolean)
+    )
+  );
+}
+
+function getHeliusRpcUrls(): string[] {
+  return getHeliusApiKeys().map(
+    (apiKey) => `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`
+  );
+}
+
 const runtimeConfig = validateRuntimeConfig();
+const AUTH_COOKIE_SECURE = String(process.env.NODE_ENV || "development") === "production";
 const PREMIUM_TELEGRAM = String(process.env.ENIGMA_PREMIUM_TELEGRAM || "@KOBECOIN_SUPPORT").trim();
 const ADMIN_TOKEN = String(process.env.ENIGMA_ADMIN_TOKEN || "").trim();
+const KOBX_MINT = "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump";
+const KOBX_REQUIRED_BALANCE = 1_000_000;
+const KOBX_BUY_URL = `https://pump.fun/coin/${KOBX_MINT}`;
 const PREMIUM_SOL_ADDRESS = String(
   process.env.ENIGMA_PREMIUM_SOL_ADDRESS || "ZEe2kStwjE8SNs61Vcrdmn63JHxrKAEswNg5Nex3sVe"
 ).trim();
@@ -108,11 +132,7 @@ const MARKET_LIVE_RATE_LIMIT_MAX = Math.max(
   120,
   Number(process.env.ENIGMA_MARKET_LIVE_RATE_LIMIT_MAX || 600)
 );
-const WATCHLIST_MAX_TOKENS = Math.max(25, Number(process.env.ENIGMA_WATCHLIST_MAX_TOKENS || 200));
-const SIGNAL_STREAM_MAX_TOKENS = Math.max(
-  10,
-  Math.min(WATCHLIST_MAX_TOKENS, Number(process.env.ENIGMA_SIGNAL_STREAM_MAX_TOKENS || 50))
-);
+const MINT_PARSE_MAX_TOKENS = Math.max(3, Number(process.env.ENIGMA_MINT_PARSE_MAX_TOKENS || 16));
 
 app.use(express.json());
 app.use(express.static(publicDir));
@@ -127,9 +147,7 @@ const apiLimiter = rateLimit({
     req.path.startsWith("/autotrade") ||
     req.path.startsWith("/token/market/live") ||
     req.path === "/signal" ||
-    req.path.startsWith("/watchlist/scan") ||
-    req.path.startsWith("/discovery/suggest") ||
-    req.path.startsWith("/signals/stream"),
+    req.path.startsWith("/discovery/suggest"),
   message: { error: "too many requests; slow down" }
 });
 
@@ -154,9 +172,7 @@ const scannerLimiter = rateLimit({
 });
 
 app.use("/api/signal", scannerLimiter);
-app.use("/api/watchlist/scan", scannerLimiter);
 app.use("/api/discovery/suggest", scannerLimiter);
-app.use("/api/signals/stream", scannerLimiter);
 
 const marketLiveLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -496,7 +512,7 @@ const openApiSpec = {
   info: {
     title: "KOBECOIN AI Guardian API",
     version: "1.0.0",
-    description: "Trader risk-intelligence API for scan, watchlist, discovery, and holder behavior."
+    description: "Trader risk-intelligence API for one-token scan, discovery, holder behavior, and paper-agent controls."
   },
   servers: [{ url: "/" }],
   components: {
@@ -545,6 +561,12 @@ const openApiSpec = {
           }
         },
         responses: { "200": { description: "JWT and user profile" } }
+      }
+    },
+    "/api/auth/logout": {
+      post: {
+        summary: "Clear browser auth session cookie",
+        responses: { "200": { description: "Logout successful" } }
       }
     },
     "/api/admin/users/plan": {
@@ -699,41 +721,6 @@ const openApiSpec = {
         responses: { "200": { description: "Withdrawal request created" } }
       }
     },
-    "/api/watchlist": {
-      get: {
-        summary: "Get watchlist",
-        security: [{ bearerAuth: [] }],
-        responses: { "200": { description: "Watchlist mints" } }
-      },
-      put: {
-        summary: "Set watchlist",
-        security: [{ bearerAuth: [] }],
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: { type: "object", required: ["mints"], properties: { mints: { type: "string" } } }
-            }
-          }
-        },
-        responses: { "200": { description: "Updated watchlist" } }
-      }
-    },
-    "/api/watchlist/add": {
-      post: {
-        summary: "Add one mint to watchlist",
-        security: [{ bearerAuth: [] }],
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: { type: "object", required: ["mint"], properties: { mint: { type: "string" } } }
-            }
-          }
-        },
-        responses: { "200": { description: "Updated watchlist" } }
-      }
-    },
     "/api/signal": {
       post: {
         summary: "Scan single mint",
@@ -747,28 +734,6 @@ const openApiSpec = {
           }
         },
         responses: { "200": { description: "Signal payload" } }
-      }
-    },
-    "/api/watchlist/scan": {
-      post: {
-        summary: "Scan saved watchlist",
-        security: [{ bearerAuth: [] }],
-        responses: { "200": { description: "Batch signal payload" } }
-      }
-    },
-    "/api/signals/stream": {
-      post: {
-        summary: "Scan custom mint set",
-        security: [{ bearerAuth: [] }],
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: { type: "object", required: ["mints"], properties: { mints: { type: "string" } } }
-            }
-          }
-        },
-        responses: { "200": { description: "Batch signal payload" } }
       }
     },
     "/api/discovery/suggest": {
@@ -1009,7 +974,7 @@ app.get("/api/openapi.json", (_req, res) => {
   res.json(openApiSpec);
 });
 
-function parseMintsCsv(input: string, max = WATCHLIST_MAX_TOKENS): string[] {
+function parseMintsCsv(input: string, max = MINT_PARSE_MAX_TOKENS): string[] {
   return Array.from(
     new Set(
       input
@@ -1024,7 +989,7 @@ function isValidSolanaMint(mint: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint.trim());
 }
 
-function normalizeTrackedAssets(values: string[], max = WATCHLIST_MAX_TOKENS): string[] {
+function normalizeTrackedAssets(values: string[], max = MINT_PARSE_MAX_TOKENS): string[] {
   return Array.from(
     new Set(
       values
@@ -1035,7 +1000,7 @@ function normalizeTrackedAssets(values: string[], max = WATCHLIST_MAX_TOKENS): s
 }
 
 function validateMints(mints: string[]): string[] {
-  return normalizeTrackedAssets(mints, WATCHLIST_MAX_TOKENS);
+  return normalizeTrackedAssets(mints, MINT_PARSE_MAX_TOKENS);
 }
 
 function resolveSingleAgentMint(rawMint: string, rawMints: string): string {
@@ -1265,21 +1230,74 @@ function projectDecisionPnlPct(patternScore: number, confidence: number): number
 }
 
 async function rpcCall(method: string, params: unknown[]): Promise<Record<string, unknown>> {
-  const rpcUrl = String(process.env.SOLANA_RPC_URL || "").trim();
-  if (!rpcUrl) {
-    throw new Error("SOLANA_RPC_URL is required for premium payment verification");
+  const rpcUrls = Array.from(
+    new Set(
+      [
+        String(process.env.SOLANA_RPC_URL || "").trim(),
+        ...getHeliusRpcUrls()
+      ].filter(Boolean)
+    )
+  );
+  if (!rpcUrls.length) {
+    throw new Error("SOLANA_RPC_URL or HELIUS_API_KEY/HELIUS_API_KEYS is required for premium payment verification");
   }
 
-  const response = await fetch(rpcUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
-  });
-  const payload = (await response.json()) as Record<string, unknown>;
-  if (!response.ok || payload.error) {
-    throw new Error(`RPC ${method} failed`);
+  let lastError: Error | null = null;
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
+      });
+      const payload = (await response.json()) as Record<string, unknown>;
+      if (!response.ok || payload.error) {
+        throw new Error(`RPC ${method} failed`);
+      }
+      return payload;
+    } catch (error) {
+      lastError = error as Error;
+    }
   }
-  return payload;
+  throw lastError || new Error(`RPC ${method} failed`);
+}
+
+async function getWalletTokenBalance(wallet: string, mint: string): Promise<number> {
+  const payload = await rpcCall("getTokenAccountsByOwner", [
+    wallet,
+    { mint },
+    { encoding: "jsonParsed", commitment: "confirmed" }
+  ]);
+  const result = (payload.result as Record<string, unknown>) || {};
+  const value = Array.isArray(result.value) ? result.value : [];
+  const total = value.reduce((sum, entry) => {
+    const account = (entry as Record<string, unknown>).account as Record<string, unknown>;
+    const data = (account?.data as Record<string, unknown>) || {};
+    const parsed = (data.parsed as Record<string, unknown>) || {};
+    const info = (parsed.info as Record<string, unknown>) || {};
+    const tokenAmount = (info.tokenAmount as Record<string, unknown>) || {};
+    const uiAmountString = String(tokenAmount.uiAmountString || "").trim();
+    const uiAmount = Number(uiAmountString || tokenAmount.uiAmount || 0);
+    return sum + (Number.isFinite(uiAmount) ? uiAmount : 0);
+  }, 0);
+  return Number(total.toFixed(6));
+}
+
+async function getKobxAccessStatus(wallet: string): Promise<{
+  mint: string;
+  requiredBalance: number;
+  actualBalance: number;
+  eligible: boolean;
+  buyUrl: string;
+}> {
+  const actualBalance = await getWalletTokenBalance(wallet, KOBX_MINT);
+  return {
+    mint: KOBX_MINT,
+    requiredBalance: KOBX_REQUIRED_BALANCE,
+    actualBalance,
+    eligible: actualBalance >= KOBX_REQUIRED_BALANCE,
+    buyUrl: KOBX_BUY_URL
+  };
 }
 
 function extractTransferRecordsToAddress(
@@ -1408,7 +1426,22 @@ app.post("/api/auth/nonce", (req, res) => {
   return res.json({ nonce, message: `KOBECOIN login nonce: ${nonce}` });
 });
 
-app.post("/api/auth/verify", (req, res) => {
+app.get("/api/access/kobx", async (req, res) => {
+  try {
+    const wallet = String(req.query.wallet || "").trim();
+    if (!wallet) {
+      return res.status(400).json({ error: "wallet is required" });
+    }
+    const status = await getKobxAccessStatus(wallet);
+    return res.json(status);
+  } catch (error) {
+    return res.status(502).json({
+      error: error instanceof Error ? error.message : "KOBX access check failed"
+    });
+  }
+});
+
+app.post("/api/auth/verify", async (req, res) => {
   const wallet = String(req.body.wallet || "").trim();
   const nonce = String(req.body.nonce || "").trim();
   const signature = String(req.body.signature || "").trim();
@@ -1427,9 +1460,41 @@ app.post("/api/auth/verify", (req, res) => {
     return res.status(401).json({ error: "invalid signature" });
   }
 
+  try {
+    const access = await getKobxAccessStatus(wallet);
+    if (!access.eligible) {
+      return res.status(403).json({
+        error: "KOBX balance requirement not met",
+        code: "KOBX_REQUIRED",
+        ...access
+      });
+    }
+  } catch (error) {
+    return res.status(502).json({
+      error: error instanceof Error ? error.message : "KOBX access check failed"
+    });
+  }
+
   const user = hydrateUser(wallet);
   const token = issueToken(user);
-  return res.json({ token, user });
+  res.cookie(AUTH_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: AUTH_COOKIE_SECURE,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  });
+  return res.json({ ok: true, user });
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    httpOnly: true,
+    secure: AUTH_COOKIE_SECURE,
+    sameSite: "lax",
+    path: "/"
+  });
+  return res.json({ ok: true });
 });
 
 app.get("/api/premium/info", (_req, res) => {
@@ -1787,52 +1852,6 @@ app.get("/api/health", async (_req, res) => {
   });
 });
 
-app.get("/api/watchlist", authRequired, (req: AuthedRequest, res) => {
-  if (!req.user) {
-    return res.status(401).json({ error: "unauthorized" });
-  }
-
-  return res.json({ mints: getWatchlist(req.user.id) });
-});
-
-function upsertWatchlist(req: AuthedRequest, res: express.Response) {
-  if (!req.user) {
-    res.status(401).json({ error: "unauthorized" });
-    return;
-  }
-
-  const mints = parseMintsCsv(String(req.body.mints || ""), WATCHLIST_MAX_TOKENS);
-  const validMints = validateMints(mints);
-  if (validMints.length === 0) {
-    res.status(400).json({ error: "at least 1 valid token is required (Solana mint, BTC, ETH)" });
-    return;
-  }
-
-  setWatchlist(req.user.id, validMints);
-  res.json({ mints: validMints });
-}
-
-app.put("/api/watchlist", authRequired, upsertWatchlist);
-app.post("/api/watchlist", authRequired, upsertWatchlist);
-
-app.post("/api/watchlist/add", authRequired, (req: AuthedRequest, res) => {
-  if (!req.user) {
-    res.status(401).json({ error: "unauthorized" });
-    return;
-  }
-
-  const mint = normalizeTrackedAssetId(String(req.body.mint || "").trim());
-  if (!mint) {
-    res.status(400).json({ error: "valid token is required (Solana mint, BTC, ETH)" });
-    return;
-  }
-
-  const current = getWatchlist(req.user.id);
-  const next = Array.from(new Set([...current, mint])).slice(0, WATCHLIST_MAX_TOKENS);
-  setWatchlist(req.user.id, next);
-  res.json({ mints: next });
-});
-
 app.post(
   "/api/signal",
   authRequired,
@@ -1938,30 +1957,6 @@ app.get("/api/token/market/live", authRequired, async (req: AuthedRequest, res) 
 });
 
 app.post(
-  "/api/watchlist/scan",
-  authRequired,
-  enforceQuota("signal_calls"),
-  async (req: AuthedRequest, res) => {
-    try {
-      if (!req.user) {
-        return res.status(401).json({ error: "unauthorized" });
-      }
-
-      const stored = getWatchlist(req.user.id);
-      if (stored.length === 0) {
-        return res.status(400).json({ error: "watchlist is empty" });
-      }
-
-      const items = await buildBatchSignals(req.user.id, stored);
-      const usage = incrementUsage(req.user.id, "signal_calls");
-      return res.json({ ts: new Date().toISOString(), items, usage, watchlist: stored });
-    } catch (error) {
-      return res.status(500).json({ error: (error as Error).message });
-    }
-  }
-);
-
-app.post(
   "/api/discovery/suggest",
   authRequired,
   enforceQuota("signal_calls"),
@@ -2027,31 +2022,6 @@ app.post(
   }
 );
 
-app.post(
-  "/api/signals/stream",
-  authRequired,
-  enforceQuota("signal_calls"),
-  async (req: AuthedRequest, res) => {
-    try {
-      if (!req.user) {
-        return res.status(401).json({ error: "unauthorized" });
-      }
-
-      const mints = parseMintsCsv(String(req.body.mints || ""), SIGNAL_STREAM_MAX_TOKENS);
-      const validMints = validateMints(mints);
-      if (validMints.length === 0) {
-        return res.status(400).json({ error: "at least one valid token is required (Solana mint, BTC, ETH)" });
-      }
-
-      const items = await buildBatchSignals(req.user.id, validMints);
-      const usage = incrementUsage(req.user.id, "signal_calls");
-      return res.json({ ts: new Date().toISOString(), items, usage, watchlist: validMints });
-    } catch (error) {
-      return res.status(500).json({ error: (error as Error).message });
-    }
-  }
-);
-
 app.post("/api/forecast/resolve", authRequired, (req: AuthedRequest, res) => {
   try {
     if (!req.user) {
@@ -2086,13 +2056,13 @@ app.get(
 
       const mint = normalizeTrackedAssetId(String(req.query.mint || "").trim());
       const limit = Math.min(50, Math.max(8, Number(req.query.limit || 40)));
-      const requestedAnalysisMode = String(req.query.mode || "deep").toLowerCase();
+      const requestedAnalysisMode = String(req.query.mode || "sample").toLowerCase();
       const analysisMode =
-        requestedAnalysisMode === "sample"
-          ? "sample"
+        requestedAnalysisMode === "full"
+          ? "full"
           : requestedAnalysisMode === "deep"
             ? "deep"
-            : "full";
+            : "sample";
       if (!mint) {
         return res.status(400).json({ error: "valid token is required (Solana mint, BTC, ETH)" });
       }

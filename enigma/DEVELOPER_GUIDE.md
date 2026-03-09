@@ -1,17 +1,21 @@
-# Enigma Developer Guide
+# AI Guardian Developer Guide
 
-## Overview
-Enigma is a modular tool-using agent.
-Architecture:
-- `agent/` orchestration + prompts + schemas
-- `tools/` external actions (web, on-chain, storage)
-- `workflows/` end-to-end tasks (daily brief, risk check, journal)
-- `cli.ts` user entrypoint
+## Product Scope
 
-## Local Setup
+AI Guardian first release has two workspaces:
+
+- `Scanner Workspace`: one-token trader analysis
+- `Agent Workspace`: one-token autonomous paper-trading workflow
+
+This release is deterministic and rules-based. It does not depend on an LLM for trading decisions.
+
+## Runtime
+
 ### Prerequisites
-- Node.js 18+
+- Node.js `22+`
 - Git
+- `HELIUS_API_KEY` / `HELIUS_API_KEYS` or `SOLANA_RPC_URL`
+- `ENIGMA_JWT_SECRET`
 
 ### Install
 ```bash
@@ -19,115 +23,120 @@ npm install
 cp .env.example .env
 ```
 
-## Run (dev)
+### Run (dev)
 ```bash
 npm run dev
 ```
-Starts the viewer website on `http://localhost:3000`.
 
-## Run (production)
+### Run (production)
 ```bash
 npm run build
 npm start
 ```
 
-## CLI Commands
-Enigma exposes workflows via CLI:
-- `daily-brief`
-- `risk-check`
-- `journal`
+## Web Surface
 
-Examples:
-```bash
-npm run enigma -- daily-brief --watchlist "SOL,BONK,WIF"
-npm run enigma -- risk-check --mint "<TOKEN_MINT_ADDRESS>"
-npm run enigma -- journal --note "Entered on breakout; kept risk small."
-```
+Primary app pages:
+- `/` main dashboard
+- `/start.html` onboarding
+- `/manual.html` user manual
+- `/developers.html` developer docs
+- `/api-docs.html` API explorer
 
-## Website Pages
-- `/` interactive dashboard for workflows
-- `/manual.html` operator manual
-- `/presentation.html` viewer presentation board
+## Current API Surface
 
-## Agent API Endpoints
-- `POST /api/agent/chat`
-- `POST /api/agent/morning-routine`
-- `POST /api/kill-switch`
-- `GET /api/history`
+Core first-release endpoints:
 - `POST /api/auth/nonce`
 - `POST /api/auth/verify`
-- `POST /api/signal` (JWT required)
-- `GET /api/dashboard/stats` (JWT required)
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+- `POST /api/signal`
+- `POST /api/discovery/suggest`
+- `GET /api/token/holders`
+- `GET /api/token/market/live`
+- `GET /api/dashboard/stats`
+- `GET /api/autotrade/config`
+- `PUT /api/autotrade/config`
+- `GET /api/autotrade/execution-config`
+- `PUT /api/autotrade/execution-config`
+- `POST /api/autotrade/run`
+- `POST /api/autotrade/engine/tick`
+- `GET /api/autotrade/positions`
+- `GET /api/autotrade/performance`
 
-## Configuration
-File: `src/config/default.json`
+## Auth Model
 
-Recommended fields:
-- `agent.name`: "Enigma"
-- `agent.mode`: "analysis" | "strict"
-- `limits.maxToolCalls`
-- `risk.allowDangerousOps`: false by default
-- `sources.news`: list of allowed domains (optional)
-- `onchain.rpcUrl` and provider keys
+- Wallet signs nonce
+- Server verifies signature
+- Server issues JWT in an `HttpOnly` cookie
+- Browser app uses cookie-based session auth
+- Bearer token auth remains supported for scripts and QA
 
-Env overrides:
-- `SOLANA_RPC_URL`
-- `ENIGMA_LOG_LEVEL`
-- `ENIGMA_STORAGE`
-- `ENIGMA_JWT_SECRET`
+Do not store server secrets or wallet private keys in browser code.
 
-## Adding a New Workflow
-1. Create file in `src/workflows/`, e.g. `positionReview.ts`
-2. Export a function that accepts a context (`AgentContext`)
-3. Register it in `src/cli.ts`
+## Database
 
-Minimal workflow contract:
-- input: parsed args
-- steps: call agent planner + tools
-- output: JSON + human markdown summary
+Current persistence is SQLite:
+- configured by `ENIGMA_DB_PATH`
+- intended for low-cost first-release deployment
 
-## Adding a New Tool
-Tools must be:
-- deterministic (as much as possible)
-- logged
-- safe (no destructive actions without confirmation)
+Main persisted entities:
+- users
+- auth nonces
+- usage counters
+- signals
+- forecasts
+- autotrade configs
+- autotrade execution configs
+- autotrade runs
+- autotrade positions
+- premium payments
+- managed balances
+- withdrawal requests
 
-Steps:
-1. Create file in `src/tools/`
-2. Add typed interface to `AgentTools`
-3. Add test coverage for tool output format
+## First-Release Constraints
 
-## Output Schemas
-All workflows should output both:
-- human: markdown summary
-- data: structured JSON
+- scanner is one-token-at-a-time
+- agent is one selected token at a time
+- holder concentration uses Helius-compatible RPC `getTokenLargestAccounts` top-20 accounts
+- wallet activity and wallet labeling prefer Helius when configured
+- bundle/coordinated-risk remains AIG inference layered on top of provider-backed facts
+- public live trading is not part of the release
 
-Rationale: JSON enables dashboards, bots, storage, and analytics.
+## QA Commands
 
-## Safety / Guardrails
-Enigma should:
-- cite sources when it claims facts from web/news
-- label uncertainty explicitly
-- avoid trade execution behavior
-- require confirmation for anything risky (file deletion, sending messages, etc.)
-
-## Testing
-Recommended:
-- unit tests for tools (mock network calls)
-- golden tests for workflows (snapshot outputs)
-
-Commands:
 ```bash
-npm test
-npm run lint
+npm run build
+npm run test
+npm run qa:extended
+npm run qa
 ```
 
-## Packaging
-To publish a CLI:
-- set `bin` in `package.json` to point to compiled CLI
-- run `npm pack` or publish to npm (private/public)
+Important:
+- run QA serially, not in parallel, because SQLite test servers can contend for the same DB file
 
-## Troubleshooting
-- Missing env var: check `.env`
-- RPC failures: verify `SOLANA_RPC_URL`
-- Rate limits: add caching + exponential backoff
+## Deployment
+
+Recommended current deployment:
+- Render web service
+- persistent disk for SQLite
+- production env vars stored in Render secrets
+
+Required production env:
+- `NODE_ENV=production`
+- `ENIGMA_JWT_SECRET`
+- `HELIUS_API_KEY` / `HELIUS_API_KEYS` or `SOLANA_RPC_URL`
+- `ENIGMA_DB_PATH=/var/data/enigma_data.sqlite`
+
+Keep for first release:
+- `ENIGMA_EXECUTION_ENABLED=0`
+
+## Engineering Direction
+
+For this release, prefer:
+- deterministic scoring
+- clear risk gates
+- paper-first execution
+- low operational cost
+
+Do not expand product claims beyond what the code supports today.

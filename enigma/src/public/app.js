@@ -18,13 +18,7 @@ const mainHeroVisual = document.querySelector("#main-hero-visual");
 const mainShapesVisual = document.querySelector("#main-shapes-visual");
 const refreshProfileWorkspaceButton = document.querySelector("#refresh-profile-workspace");
 const manualMintInput = document.querySelector("#manual-mint");
-const scannerRunModeSelect = document.querySelector("#scanner-run-mode");
 const scannerModeNote = document.querySelector("#scanner-mode-note");
-const dynamicScanControls = document.querySelector("#dynamic-scan-controls");
-const scanSpeedSelect = document.querySelector("#scan-speed");
-const scanSecondsInput = document.querySelector("#scan-seconds");
-const scanSpeedNote = document.querySelector("#scan-speed-note");
-const scanHoursInput = document.querySelector("#scan-hours");
 const riskPresetSelect = document.querySelector("#risk-preset");
 const thresholdFavorablePatternInput = document.querySelector("#threshold-favorable-pattern");
 const thresholdRiskKillInput = document.querySelector("#threshold-risk-kill");
@@ -38,12 +32,12 @@ const resultFilterSelect = document.querySelector("#result-filter");
 const resultSortSelect = document.querySelector("#result-sort");
 const discoveryList = document.querySelector("#discovery-list");
 const messages = document.querySelector("#messages");
-const guidedStatus = document.querySelector("#guided-status");
 const alertFeed = document.querySelector("#alert-feed");
 const scanStatus = document.querySelector("#scan-status");
 const toastStack = document.querySelector("#toast-stack");
 const fullscreenLoader = document.querySelector("#fullscreen-loader");
 const fullscreenLoaderText = document.querySelector("#fullscreen-loader-text");
+const fullscreenLoaderLogo = document.querySelector("#fullscreen-loader-logo");
 const planStatus = document.querySelector("#plan-status");
 const paperTestStatus = document.querySelector("#paper-test-status");
 const paperMinPatternInput = document.querySelector("#paper-min-pattern");
@@ -93,10 +87,6 @@ const liveMonitorStatus = document.querySelector("#live-monitor-status");
 const agentScannerSummary = document.querySelector("#agent-scanner-summary");
 
 const connectWalletButton = document.querySelector("#connect-wallet");
-const applyBeginnerSetupButton = document.querySelector("#apply-beginner-setup");
-const startGuidedScanButton = document.querySelector("#start-guided-scan");
-const startScanButton = document.querySelector("#start-scan");
-const stopScanButton = document.querySelector("#stop-scan");
 const applyProPresetButton = document.querySelector("#apply-pro-preset");
 const discoverTokensButton = document.querySelector("#discover-tokens");
 const scanManualButton = document.querySelector("#scan-manual");
@@ -111,16 +101,18 @@ const engineStartLoopButton = document.querySelector("#engine-start-loop");
 const engineStopLoopButton = document.querySelector("#engine-stop-loop");
 const PAPER_ONLY_MODE = true;
 const LIVE_MODE_PREVIEW_DISABLED = PAPER_ONLY_MODE;
+const HOLDER_SAMPLE_LIMIT = 10;
+const HOLDER_DEEP_LIMIT = 20;
+const KOBX_MINT = "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump";
+const KOBX_REQUIRED_BALANCE = 1_000_000;
+const KOBX_BUY_URL = `https://pump.fun/coin/${KOBX_MINT}`;
 
-let authToken = localStorage.getItem("enigma_token") || "";
+let authToken = "";
 let userWallet = localStorage.getItem("enigma_wallet") || "";
 let userPlan = localStorage.getItem("enigma_plan") || "free";
 let agentTargetMints = [];
 let agentTargetMint = "";
-let scanTimer = null;
-let scanStopAt = 0;
 let lastSignalItems = [];
-let watchlistMints = [];
 let historicalStats = null;
 let alertEvents = [];
 let sessionTrendPoints = [];
@@ -149,7 +141,6 @@ let reconnectTimer = null;
 let reconnectBackoffMs = 5000;
 let reconnectNoticeShown = false;
 let agentPriceLastErrorNoticeTs = 0;
-let watchlistSyncTimer = null;
 let fullscreenBlockDepth = 0;
 const recentErrorNoticeByKey = new Map();
 const sessionAnalytics = {
@@ -201,40 +192,30 @@ const engineExitPresets = {
     pollIntervalSec: 20
   }
 };
+const CORE_AGENT_MODEL_KEY = "guardian_core";
 const paperTestModels = {
-  guardian_safe: {
-    label: "ENIGMA Safe",
-    minPatternScore: 74,
-    minConfidence: 0.78,
-    maxConnectedHolderPct: 20,
-    allowCautionEntries: false,
-    allowHighRiskEntries: false,
-    description: "Highest safety gate. Fewer entries, stronger quality filter."
-  },
-  guardian_balanced: {
-    label: "ENIGMA Balanced",
-    minPatternScore: 62,
-    minConfidence: 0.68,
-    maxConnectedHolderPct: 30,
+  [CORE_AGENT_MODEL_KEY]: {
+    label: "AIG Core",
+    minPatternScore: 68,
+    minConfidence: 0.72,
+    maxConnectedHolderPct: 25,
     allowCautionEntries: true,
     allowHighRiskEntries: false,
-    description: "Balanced quality/risk gate for steady paper testing."
-  },
-  guardian_fast: {
-    label: "ENIGMA Fast",
-    minPatternScore: 45,
-    minConfidence: 0.55,
-    maxConnectedHolderPct: 45,
-    allowCautionEntries: true,
-    allowHighRiskEntries: true,
-    description: "Fast signal capture for stress-testing and high-frequency simulation."
+    description: "Single production model for autonomous paper trading with fixed internal risk rules."
   }
 };
-const paperTestModelCycle = ["guardian_safe", "guardian_balanced", "guardian_fast"];
+const CORE_ENGINE_PROFILE = {
+  maxOpenPositions: 1,
+  tpPct: 8,
+  slPct: 4,
+  trailingStopPct: 3,
+  maxHoldMinutes: 120,
+  cooldownSec: 30
+};
 
 function getPaperTestModelLabel(key) {
   const model = paperTestModels[String(key || "").trim().toLowerCase()];
-  return model?.label || "ENIGMA Balanced";
+  return model?.label || "AIG Core";
 }
 
 function sleep(ms) {
@@ -351,17 +332,10 @@ const alertThresholds = {
 };
 const expandedHolders = new Set();
 const loadingHolders = new Set();
-const fullHolderHistoryLoaded = new Set();
-const loadingFullHolderHistory = new Set();
 const mintDisplayCache = new Map();
-const STANDARD_SCAN_INTERVAL_SEC = 30;
-const STANDARD_SCAN_DURATION_HOURS = 12;
-const SCAN_SPEED_PRESETS = new Set(["15", "30", "60"]);
 const PROFILE_WORKSPACE_CACHE_MS = 30 * 1000;
 const AGENT_PRICE_POLL_MS = 5000;
 const MANUAL_SCAN_TIMEOUT_MS = 90000;
-const WATCHLIST_CLIENT_MAX = 200;
-const DYNAMIC_SCAN_TEMP_DISABLED = true;
 const THEME_STORAGE_KEY = "enigma_theme";
 
 function applyTheme(theme, persist = true) {
@@ -394,10 +368,12 @@ function initThemeToggle() {
 
 function initBrandLogoAsset() {
   if (!brandLogo) return;
-  const preferredLogo = String(brandLogo.getAttribute("data-logo-png") || "").trim();
-  resolveFirstAsset([preferredLogo, "/assets/icon.png"]).then((logoPng) => {
+  resolveFirstAsset(["/assets/icon.png"]).then((logoPng) => {
     if (!logoPng) return;
     brandLogo.src = logoPng;
+    if (fullscreenLoaderLogo) {
+      fullscreenLoaderLogo.src = logoPng;
+    }
     const favicon = document.querySelector("link[rel='icon']");
     if (favicon) {
       favicon.setAttribute("href", logoPng);
@@ -849,15 +825,22 @@ function buildBeginnerSentimentLines(signal) {
 function holderCoverageNote(holderBehavior) {
   const coverage = holderBehavior?.analysisCoverage || {};
   const explicitNote = String(coverage.note || "").trim();
+  const dataSources = (coverage.dataSources && typeof coverage.dataSources === "object")
+    ? coverage.dataSources
+    : {};
+  const sourceParts = [];
+  if (dataSources.topHolders) sourceParts.push(`holders: ${String(dataSources.topHolders)}`);
+  if (dataSources.holderActivity) sourceParts.push(`activity: ${String(dataSources.holderActivity)}`);
+  if (dataSources.walletLabels) sourceParts.push(`labels: ${String(dataSources.walletLabels)}`);
   if (explicitNote) return explicitNote;
   const topAccounts = Number(coverage.topAccountsAnalyzed || holderBehavior?.analyzedTopAccounts || 0);
   if (topAccounts <= 0) {
-    return "Holder coverage is unavailable for this market in the current build.";
+    return "Holder profile did not return in this pass. Scanner uses recent transaction windows by default.";
   }
   const buySellLimit = Number(coverage.buySellTxSamplePerAccount || 8);
   const sampledAccounts = Number(coverage.accountsWithBuySellSampling || 5);
   const signatureLimit = Number(coverage.signatureSamplePerAccount || 20);
-  return `Coverage note: analyzed top ${topAccounts} holder accounts; buy/sell counts are sampled from the most recent ${buySellLimit} token-account transactions for up to ${sampledAccounts} holders; cluster links use recent ${signatureLimit} signatures per account. This is not full lifetime wallet history.`;
+  return `Coverage note: analyzed top ${topAccounts} holder accounts; buy/sell counts use recent provider-backed wallet history when available and RPC fallback otherwise; cluster links use recent ${signatureLimit} signatures per account. Sources: ${sourceParts.join(", ") || "rpc"}.`;
 }
 
 const walletSourceDescriptions = {
@@ -893,6 +876,221 @@ function sourceLegendHtml() {
       </div>
     </details>
   `;
+}
+
+function formatPctCompact(value, digits = 1) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "0%";
+  return `${formatNumber(num, digits)}%`;
+}
+
+function humanizeFundingSource(source) {
+  const key = String(source || "unattributed-wallet").trim().toLowerCase();
+  if (key === "liquidity-pool-candidate") return "LP vault";
+  if (key === "token-account-owner") return "Token owner";
+  if (key === "clustered-new-wallet") return "Clustered new wallets";
+  if (key === "clustered-wallet") return "Clustered wallets";
+  if (key === "new-wallet") return "New wallets";
+  if (key === "active-trader-wallet") return "Active traders";
+  if (key === "unattributed-wallet") return "Unattributed";
+  return key
+    .split(/[-_ ]+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function buildScannerForensics(signal) {
+  const risk = signal?.killSwitch?.risk || {};
+  const holderBehavior = risk.holderBehavior || {};
+  const holderProfiles = Array.isArray(risk.holderProfiles) ? risk.holderProfiles : [];
+  const fundingBreakdownRaw = Array.isArray(risk.fundingSourceBreakdown) ? risk.fundingSourceBreakdown : [];
+  const fundingBreakdown = fundingBreakdownRaw.length
+    ? fundingBreakdownRaw
+    : (() => {
+        const map = new Map();
+        holderProfiles.forEach((holder) => {
+          const key = String(holder.walletSource || "unattributed-wallet").trim().toLowerCase();
+          const current = map.get(key) || { source: key, holderCount: 0, holdPct: 0 };
+          current.holderCount += 1;
+          current.holdPct += Number(holder.amountPct || 0);
+          map.set(key, current);
+        });
+        return Array.from(map.values()).sort((a, b) => Number(b.holdPct || 0) - Number(a.holdPct || 0));
+      })();
+
+  const marketPrice = Number(signal?.market?.priceUsd || 0);
+  const analyzedHolderCount = Number(risk.analyzedHolderCount || holderProfiles.length || 0);
+  const top10ExLp = Number(risk.top10HolderSharePct || risk.top3HolderSharePct || 0);
+  const top20ExLp = Number(risk.top20HolderSharePct || top10ExLp || 0);
+  const topClusterPct = Number(risk.topClusterHolderSharePct || 0);
+  const topClusterMode = String(risk.topClusterMode || "");
+  const connectedPct = Number(holderBehavior.connectedHolderPct || 0);
+  const newWalletPct = Number(holderBehavior.newWalletHolderPct || 0);
+  const bundleRiskScore = Number(risk.bundleRiskScore || 0);
+  const bundleRiskVerdict = String(risk.bundleRiskVerdict || (bundleRiskScore >= 70 ? "HIGH" : bundleRiskScore >= 45 ? "CAUTION" : "LOW"));
+  const avgBagUsd =
+    holderProfiles.length && marketPrice > 0
+      ? holderProfiles.reduce((sum, holder) => sum + Number(holder.amountUi || 0) * marketPrice, 0) / holderProfiles.length
+      : 0;
+  const lpIncluded = !String(risk.concentrationMode || "").includes("excluding_lp");
+  const clusterLpIncluded = !topClusterMode.includes("excluding_lp");
+  const fundingSummary = fundingBreakdown
+    .slice(0, 4)
+    .map((entry) => `${humanizeFundingSource(entry.source)} ${formatPctCompact(entry.holdPct, 1)}`)
+    .join(", ");
+  const coverageSources =
+    holderBehavior?.analysisCoverage && typeof holderBehavior.analysisCoverage.dataSources === "object"
+      ? holderBehavior.analysisCoverage.dataSources
+      : {};
+  const verificationNote = [
+    `Verified concentration: ${String(risk.concentrationSource || "rpc-top20")}`,
+    `Wallet activity: ${String(coverageSources.holderActivity || "rpc")}`,
+    `Wallet labels: ${String(coverageSources.walletLabels || "heuristic")}`
+  ].join(" | ");
+
+  let verdictLine = "No major linked-holder bundle detected in this pass.";
+  if (bundleRiskVerdict === "HIGH") {
+    verdictLine = `Bundled/clustered launch risk is high. Largest linked cluster controls ${formatPctCompact(topClusterPct, 1)} and connected holders control ${formatPctCompact(connectedPct, 1)}.`;
+  } else if (bundleRiskVerdict === "CAUTION") {
+    verdictLine = `Coordinated holder risk is elevated. Connected holders control ${formatPctCompact(connectedPct, 1)} with ${formatPctCompact(newWalletPct, 1)} new-wallet exposure.`;
+  }
+
+  const taLine = `Top 20 largest holders control ${formatPctCompact(top20ExLp, 1)}, top 10 control ${formatPctCompact(top10ExLp, 1)}${lpIncluded ? " (LP may still be included)" : " (ex-LP)"} using getTokenLargestAccounts.`;
+  const liquidityLine = fundingSummary
+    ? `Source mix: ${fundingSummary}. LP bucket is shown separately here and is not counted in ex-LP concentration metrics when confidently identified.`
+    : "Source mix is not yet labeled in this pass.";
+
+  const shareText = [
+    `${String(signal?.token?.symbol || "TOKEN")} (${String(signal?.token?.mint || signal?.mint || "").trim()})`,
+    `AIG verdict: ${String(signal?.status || "N/A")} | Bundle risk ${bundleRiskScore}/100 (${bundleRiskVerdict})`,
+    verdictLine,
+    taLine,
+    `Top linked cluster ${formatPctCompact(topClusterPct, 1)}${clusterLpIncluded ? " (LP maybe included)" : " (ex-LP)"} | New-wallet exposure ${formatPctCompact(newWalletPct, 1)} | Holder groups ${formatNumber(holderBehavior.connectedGroupCount || 0, 0)}.`,
+    `Analyzed holders ${formatNumber(analyzedHolderCount, 0)} | Avg bag ${avgBagUsd > 0 ? formatUsd(avgBagUsd) : "n/a"}.`,
+    liquidityLine,
+    verificationNote,
+    "NFA. Powered by Kobecoin."
+  ].join("\n");
+
+  return {
+    bundleRiskScore,
+    bundleRiskVerdict,
+    verdictLine,
+    taLine,
+    liquidityLine,
+    verificationNote,
+    top10ExLp,
+    top20ExLp,
+    topClusterPct,
+    clusterLpIncluded,
+    connectedPct,
+    newWalletPct,
+    analyzedHolderCount,
+    avgBagUsd,
+    fundingBreakdown,
+    shareText
+  };
+}
+
+function scannerBundleTone(score) {
+  if (score >= 70) return "bad";
+  if (score >= 45) return "warn";
+  return "good";
+}
+
+function buildScannerShareImage(signal) {
+  const forensics = buildScannerForensics(signal);
+  const token = signal?.token || {};
+  const mint = String(token.mint || signal?.mint || "").trim();
+  const symbol = String(token.symbol || token.name || "TOKEN");
+  const status = String(signal?.status || "N/A");
+  const price = formatUsdPrice(signal?.market?.priceUsd || 0);
+  const lines = [
+    `Bundle Risk ${formatNumber(forensics.bundleRiskScore, 0)}/100 (${forensics.bundleRiskVerdict})`,
+    `Top 10 Share ${formatPctCompact(forensics.top10ExLp, 1)} | Top 20 Share ${formatPctCompact(forensics.top20ExLp, 1)}`,
+    `Linked Cluster ${formatPctCompact(forensics.topClusterPct, 1)} | New Wallets ${formatPctCompact(forensics.newWalletPct, 1)}`,
+    `Avg Bag ${forensics.avgBagUsd > 0 ? formatUsd(forensics.avgBagUsd) : "n/a"}`,
+    forensics.verdictLine
+  ];
+  const canvas = document.createElement("canvas");
+  canvas.width = 1400;
+  canvas.height = 880;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas unavailable");
+
+  const bg = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  bg.addColorStop(0, "#060916");
+  bg.addColorStop(0.5, "#11163a");
+  bg.addColorStop(1, "#1a1046");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "rgba(137, 92, 255, 0.15)";
+  ctx.beginPath();
+  ctx.arc(1180, 140, 180, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(240, 720, 230, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(112, 126, 255, 0.45)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(30, 30, canvas.width - 60, canvas.height - 60);
+
+  ctx.fillStyle = "#f5f7ff";
+  ctx.font = "700 62px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("AIG Token Forensics", 72, 120);
+
+  ctx.fillStyle = "#aab6ef";
+  ctx.font = "400 28px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText(`Powered by Kobecoin`, 74, 164);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 54px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText(symbol, 72, 270);
+  ctx.fillStyle = "#d6dcff";
+  ctx.font = "400 26px ui-monospace, monospace";
+  ctx.fillText(mint, 72, 312);
+
+  ctx.fillStyle = "#91f0c2";
+  ctx.font = "700 42px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText(price, 1040, 118);
+  ctx.fillStyle = "#b6c1f2";
+  ctx.font = "600 28px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText(status, 1110, 164);
+
+  const tone = scannerBundleTone(forensics.bundleRiskScore);
+  ctx.fillStyle = tone === "bad" ? "#ff6f88" : tone === "warn" ? "#ffd36f" : "#88f2c4";
+  ctx.font = "700 44px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText(`Bundle Risk ${formatNumber(forensics.bundleRiskScore, 0)}/100`, 72, 420);
+
+  ctx.fillStyle = "#e8edff";
+  ctx.font = "600 30px ui-sans-serif, system-ui, sans-serif";
+  lines.forEach((line, index) => {
+    ctx.fillText(line, 72, 500 + index * 68);
+  });
+
+  ctx.fillStyle = "#99a6df";
+  ctx.font = "400 24px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("Scanner report generated by AIG.", 72, 818);
+
+  return canvas;
+}
+
+async function downloadScannerCardPng(signal) {
+  const canvas = buildScannerShareImage(signal);
+  const token = signal?.token || {};
+  const symbol = String(token.symbol || token.name || "token").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const link = document.createElement("a");
+  link.download = `aig-${symbol || "token"}-forensics.png`;
+  link.href = canvas.toDataURL("image/png");
+  link.click();
+}
+
+async function shareScannerCardToX(signal) {
+  const forensics = buildScannerForensics(signal);
+  const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(forensics.shareText)}`;
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function isValidSolanaMint(value) {
@@ -1237,27 +1435,6 @@ function startAgentPriceMonitor() {
   }, AGENT_PRICE_POLL_MS);
 }
 
-function setWatchlistMints(mints) {
-  watchlistMints = Array.from(
-    new Set(
-      (mints || [])
-        .map((value) => normalizeTrackedTokenId(String(value || "").trim()))
-        .filter(Boolean)
-    )
-  ).slice(0, WATCHLIST_CLIENT_MAX);
-}
-
-function scheduleWatchlistSync() {
-  if (!authToken) return;
-  if (watchlistSyncTimer) {
-    clearTimeout(watchlistSyncTimer);
-  }
-  watchlistSyncTimer = setTimeout(() => {
-    watchlistSyncTimer = null;
-    void saveWatchlist({ quiet: true });
-  }, 450);
-}
-
 function resetSessionAnalytics() {
   sessionAnalytics.batches = 0;
   sessionAnalytics.tokensSeen = 0;
@@ -1309,6 +1486,8 @@ function showToastWindow(text, tone = "info", options = {}) {
   const normalizedTone = normalizeToastTone(tone);
   const title = String(options.title || (normalizedTone === "error" ? "Warning" : normalizedTone === "ok" ? "Update" : "Notice"));
   const durationMs = Math.max(1800, Math.min(15000, Number(options.durationMs || 4200)));
+  const actionLabel = String(options.actionLabel || "").trim();
+  const actionHref = String(options.actionHref || "").trim();
 
   const item = document.createElement("article");
   item.className = `toast-window ${normalizedTone}`;
@@ -1318,6 +1497,7 @@ function showToastWindow(text, tone = "info", options = {}) {
       <button class="toast-close" type="button" aria-label="Dismiss notification">x</button>
     </div>
     <div class="toast-body">${escapeHtml(message)}</div>
+    ${actionLabel && actionHref ? `<div class="toast-actions"><a class="toast-action-link" href="${escapeHtml(actionHref)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a></div>` : ""}
     <div class="toast-progress"></div>
   `;
   toastStack.prepend(item);
@@ -1347,6 +1527,38 @@ function showToastWindow(text, tone = "info", options = {}) {
   }
 
   window.setTimeout(removeItem, durationMs);
+}
+
+function clearLocalSessionState() {
+  authToken = "";
+  userWallet = "";
+  userPlan = "free";
+  localStorage.removeItem("enigma_wallet");
+  localStorage.removeItem("enigma_plan");
+  setAuthState();
+}
+
+async function disconnectPhantom(provider = window.solana) {
+  try {
+    if (provider && typeof provider.disconnect === "function") {
+      await provider.disconnect();
+    }
+  } catch {
+    // Ignore provider disconnect errors; local session state is authoritative here.
+  }
+}
+
+function showKobxAccessBlocked(access = {}) {
+  const actualBalance = Number(access.actualBalance || 0);
+  const requiredBalance = Number(access.requiredBalance || KOBX_REQUIRED_BALANCE);
+  const message = `Access requires at least ${formatNumber(requiredBalance, 2)} KOBX. Connected wallet balance: ${formatNumber(actualBalance, 2)} KOBX.`;
+  pushMessage(`${message} Buy KOBX on Pump.fun to continue.`, "error", { toast: false });
+  showToastWindow(message, "error", {
+    title: "KOBX Required",
+    durationMs: 9000,
+    actionLabel: "Buy KOBX",
+    actionHref: String(access.buyUrl || KOBX_BUY_URL)
+  });
 }
 
 function triggerAlert(text, tone = "info") {
@@ -1707,9 +1919,9 @@ function buildGuardianViewModel(signal, regimeVm) {
   const guardianStatus = riskScore > 65 ? "DANGER" : riskScore > 35 ? "CAUTION" : "SAFE";
   const tone = guardianStatus === "DANGER" ? "bad" : guardianStatus === "CAUTION" ? "warn" : "good";
 
-  let action = "Watchlist mode.";
+  let action = "Monitor mode.";
   if (guardianStatus === "DANGER") {
-    action = "Avoid entry now. Keep watchlist only until risk improves.";
+    action = "Avoid entry now. Keep this token in monitor-only mode until risk improves.";
   } else if (guardianStatus === "CAUTION") {
     action = regime.includes("Trending")
       ? "Entry-wait: use small test entries only after confirmation."
@@ -1937,9 +2149,6 @@ function notifyActionError(error, actionLabel = "continue", options = {}) {
     toast: options.toast !== false,
     title: "Action Blocked"
   });
-  if (guidedStatus && !authToken && (String(error?.code || "").toUpperCase() === "AUTH_REQUIRED" || Number(error?.status || 0) === 401 || Number(error?.status || 0) === 403)) {
-    setGuidedStatus(text);
-  }
 }
 
 function ensureWalletConnected(actionLabel = "continue") {
@@ -1961,7 +2170,6 @@ function setAuthState() {
       reconnectTimer = null;
     }
     reconnectNoticeShown = false;
-    stopScan();
     stopPaperLoop();
     stopEngineLoop();
     stopRealtimeMonitor();
@@ -1983,61 +2191,12 @@ function setAuthState() {
   syncScannerModeUi();
 }
 
-function dynamicScanEligible() {
-  if (!authToken) return false;
-  const normalizedPlan = String(userPlan || "free").toLowerCase();
-  return normalizedPlan === "pro" && !DYNAMIC_SCAN_TEMP_DISABLED;
-}
-
-function selectedScannerMode() {
-  return String(scannerRunModeSelect?.value || "manual").toLowerCase() === "dynamic"
-    ? "dynamic"
-    : "manual";
-}
-
 function syncScannerModeUi() {
-  if (!scannerRunModeSelect) return;
-  const dynamicOption = scannerRunModeSelect.querySelector("option[value=\"dynamic\"]");
-  const isPro = String(userPlan || "free").toLowerCase() === "pro";
-  const dynamicAllowed = dynamicScanEligible();
-  const dynamicTemporarilyDisabled = DYNAMIC_SCAN_TEMP_DISABLED;
-  if (dynamicOption instanceof HTMLOptionElement) {
-    dynamicOption.disabled = !dynamicAllowed;
-    if (dynamicTemporarilyDisabled) {
-      dynamicOption.textContent = "Dynamic scan (premium, temporarily disabled)";
-    } else if (!isPro) {
-      dynamicOption.textContent = "Dynamic scan (premium only)";
-    } else {
-      dynamicOption.textContent = "Dynamic scan (premium)";
-    }
-  }
-
-  if (selectedScannerMode() === "dynamic" && !dynamicAllowed) {
-    scannerRunModeSelect.value = "manual";
-  }
-
-  const mode = selectedScannerMode();
-  const dynamicControlsLocked = mode !== "dynamic" || !dynamicAllowed;
-  if (dynamicScanControls) {
-    dynamicScanControls.hidden = dynamicControlsLocked;
-  }
-  if (scanSpeedSelect) scanSpeedSelect.disabled = dynamicControlsLocked;
-  if (scanSecondsInput) scanSecondsInput.disabled = dynamicControlsLocked || String(scanSpeedSelect?.value || "") !== "custom";
-  if (scanHoursInput) scanHoursInput.disabled = dynamicControlsLocked;
-  if (startScanButton) startScanButton.disabled = dynamicControlsLocked;
-  if (stopScanButton) stopScanButton.disabled = !scanTimer;
-
   if (scannerModeNote) {
     if (!authToken) {
-      scannerModeNote.textContent = "Manual mode active. Connect wallet to scan. Dynamic is premium-only and temporarily disabled.";
-    } else if (mode === "manual") {
-      scannerModeNote.textContent = "Manual mode active. Use Scanner Tools -> Manual token scan.";
-    } else if (!isPro) {
-      scannerModeNote.textContent = "Dynamic scan is premium-only.";
-    } else if (dynamicTemporarilyDisabled) {
-      scannerModeNote.textContent = "Dynamic scan is temporarily disabled for all plans right now.";
+      scannerModeNote.textContent = "Manual mode active. Connect wallet to scan. Holder behavior uses recent on-chain transactions by default.";
     } else {
-      scannerModeNote.textContent = "Dynamic mode active. Configure interval/duration and start scan.";
+      scannerModeNote.textContent = "Manual mode active. Use Scanner Tools -> Manual token scan. Results are based on rolling recent transactions (not full lifetime history).";
     }
   }
 }
@@ -2117,7 +2276,7 @@ function setWorkspace(mode) {
 
   if (workspaceSummary) {
     if (target === "scanner") {
-      workspaceSummary.textContent = "Scanner workspace: add random tokens, run scans, and review risk cards.";
+      workspaceSummary.textContent = "Scanner workspace: run one-token random/manual scans and review risk cards.";
     } else if (target === "agent") {
       workspaceSummary.textContent = "Agent workspace: run paper simulation, then managed engine with strict risk rules.";
     } else {
@@ -2142,11 +2301,6 @@ function initWorkspace() {
   setWorkspace(mode);
 }
 
-function setGuidedStatus(text) {
-  if (!guidedStatus) return;
-  guidedStatus.textContent = text;
-}
-
 function startSpaceEntryAnimation() {
   if (!document.body) return;
   document.body.classList.add("space-entry");
@@ -2155,45 +2309,9 @@ function startSpaceEntryAnimation() {
   }, 1500);
 }
 
-function syncScanSpeedUi() {
-  const mode = String(scanSpeedSelect?.value || STANDARD_SCAN_INTERVAL_SEC);
-  const usingCustom = mode === "custom";
-  if (!usingCustom && SCAN_SPEED_PRESETS.has(mode) && scanSecondsInput) {
-    scanSecondsInput.value = mode;
-  }
-  if (scanSecondsInput) {
-    scanSecondsInput.disabled = !usingCustom;
-  }
-  if (scanSpeedNote) {
-    scanSpeedNote.textContent = usingCustom
-      ? "Custom mode: choose any value between 10 and 3600 seconds."
-      : `Standard preset: ${mode}s per scan batch.`;
-  }
-}
-
-function resolveScanIntervalSec() {
-  const mode = String(scanSpeedSelect?.value || "");
-  if (mode !== "custom" && SCAN_SPEED_PRESETS.has(mode)) {
-    return Number(mode);
-  }
-  const value = Math.max(10, Math.min(3600, Number(scanSecondsInput?.value || STANDARD_SCAN_INTERVAL_SEC)));
-  if (scanSecondsInput) scanSecondsInput.value = String(value);
-  return value;
-}
-
 function applyBeginnerSetup({ quiet = false } = {}) {
   if (riskPresetSelect) riskPresetSelect.value = "balanced";
   applyPreset("balanced");
-
-  if (scanSpeedSelect) {
-    scanSpeedSelect.value = String(STANDARD_SCAN_INTERVAL_SEC);
-  }
-  if (scanSecondsInput) {
-    scanSecondsInput.value = String(STANDARD_SCAN_INTERVAL_SEC);
-  }
-  if (scanHoursInput) {
-    scanHoursInput.value = String(STANDARD_SCAN_DURATION_HOURS);
-  }
   if (alertFavorableInput) alertFavorableInput.checked = true;
   if (alertHighRiskInput) alertHighRiskInput.checked = true;
   if (alertSoundInput) alertSoundInput.checked = true;
@@ -2202,34 +2320,27 @@ function applyBeginnerSetup({ quiet = false } = {}) {
   alertPrefs.sound = true;
   persistAlertPrefs();
   syncAlertUi();
-  syncScanSpeedUi();
-  setGuidedStatus(
-    `Default setup ready: Balanced risk preset, ${STANDARD_SCAN_INTERVAL_SEC}s scan interval, ${STANDARD_SCAN_DURATION_HOURS}h run duration.`
-  );
   if (!quiet) {
-    pushMessage("Default setup applied: balanced preset + standard 30s scan cadence.", "ok");
+    pushMessage("Default scanner setup applied: balanced risk preset with alert defaults.", "ok");
   }
 }
 
 function applyPaperBeginner25Preset({ quiet = false } = {}) {
-  applyPaperTestModel("guardian_safe", { quiet: true, persist: true });
+  applyPaperTestModel(CORE_AGENT_MODEL_KEY, { quiet: true, persist: true });
   if (paperMaxPositionInput) paperMaxPositionInput.value = "5";
   if (paperIntervalInput) paperIntervalInput.value = "30";
 
   if (engineAmountInput) engineAmountInput.value = "5";
-  if (engineMaxOpenInput) engineMaxOpenInput.value = "2";
-  if (engineTpInput) engineTpInput.value = "8";
-  if (engineSlInput) engineSlInput.value = "4";
-  if (engineTrailingInput) engineTrailingInput.value = "3";
-  if (engineHoldMinutesInput) engineHoldMinutesInput.value = "120";
-  if (engineCooldownInput) engineCooldownInput.value = "30";
-  if (enginePollInput) enginePollInput.value = "15";
+  if (engineMaxOpenInput) engineMaxOpenInput.value = String(CORE_ENGINE_PROFILE.maxOpenPositions);
+  if (engineTpInput) engineTpInput.value = String(CORE_ENGINE_PROFILE.tpPct);
+  if (engineSlInput) engineSlInput.value = String(CORE_ENGINE_PROFILE.slPct);
+  if (engineTrailingInput) engineTrailingInput.value = String(CORE_ENGINE_PROFILE.trailingStopPct);
+  if (engineHoldMinutesInput) engineHoldMinutesInput.value = String(CORE_ENGINE_PROFILE.maxHoldMinutes);
+  if (engineCooldownInput) engineCooldownInput.value = String(CORE_ENGINE_PROFILE.cooldownSec);
+  if (enginePollInput) enginePollInput.value = "30";
 
   applyBeginnerSetup({ quiet: true });
   syncQuickAmountButtonState();
-  setGuidedStatus(
-    "Applied $25 default setup: $5 test amount per trade, balanced filters, 30s checks."
-  );
   if (!quiet) {
     pushMessage("Applied $25 default setup for safe paper simulation.", "ok");
   }
@@ -2238,34 +2349,11 @@ function applyPaperBeginner25Preset({ quiet = false } = {}) {
 function resolvePaperTestModel(name) {
   const key = String(name || "").trim().toLowerCase();
   if (paperTestModels[key]) return key;
-  return "guardian_balanced";
+  return CORE_AGENT_MODEL_KEY;
 }
 
 function inferPaperTestModel(config) {
-  const target = {
-    minPatternScore: Number(config?.minPatternScore ?? 0),
-    minConfidence: Number(config?.minConfidence ?? 0.45),
-    maxConnectedHolderPct: Number(config?.maxConnectedHolderPct ?? 60),
-    allowCautionEntries: Boolean(config?.allowCautionEntries),
-    allowHighRiskEntries: Boolean(config?.allowHighRiskEntries)
-  };
-  let bestKey = "guardian_balanced";
-  let bestScore = Number.POSITIVE_INFINITY;
-
-  for (const [key, model] of Object.entries(paperTestModels)) {
-    const score =
-      Math.abs(target.minPatternScore - model.minPatternScore) +
-      Math.abs(target.minConfidence - model.minConfidence) * 100 +
-      Math.abs(target.maxConnectedHolderPct - model.maxConnectedHolderPct) +
-      (target.allowCautionEntries === model.allowCautionEntries ? 0 : 20) +
-      (target.allowHighRiskEntries === model.allowHighRiskEntries ? 0 : 30);
-    if (score < bestScore) {
-      bestScore = score;
-      bestKey = key;
-    }
-  }
-
-  return bestKey;
+  return CORE_AGENT_MODEL_KEY;
 }
 
 function applyPaperTestModel(name, { quiet = false, persist = true } = {}) {
@@ -2296,8 +2384,7 @@ function applyPaperTestModel(name, { quiet = false, persist = true } = {}) {
 }
 
 function applySavedPaperTestModel() {
-  const stored = String(localStorage.getItem("enigma_paper_test_model") || "guardian_balanced");
-  applyPaperTestModel(stored, { quiet: true, persist: false });
+  applyPaperTestModel(CORE_AGENT_MODEL_KEY, { quiet: true, persist: false });
 }
 
 function applyLivePreviewMode() {
@@ -2327,7 +2414,6 @@ function applyLivePreviewMode() {
 
 async function api(url, body, requireAuth = false, method = body ? "POST" : "GET", options = {}) {
   const headers = { "Content-Type": "application/json" };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
   if (requireAuth && !authToken) {
     throw buildWalletRequiredError("continue");
   }
@@ -2342,7 +2428,8 @@ async function api(url, body, requireAuth = false, method = body ? "POST" : "GET
         method,
         headers,
         body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal
+        signal: controller.signal,
+        credentials: "same-origin"
       });
       clearTimeout(timeout);
 
@@ -2364,6 +2451,16 @@ async function api(url, body, requireAuth = false, method = body ? "POST" : "GET
           code: response.status === 401 || response.status === 403 ? "AUTH_REQUIRED" : `HTTP_${response.status}`,
           transient: [408, 425, 500, 502, 503, 504].includes(response.status)
         });
+        if (isJson && payload && typeof payload === "object") {
+          Object.entries(payload).forEach(([key, value]) => {
+            if (!(key in error)) {
+              error[key] = value;
+            }
+          });
+          if (String(payload.code || "").trim()) {
+            error.code = String(payload.code);
+          }
+        }
         if (isTransientApiFailure(error) && response.status !== 429 && attempt < maxAttempts) {
           await sleep(250 * attempt);
           continue;
@@ -2409,34 +2506,32 @@ async function api(url, body, requireAuth = false, method = body ? "POST" : "GET
 
 function syncPaperConfigUi(config) {
   if (!config) return;
-  applyPaperTestModel(inferPaperTestModel(config), { quiet: true, persist: false });
+  applyPaperTestModel(CORE_AGENT_MODEL_KEY, { quiet: true, persist: false });
   if (paperMaxPositionInput) paperMaxPositionInput.value = String(config.maxPositionUsd ?? 25);
   if (paperIntervalInput) paperIntervalInput.value = String(config.scanIntervalSec ?? 10);
-  syncQuickAmountButtonState();
+  if (paperBudgetInput && Number.isFinite(Number(config.paperBudgetUsd))) {
+    paperBudgetInput.value = String(config.paperBudgetUsd);
+  }
 }
 
 function readPaperConfigFromUi() {
-  const selectedModel = paperTestModels[resolvePaperTestModel(paperTestModelSelect?.value)] || paperTestModels.guardian_balanced;
+  const selectedModel = paperTestModels[CORE_AGENT_MODEL_KEY];
   return {
     enabled: true,
     mode: "paper",
-    allowCautionEntries: Boolean(
-      paperAllowCautionInput?.checked ?? selectedModel.allowCautionEntries
-    ),
-    allowHighRiskEntries: Boolean(
-      paperAllowHighRiskInput?.checked ?? selectedModel.allowHighRiskEntries
-    ),
+    allowCautionEntries: Boolean(selectedModel.allowCautionEntries),
+    allowHighRiskEntries: Boolean(selectedModel.allowHighRiskEntries),
     minPatternScore: Math.max(
       0,
-      Math.min(95, Number(paperMinPatternInput?.value || selectedModel.minPatternScore))
+      Math.min(95, Number(selectedModel.minPatternScore))
     ),
     minConfidence: Math.max(
       0.1,
-      Math.min(0.99, Number(paperMinConfidenceInput?.value || selectedModel.minConfidence))
+      Math.min(0.99, Number(selectedModel.minConfidence))
     ),
     maxConnectedHolderPct: Math.max(
       1,
-      Math.min(80, Number(paperMaxConnectedInput?.value || selectedModel.maxConnectedHolderPct))
+      Math.min(80, Number(selectedModel.maxConnectedHolderPct))
     ),
     requireKillSwitchPass: true,
     maxPositionUsd: Math.max(1, Math.min(50000, Number(paperMaxPositionInput?.value || 25))),
@@ -2487,11 +2582,13 @@ function renderPaperResults(payload) {
   const budgetCap = Number(payload?.summary?.paperBudgetUsd || paperBudgetInput?.value || 100);
   const budgetAvailable = Number(payload?.summary?.paperAvailableUsd || 0);
   const openExposure = Number(payload?.summary?.openExposureUsd || 0);
+  const tradeSnapshot = getPaperTradeSnapshot();
   paperSummary.innerHTML = `
-    <strong>Paper simulation</strong> run at
+    <strong>AIG Core paper scan</strong> at
     ${escapeHtml(new Date(payload.ts || Date.now()).toLocaleTimeString())}:
-    ${candidates.length} buy candidates, ${skipped} skipped, positive forecast ${successForecasts}, non-positive forecast ${nonPositiveForecasts}, projected exposure ${formatUsd(simulatedExposure)}.
-    <br /><span class="small muted">Budget cap ${formatUsd(budgetCap)} | Open exposure ${formatUsd(openExposure)} | Available ${formatUsd(budgetAvailable)}.</span>
+    ${candidates.length} candidate entries, ${skipped} blocked, positive forecast ${successForecasts}, weak forecast ${nonPositiveForecasts}, projected exposure ${formatUsd(simulatedExposure)}.
+    <br /><span class="small muted">Executed buys ${formatNumber(tradeSnapshot.buyCount, 0)} | Executed sells ${formatNumber(tradeSnapshot.sellCount, 0)} | Wins ${formatNumber(tradeSnapshot.winSells, 0)} | Losses ${formatNumber(tradeSnapshot.lossSells, 0)}.</span>
+    <br /><span class="small muted">Budget ${formatUsd(budgetCap)} | Open exposure ${formatUsd(openExposure)} | Available ${formatUsd(budgetAvailable)} | Net PnL ${formatSignedUsd(tradeSnapshot.netPnlUsd)}.</span>
     ${
       Array.isArray(payload?.warnings) && payload.warnings.length
         ? `<br /><span class="error-text">${escapeHtml(payload.warnings.join(" | "))}</span>`
@@ -2758,30 +2855,33 @@ function renderPaperEquityChart(runs) {
 function syncEngineConfigUi(config) {
   if (!config) return;
   if (paperBudgetInput) paperBudgetInput.value = String(config.paperBudgetUsd ?? 100);
-  if (engineAmountInput) engineAmountInput.value = String(config.tradeAmountUsd ?? 5);
-  if (engineMaxOpenInput) engineMaxOpenInput.value = String(config.maxOpenPositions ?? 8);
-  if (engineTpInput) engineTpInput.value = String(config.tpPct ?? 1.8);
-  if (engineSlInput) engineSlInput.value = String(config.slPct ?? 1.0);
-  if (engineTrailingInput) engineTrailingInput.value = String(config.trailingStopPct ?? 0.6);
-  if (engineHoldMinutesInput) engineHoldMinutesInput.value = String(config.maxHoldMinutes ?? 20);
-  if (engineCooldownInput) engineCooldownInput.value = String(config.cooldownSec ?? 5);
-  if (enginePollInput) enginePollInput.value = String(config.pollIntervalSec ?? 5);
-  syncQuickAmountButtonState();
+  if (paperMaxPositionInput) paperMaxPositionInput.value = String(config.tradeAmountUsd ?? 25);
+  if (paperIntervalInput) paperIntervalInput.value = String(config.pollIntervalSec ?? 30);
+  if (engineAmountInput) engineAmountInput.value = String(config.tradeAmountUsd ?? paperMaxPositionInput?.value ?? 25);
+  if (engineMaxOpenInput) engineMaxOpenInput.value = String(CORE_ENGINE_PROFILE.maxOpenPositions);
+  if (engineTpInput) engineTpInput.value = String(CORE_ENGINE_PROFILE.tpPct);
+  if (engineSlInput) engineSlInput.value = String(CORE_ENGINE_PROFILE.slPct);
+  if (engineTrailingInput) engineTrailingInput.value = String(CORE_ENGINE_PROFILE.trailingStopPct);
+  if (engineHoldMinutesInput) engineHoldMinutesInput.value = String(CORE_ENGINE_PROFILE.maxHoldMinutes);
+  if (engineCooldownInput) engineCooldownInput.value = String(CORE_ENGINE_PROFILE.cooldownSec);
+  if (enginePollInput) enginePollInput.value = String(config.pollIntervalSec ?? paperIntervalInput?.value ?? 30);
 }
 
 function readEngineConfigFromUi() {
+  const pollIntervalSec = Math.max(5, Math.min(3600, Number(paperIntervalInput?.value || enginePollInput?.value || 30)));
+  const tradeAmountUsd = Math.max(1, Math.min(50000, Number(paperMaxPositionInput?.value || engineAmountInput?.value || 25)));
   return {
     enabled: true,
     mode: PAPER_ONLY_MODE ? "paper" : "live",
     paperBudgetUsd: Math.max(10, Math.min(1_000_000, Number(paperBudgetInput?.value || 100))),
-    tradeAmountUsd: Math.max(1, Math.min(50000, Number(engineAmountInput?.value || 5))),
-    maxOpenPositions: Math.max(1, Math.min(50, Number(engineMaxOpenInput?.value || 8))),
-    tpPct: Math.max(0.2, Math.min(200, Number(engineTpInput?.value || 1.8))),
-    slPct: Math.max(0.2, Math.min(99, Number(engineSlInput?.value || 1.0))),
-    trailingStopPct: Math.max(0.1, Math.min(99, Number(engineTrailingInput?.value || 0.6))),
-    maxHoldMinutes: Math.max(1, Math.min(10080, Number(engineHoldMinutesInput?.value || 20))),
-    cooldownSec: Math.max(0, Math.min(86400, Number(engineCooldownInput?.value || 5))),
-    pollIntervalSec: Math.max(2, Math.min(3600, Number(enginePollInput?.value || 5)))
+    tradeAmountUsd,
+    maxOpenPositions: CORE_ENGINE_PROFILE.maxOpenPositions,
+    tpPct: CORE_ENGINE_PROFILE.tpPct,
+    slPct: CORE_ENGINE_PROFILE.slPct,
+    trailingStopPct: CORE_ENGINE_PROFILE.trailingStopPct,
+    maxHoldMinutes: CORE_ENGINE_PROFILE.maxHoldMinutes,
+    cooldownSec: CORE_ENGINE_PROFILE.cooldownSec,
+    pollIntervalSec
   };
 }
 
@@ -2820,41 +2920,19 @@ function applyEnginePreset(name, { quiet = false } = {}) {
 }
 
 function syncAgentTempoButtons() {
-  const selected = String(localStorage.getItem("enigma_agent_tempo") || "");
-  document.querySelectorAll("button[data-agent-tempo]").forEach((button) => {
-    const name = String(button.getAttribute("data-agent-tempo") || "");
-    button.classList.toggle("active", Boolean(name) && name === selected);
-  });
+  return;
 }
 
 function applyAgentTempoPreset(name, { quiet = false } = {}) {
-  const preset = agentTempoPresets[name];
-  if (!preset) return;
-
-  if (paperIntervalInput) paperIntervalInput.value = String(preset.paperIntervalSec);
-  if (paperMinPatternInput) paperMinPatternInput.value = String(preset.minPatternScore);
-  if (paperMinConfidenceInput) paperMinConfidenceInput.value = String(preset.minConfidence);
-  if (paperMaxConnectedInput) paperMaxConnectedInput.value = String(preset.maxConnectedHolderPct);
-  if (paperAllowCautionInput) paperAllowCautionInput.checked = Boolean(preset.allowCautionEntries);
-  if (paperAllowHighRiskInput) paperAllowHighRiskInput.checked = Boolean(preset.allowHighRiskEntries);
-
-  if (enginePollInput) enginePollInput.value = String(preset.enginePollSec);
-  if (engineMaxOpenInput) engineMaxOpenInput.value = String(preset.maxOpenPositions);
-  if (engineTpInput) engineTpInput.value = String(preset.tpPct);
-  if (engineSlInput) engineSlInput.value = String(preset.slPct);
-  if (engineTrailingInput) engineTrailingInput.value = String(preset.trailingStopPct);
-  if (engineHoldMinutesInput) engineHoldMinutesInput.value = String(preset.maxHoldMinutes);
-  if (engineCooldownInput) engineCooldownInput.value = String(preset.cooldownSec);
-
-  localStorage.setItem("enigma_agent_tempo", name);
-  syncAgentTempoButtons();
-  syncQuickAmountButtonState();
-
+  if (paperIntervalInput) {
+    const requested = String(name || "").trim();
+    const preset = agentTempoPresets[requested];
+    if (preset) {
+      paperIntervalInput.value = String(preset.paperIntervalSec);
+    }
+  }
   if (!quiet) {
-    pushMessage(
-      `Applied ${preset.label}: entry checks ${preset.enginePollSec}s, cooldown ${preset.cooldownSec}s, max open ${preset.maxOpenPositions}.`,
-      "ok"
-    );
+    pushMessage("Autopilot cadence updated.", "ok");
   }
 }
 
@@ -2879,36 +2957,6 @@ function syncQuickAmountButtonState() {
 }
 
 function bindTradeConsoleControls() {
-  document
-    .querySelectorAll(".quick-amount-buttons[data-target-input] button[data-amount]")
-    .forEach((button) => {
-      button.addEventListener("click", () => {
-        const group = button.closest(".quick-amount-buttons[data-target-input]");
-        const targetId = String(group?.getAttribute("data-target-input") || "");
-        if (!targetId) return;
-        const input = document.getElementById(targetId);
-        if (!input) return;
-        input.value = String(Number(button.getAttribute("data-amount") || 0));
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-        syncQuickAmountButtonState();
-      });
-    });
-
-  document.querySelectorAll("button[data-engine-preset]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const preset = String(button.getAttribute("data-engine-preset") || "balanced");
-      applyEnginePreset(preset);
-    });
-  });
-
-  document.querySelectorAll("button[data-agent-tempo]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const preset = String(button.getAttribute("data-agent-tempo") || "");
-      if (!preset) return;
-      applyAgentTempoPreset(preset);
-    });
-  });
-
   document.querySelectorAll("button[data-agent-price-window]").forEach((button) => {
     button.addEventListener("click", () => {
       agentPriceWindowSec = normalizeAgentPriceWindowSec(button.getAttribute("data-agent-price-window"));
@@ -2916,69 +2964,27 @@ function bindTradeConsoleControls() {
       renderAgentPriceGraph();
     });
   });
-
-  paperMaxPositionInput?.addEventListener("input", syncQuickAmountButtonState);
-  engineAmountInput?.addEventListener("input", syncQuickAmountButtonState);
-  syncQuickAmountButtonState();
-  syncAgentTempoButtons();
   syncAgentPriceWindowButtons();
 }
 
 function applySavedTempoPreset() {
-  const preset = String(localStorage.getItem("enigma_agent_tempo") || "");
-  if (preset && agentTempoPresets[preset]) {
-    applyAgentTempoPreset(preset, { quiet: true });
-    return;
+  if (paperIntervalInput && !Number(paperIntervalInput.value || 0)) {
+    paperIntervalInput.value = "30";
   }
-  applyAgentTempoPreset("scalp_1m", { quiet: true });
-  pushMessage("Default tempo set: 1m Scalp (fast autonomous mode).", "info");
 }
 
 function applyOperatingPreset(name, { quiet = false } = {}) {
-  const normalized =
-    name === "fast_scalp" || name === "balanced" || name === "beginner" ? name : "beginner";
-  if (agentOperatingPresetSelect) {
-    agentOperatingPresetSelect.value = normalized;
-  }
-  localStorage.setItem("enigma_operating_preset", normalized);
-
-  if (normalized === "fast_scalp") {
-    applyAgentTempoPreset("scalp_1m", { quiet: true });
-    applyEnginePreset("scalp", { quiet: true });
-    applyPaperTestModel("guardian_fast", { quiet: true, persist: true });
-    if (paperMaxPositionInput) paperMaxPositionInput.value = "5";
-    if (paperBudgetInput) paperBudgetInput.value = "100";
-    if (engineAmountInput) engineAmountInput.value = "5";
-  } else if (normalized === "balanced") {
-    applyAgentTempoPreset("momentum_5m", { quiet: true });
-    applyEnginePreset("balanced", { quiet: true });
-    applyPaperTestModel("guardian_balanced", { quiet: true, persist: true });
-    if (paperMaxPositionInput) paperMaxPositionInput.value = "5";
-    if (paperBudgetInput) paperBudgetInput.value = "250";
-    if (engineAmountInput) engineAmountInput.value = "5";
-  } else {
-    applyPaperBeginner25Preset({ quiet: true });
-    applyAgentTempoPreset("cycle_15m", { quiet: true });
-    applyEnginePreset("balanced", { quiet: true });
-    applyPaperTestModel("guardian_safe", { quiet: true, persist: true });
-    if (paperMaxPositionInput) paperMaxPositionInput.value = "5";
-    if (paperBudgetInput) paperBudgetInput.value = "100";
-    if (engineAmountInput) engineAmountInput.value = "5";
-    if (engineMaxOpenInput) engineMaxOpenInput.value = "2";
-  }
-
-  syncQuickAmountButtonState();
+  applyPaperTestModel(CORE_AGENT_MODEL_KEY, { quiet: true, persist: true });
+  if (!paperBudgetInput?.value) paperBudgetInput.value = "100";
+  if (!paperMaxPositionInput?.value) paperMaxPositionInput.value = "25";
+  if (!paperIntervalInput?.value) paperIntervalInput.value = "30";
   if (!quiet) {
-    const label =
-      normalized === "fast_scalp" ? "Fast" : normalized === "balanced" ? "Balanced" : "Conservative";
-    const actionHint = PAPER_ONLY_MODE ? "Use Run Test, then Stop." : "Use Run Test or Run Live, then Stop.";
-    pushMessage(`Operating preset applied: ${label}. ${actionHint}`, "ok");
+    pushMessage("AIG Core model active. Budget, trade amount, and check cadence updated.", "ok");
   }
 }
 
 function applySavedOperatingPreset() {
-  const preset = String(localStorage.getItem("enigma_operating_preset") || "beginner");
-  applyOperatingPreset(preset, { quiet: true });
+  applyOperatingPreset(CORE_AGENT_MODEL_KEY, { quiet: true });
 }
 
 function renderEnginePositions(positions = []) {
@@ -3149,7 +3155,11 @@ function renderTradeActivityVisualization() {
     if (!tradeActivityEvents.length) {
       const latestSystemNote = tradeActivitySystemNotes[0] || null;
       tradeActivityChart.innerHTML =
-        `<div class="muted">No executed paper trades yet. Bot is scanning entries. Once BUY/SELL happens, this chart will show exact realized profit progression.${latestSystemNote ? ` Latest engine note: ${escapeHtml(compactTradeLogNote(String(latestSystemNote.note || "")))}` : ""}</div>`;
+        `<div class="trade-empty-state">
+          <strong>No paper trade executed yet.</strong>
+          <span>AIG Core is scanning for a valid entry. This panel only updates after an actual BUY or SELL fill.</span>
+          ${latestSystemNote ? `<span><strong>Current block reason:</strong> ${escapeHtml(compactTradeLogNote(String(latestSystemNote.note || "")))}</span>` : ""}
+        </div>`;
     } else {
       const events = tradeActivityEvents.slice(-80);
       const points = [{ index: 0, equity: 100 }];
@@ -3191,6 +3201,8 @@ function renderTradeActivityVisualization() {
       const realizedText = formatSignedUsd(snapshot.realizedPnlUsd);
       const unrealizedText = formatSignedUsd(snapshot.unrealizedPnlUsd);
       const netText = formatSignedUsd(snapshot.netPnlUsd);
+      const winCount = formatNumber(snapshot.winSells, 0);
+      const lossCount = formatNumber(snapshot.lossSells, 0);
 
       tradeActivityChart.innerHTML = `
         <svg class="trend-svg trade-activity-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
@@ -3209,6 +3221,8 @@ function renderTradeActivityVisualization() {
         <div class="trade-activity-meta">
           <span><strong>Buys:</strong> ${buyCount}</span>
           <span><strong>Sells:</strong> ${sellCount}</span>
+          <span><strong>Wins:</strong> ${winCount}</span>
+          <span><strong>Losses:</strong> ${lossCount}</span>
           <span><strong>Closed Win Rate:</strong> ${formatPct(snapshot.closedWinRatePct, 2)}</span>
           <span><strong>Realized PnL:</strong> ${realizedText}</span>
           <span><strong>Unrealized PnL:</strong> ${unrealizedText}</span>
@@ -3225,17 +3239,18 @@ function renderTradeActivityVisualization() {
   if (tradeActivityLog) {
     if (!tradeActivityEvents.length) {
       if (!tradeActivitySystemNotes.length) {
-        tradeActivityLog.innerHTML = `<div class="msg">No executed BUY/SELL actions yet. This table shows actual paper fills only (not forecast candidates).</div>`;
+        tradeActivityLog.innerHTML = `<div class="msg">No executed BUY/SELL fills yet. Candidate forecasts do not appear here. This table starts once AIG Core opens a paper position.</div>`;
       } else {
         const rows = tradeActivitySystemNotes.slice(0, 8);
         tradeActivityLog.innerHTML = `
+          <div class="msg trade-log-status">No executed fills yet. Latest engine updates are shown below until the first BUY opens.</div>
           <table class="paper-results-table">
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Type</th>
+                <th>Status</th>
                 <th>Token</th>
-                <th>Engine Note</th>
+                <th>Why No Trade Yet</th>
               </tr>
             </thead>
             <tbody>
@@ -3345,7 +3360,7 @@ function renderAgentScannerSummary(decisions = [], context = {}) {
     list.find((item) => String(item?.mint || "") === preferredMint) || list[0] || null;
   if (!primary) {
     agentScannerSummary.innerHTML =
-      `<div class="msg">No scanner report yet. Run Test Mode or Live Agent to generate token report.</div>`;
+      `<div class="msg">No scanner report yet. Run Test to generate the latest AIG Core paper-trading analysis for your saved token.</div>`;
     return;
   }
 
@@ -3386,7 +3401,7 @@ function renderAgentScannerSummary(decisions = [], context = {}) {
             : formatNumber(regime.volatilityIndex, 2)
         )}
       </p>
-      <p class="small muted">Reason: ${escapeHtml(reasons[0] || "No reason provided")}</p>
+      <p class="small muted">Why this setup: ${escapeHtml(reasons[0] || "No reason provided")}</p>
       <p class="small muted">Updated: ${escapeHtml(formatDateTime(ts))}</p>
       <p class="small muted">Monitoring set: ${escapeHtml(agentTargetMints.map((mint) => shortMint(mint, 4, 4)).join(", ") || "N/A")}</p>
     </div>
@@ -3737,39 +3752,28 @@ async function runPaperTradeOnce(options = {}) {
   paperRunInFlight = true;
   setPaperStatus("Running", "busy");
   try {
-    const selectedModel = resolvePaperTestModel(paperTestModelSelect?.value);
-    const cycleModels = [
-      selectedModel,
-      ...paperTestModelCycle.filter((name) => name !== selectedModel)
-    ];
+    const selectedModel = CORE_AGENT_MODEL_KEY;
     const runResponses = [];
     const runErrors = [];
-    const primaryRunByMint = new Map();
 
     for (const mint of agentMints) {
-      for (const model of cycleModels) {
-        try {
-          applyPaperTestModel(model, { quiet: true, persist: false });
-          await savePaperConfig({ forceEnabled: true, silent: true });
-          const runResponse = await api(
-            "/api/autotrade/run",
-            {
-              mint,
-              testModel: model
-            },
-            true,
-            "POST"
-          );
-          const enriched = { ...runResponse, _mint: mint };
-          runResponses.push(enriched);
-          if (model === selectedModel) {
-            primaryRunByMint.set(mint, enriched);
-          }
-        } catch (error) {
-          runErrors.push(
-            `${shortMint(mint, 6, 6)} ${getPaperTestModelLabel(model)}: ${String(error?.message || "failed")}`
-          );
-        }
+      try {
+        applyPaperTestModel(selectedModel, { quiet: true, persist: false });
+        await savePaperConfig({ forceEnabled: true, silent: true });
+        const runResponse = await api(
+          "/api/autotrade/run",
+          {
+            mint,
+            testModel: selectedModel
+          },
+          true,
+          "POST"
+        );
+        runResponses.push({ ...runResponse, _mint: mint });
+      } catch (error) {
+        runErrors.push(
+          `${shortMint(mint, 6, 6)} ${getPaperTestModelLabel(selectedModel)}: ${String(error?.message || "failed")}`
+        );
       }
     }
 
@@ -3794,23 +3798,19 @@ async function runPaperTradeOnce(options = {}) {
         avgExpectedPnlPct: 0
       }
     };
-    const selectedResponses = [];
-    for (const mint of agentMints) {
-      const selectedForMint = primaryRunByMint.get(mint) || runResponses.find((item) => item._mint === mint) || null;
-      if (!selectedForMint) continue;
-      selectedResponses.push(selectedForMint);
-      mergedResponse.ts = String(selectedForMint.ts || mergedResponse.ts);
-      mergedResponse.mode = String(selectedForMint.mode || mergedResponse.mode);
-      mergedResponse.decisions.push(...(Array.isArray(selectedForMint.decisions) ? selectedForMint.decisions : []));
-      mergedResponse.warnings.push(...(Array.isArray(selectedForMint.warnings) ? selectedForMint.warnings : []));
-      mergedResponse.summary.buyCandidates += Number(selectedForMint.summary?.buyCandidates || 0);
-      mergedResponse.summary.skipped += Number(selectedForMint.summary?.skipped || 0);
-      mergedResponse.summary.simulatedExposureUsd += Number(selectedForMint.summary?.simulatedExposureUsd || 0);
-      mergedResponse.summary.effectiveTradeAmountUsd = Number(selectedForMint.summary?.effectiveTradeAmountUsd || 0);
-      mergedResponse.summary.maxPositionUsd = Number(selectedForMint.summary?.maxPositionUsd || mergedResponse.summary.maxPositionUsd || 0);
-      mergedResponse.summary.avgExpectedPnlPct += Number(selectedForMint.summary?.avgExpectedPnlPct || 0);
+    for (const run of runResponses) {
+      mergedResponse.ts = String(run.ts || mergedResponse.ts);
+      mergedResponse.mode = String(run.mode || mergedResponse.mode);
+      mergedResponse.decisions.push(...(Array.isArray(run.decisions) ? run.decisions : []));
+      mergedResponse.warnings.push(...(Array.isArray(run.warnings) ? run.warnings : []));
+      mergedResponse.summary.buyCandidates += Number(run.summary?.buyCandidates || 0);
+      mergedResponse.summary.skipped += Number(run.summary?.skipped || 0);
+      mergedResponse.summary.simulatedExposureUsd += Number(run.summary?.simulatedExposureUsd || 0);
+      mergedResponse.summary.effectiveTradeAmountUsd = Number(run.summary?.effectiveTradeAmountUsd || 0);
+      mergedResponse.summary.maxPositionUsd = Number(run.summary?.maxPositionUsd || mergedResponse.summary.maxPositionUsd || 0);
+      mergedResponse.summary.avgExpectedPnlPct += Number(run.summary?.avgExpectedPnlPct || 0);
     }
-    const selectedCount = Math.max(1, selectedResponses.length);
+    const selectedCount = Math.max(1, runResponses.length);
     mergedResponse.summary.avgExpectedPnlPct = Number(
       (mergedResponse.summary.avgExpectedPnlPct / selectedCount).toFixed(2)
     );
@@ -3857,15 +3857,14 @@ async function runPaperTradeOnce(options = {}) {
       pushMessage(`History refresh skipped: ${error.message}`, "info");
     }
     if (runResponses.length > 0) {
-      const comparisonSummary = runResponses.slice(-12)
+      const runSummary = runResponses.slice(-12)
         .map((run) => {
-          const modelLabel = getPaperTestModelLabel(run?.summary?.testModel || "");
           const candidates = Number(run?.summary?.buyCandidates || 0);
           const expected = Number(run?.summary?.avgExpectedPnlPct || 0);
-          return `${shortMint(String(run?._mint || ""), 4, 4)} ${modelLabel}: ${candidates} buys, ${formatNumber(expected, 2)}%`;
+          return `${shortMint(String(run?._mint || ""), 4, 4)} AIG Core: ${candidates} candidates, ${formatNumber(expected, 2)}% expected`;
         })
         .join(" | ");
-      pushMessage(`3-model cycle completed for ${agentMints.length} token(s) -> ${comparisonSummary}`, "ok");
+      pushMessage(`Autopilot cycle completed for ${agentMints.length} token(s) -> ${runSummary}`, "ok");
     }
     if (runErrors.length) {
       pushMessage(`Some model runs failed: ${runErrors.join(" | ")}`, "error");
@@ -3937,9 +3936,11 @@ async function startPaperLoop() {
 }
 
 async function loadTokenHolders(mint, options = {}) {
-  const modeRaw = String(options.mode || "deep").toLowerCase();
-  const mode = modeRaw === "full" ? "full" : modeRaw === "sample" ? "sample" : "deep";
-  const limit = Math.max(8, Math.min(50, Number(options.limit || (mode === "full" ? 40 : 10))));
+  const modeRaw = String(options.mode || "sample").toLowerCase();
+  const mode = modeRaw === "full" ? "full" : modeRaw === "deep" ? "deep" : "sample";
+  const defaultLimit =
+    mode === "full" ? 40 : mode === "deep" ? HOLDER_DEEP_LIMIT : HOLDER_SAMPLE_LIMIT;
+  const limit = Math.max(8, Math.min(50, Number(options.limit || defaultLimit)));
   const response = await api(
     `/api/token/holders?mint=${encodeURIComponent(mint)}&limit=${limit}&mode=${mode}`,
     null,
@@ -3996,9 +3997,9 @@ async function refreshStats() {
 }
 
 async function refreshUserProfile() {
-  if (!authToken) return;
-  const response = await api("/api/auth/me", null, true, "GET");
+  const response = await api("/api/auth/me", null, false, "GET");
   const user = response.user || {};
+  authToken = "cookie-session";
   userWallet = String(user.wallet || userWallet || "");
   userPlan = String(user.plan || userPlan || "free").toLowerCase();
   localStorage.setItem("enigma_wallet", userWallet);
@@ -4052,13 +4053,9 @@ function signalCard(item) {
   const hasSamplingMeta = Number.isFinite(sampledAccountsRaw) && sampledAccountsRaw > 0;
   const sampledAccounts = hasSamplingMeta ? Math.max(0, Math.floor(sampledAccountsRaw)) : holderProfiles.length;
   const buySellHeader =
-    coverageMode === "full"
-      ? "Buys/Sells (full scan)"
-      : coverageMode === "deep"
-      ? "Buys/Sells (deep scan)"
-      : coverageMode === "sample"
-        ? "Buys/Sells (sample)"
-        : "Buys/Sells";
+    coverageMode === "sample"
+      ? "Buys/Sells (recent sample)"
+      : "Buys/Sells (recent window)";
 
   const status = String(signal.status || "HIGH_RISK");
   const confidence = Number(signal.confidence || 0);
@@ -4102,11 +4099,10 @@ function signalCard(item) {
         )
       );
   const rugBand = rugScore >= 70 ? "High" : rugScore >= 45 ? "Medium" : "Low";
+  const forensics = buildScannerForensics(signal);
+  const bundleTone = scannerBundleTone(forensics.bundleRiskScore);
 
   const topHolders = isExpanded ? holderProfiles : holderProfiles.slice(0, 6);
-  const isFullHistoryLoaded = fullHolderHistoryLoaded.has(mint);
-  const isLoadingFullHistory = loadingFullHolderHistory.has(mint);
-
   return `
     <article class="card ${status.toLowerCase()}">
       <div class="token-main-head">
@@ -4218,6 +4214,46 @@ function signalCard(item) {
         </section>
       </div>
 
+      <section class="intel-box scanner-forensics-box">
+        <div class="row between scanner-forensics-head">
+          <h4>AIG Forensics</h4>
+          <div class="scanner-share-actions">
+            <button class="secondary tiny-btn" data-download-card="${escapeHtml(mint)}">Download PNG</button>
+            <button class="secondary tiny-btn" data-share-x="${escapeHtml(mint)}">Share on X</button>
+          </div>
+        </div>
+        <div class="risk-strip ${bundleTone}">
+          Bundle Risk ${formatNumber(forensics.bundleRiskScore, 0)}/100 (${escapeHtml(forensics.bundleRiskVerdict)})
+        </div>
+        <div class="mini-grid">
+          <div><span>Top 10 Share</span><strong>${formatPctCompact(forensics.top10ExLp, 1)}</strong></div>
+          <div><span>Top 20 Share</span><strong>${formatPctCompact(forensics.top20ExLp, 1)}</strong></div>
+          <div><span>Top Cluster ${forensics.clusterLpIncluded ? "(LP maybe included)" : "(ex-LP)"}</span><strong>${formatPctCompact(forensics.topClusterPct, 1)}</strong></div>
+          <div><span>Analyzed Holders</span><strong>${formatNumber(forensics.analyzedHolderCount, 0)}</strong></div>
+          <div><span>New Wallets</span><strong>${formatPctCompact(forensics.newWalletPct, 1)}</strong></div>
+          <div><span>Avg Bag</span><strong>${forensics.avgBagUsd > 0 ? formatUsd(forensics.avgBagUsd) : "n/a"}</strong></div>
+        </div>
+        <div class="sentiment-box scanner-brief-box">
+          <span>AIG Brief</span>
+          <strong>${escapeHtml(forensics.bundleRiskVerdict === "HIGH" ? "Bundled Risk Elevated" : forensics.bundleRiskVerdict === "CAUTION" ? "Coordination Risk Present" : "No Major Bundle Signal")}</strong>
+          <p>${escapeHtml(forensics.verdictLine)}</p>
+          <p>${escapeHtml(forensics.taLine)}</p>
+          <p>${escapeHtml(forensics.liquidityLine)}</p>
+          <p>${escapeHtml(forensics.verificationNote)}</p>
+        </div>
+        ${
+          forensics.fundingBreakdown.length
+            ? `<div class="cluster-wrap">${forensics.fundingBreakdown
+                .slice(0, 5)
+                .map(
+                  (entry) =>
+                    `<span class="cluster-chip">${escapeHtml(humanizeFundingSource(entry.source))}: ${formatPctCompact(entry.holdPct, 1)} | ${formatNumber(entry.holderCount, 0)} holders</span>`
+                )
+                .join("")}</div>`
+            : ""
+        }
+      </section>
+
       <section class="intel-box holder-box">
         <h4>Holder Pattern Behavior</h4>
         <div class="behavior-summary">
@@ -4260,7 +4296,7 @@ function signalCard(item) {
                             : "n/a";
                           const activityTitle = hasActivitySample
                             ? "Recent sampled buy/sell count."
-                            : "Not sampled in this pass. Expand/re-run deep mode for wider holder coverage.";
+                            : "Not sampled in this pass. Re-scan to refresh the recent activity window.";
                           return `
                         <tr>
                           <td>
@@ -4280,7 +4316,7 @@ function signalCard(item) {
                         }
                       )
                       .join("")
-                  : `<tr><td colspan="7">Holder profile unavailable for this scan.</td></tr>`
+                  : `<tr><td colspan="7">No holder rows returned yet for this pass. Data is sampled from recent transactions by default.</td></tr>`
               }
             </tbody>
           </table>
@@ -4302,27 +4338,13 @@ function signalCard(item) {
             ${isExpanded ? "Collapse Holder List" : "Expand Holder List"}
           </button>
           ${
-            isExpanded
-              ? `<button class="secondary tiny-btn" data-load-full-holders="${escapeHtml(mint)}" ${
-                  isFullHistoryLoaded || isLoadingFullHistory ? "disabled" : ""
-                }>
-                ${isLoadingFullHistory ? "Loading Full..." : isFullHistoryLoaded ? "Full Loaded" : "Load Full Tx History"}
-              </button>`
-              : ""
-          }
-          ${
             isLoadingHolders
-              ? `<span class="holders-loading">Loading top-10 holder behavior (deep mode)...</span>`
+              ? `<span class="holders-loading">Loading top-10 holder behavior (recent mode)...</span>`
               : ""
           }
           ${
-            isLoadingFullHistory
-              ? `<span class="holders-loading">Loading full holder wallet history (this can take longer)...</span>`
-              : ""
-          }
-          ${
-            isExpanded && !isFullHistoryLoaded && !isLoadingFullHistory
-              ? `<span class="holders-loading">Showing fast deep snapshot first. Use "Load Full Tx History" for slower full pass.</span>`
+            isExpanded
+              ? `<span class="holders-loading">Showing recent transaction sample (rolling recent activity, not full lifetime history).</span>`
               : ""
           }
         </div>
@@ -4343,12 +4365,66 @@ function signalCard(item) {
 }
 
 function attachCardHandlers() {
+  const applyHolderDetails = (match, details) => {
+    if (!match?.signal?.killSwitch?.risk) return false;
+    const risk = match.signal.killSwitch.risk;
+    const currentProfiles = Array.isArray(risk.holderProfiles) ? risk.holderProfiles : [];
+    const nextProfiles = Array.isArray(details?.holderProfiles) ? details.holderProfiles : [];
+    const nextBehavior =
+      details?.holderBehavior && typeof details.holderBehavior === "object"
+        ? details.holderBehavior
+        : null;
+    const coverage =
+      nextBehavior && typeof nextBehavior.analysisCoverage === "object"
+        ? nextBehavior.analysisCoverage
+        : {};
+    const nextTopAccounts = Number(coverage.topAccountsAnalyzed || nextBehavior?.analyzedTopAccounts || 0);
+    const nextNote = String(coverage.note || "").trim();
+    const hasCoverageMeta = Boolean(nextBehavior) && (nextTopAccounts > 0 || nextNote.length > 0);
+
+    if (nextProfiles.length > 0) {
+      risk.holderProfiles = nextProfiles;
+    }
+    if (hasCoverageMeta || (Boolean(nextBehavior) && !currentProfiles.length)) {
+      risk.holderBehavior = nextBehavior || risk.holderBehavior || {};
+    }
+    return nextProfiles.length > 0 || hasCoverageMeta;
+  };
+
   document.querySelectorAll("button[data-copy-mint]").forEach((button) => {
     button.addEventListener("click", async () => {
       const mint = String(button.getAttribute("data-copy-mint") || "");
       if (!mint) return;
       await navigator.clipboard.writeText(mint);
       pushMessage(`Copied token ${shortMint(mint)}`, "info");
+    });
+  });
+
+  document.querySelectorAll("button[data-download-card]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const mint = String(button.getAttribute("data-download-card") || "");
+      const match = lastSignalItems.find((item) => String(item?.mint || "") === mint && item?.ok && item?.signal);
+      if (!match?.signal) return;
+      try {
+        await downloadScannerCardPng(match.signal);
+        pushMessage(`Downloaded forensics PNG for ${shortMint(mint)}`, "ok");
+      } catch (error) {
+        notifyActionError(error, "download scanner report");
+      }
+    });
+  });
+
+  document.querySelectorAll("button[data-share-x]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const mint = String(button.getAttribute("data-share-x") || "");
+      const match = lastSignalItems.find((item) => String(item?.mint || "") === mint && item?.ok && item?.signal);
+      if (!match?.signal) return;
+      try {
+        shareScannerCardToX(match.signal);
+        pushMessage(`Opened X share for ${shortMint(mint)}`, "ok");
+      } catch (error) {
+        notifyActionError(error, "share scanner report");
+      }
     });
   });
 
@@ -4368,12 +4444,17 @@ function attachCardHandlers() {
       renderSignals(lastSignalItems);
 
       try {
-        blockFullscreenUi("Loading top holder behavior (deep mode)...");
-        const details = await loadTokenHolders(mint, { mode: "deep", limit: 10 });
+        blockFullscreenUi("Loading recent holder behavior...");
+        const details = await loadTokenHolders(mint, { mode: "sample", limit: HOLDER_SAMPLE_LIMIT });
         const match = lastSignalItems.find((item) => item.ok && (item.mint === mint || item.signal?.mint === mint));
-        if (match?.signal?.killSwitch?.risk) {
-          match.signal.killSwitch.risk.holderProfiles = details.holderProfiles || [];
-          match.signal.killSwitch.risk.holderBehavior = details.holderBehavior || {};
+        if (match) {
+          const updated = applyHolderDetails(match, details);
+          if (!updated) {
+            pushMessage(
+              `No additional holder rows returned for ${shortMint(mint)}. Keeping latest recent snapshot.`,
+              "info"
+            );
+          }
         }
       } catch (error) {
         notifyActionError(error, `load holder details for ${shortMint(mint)}`);
@@ -4384,49 +4465,14 @@ function attachCardHandlers() {
       }
     });
   });
-
-  document.querySelectorAll("button[data-load-full-holders]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const mint = String(button.getAttribute("data-load-full-holders") || "");
-      if (!mint || loadingFullHolderHistory.has(mint) || fullHolderHistoryLoaded.has(mint)) return;
-
-      loadingFullHolderHistory.add(mint);
-      renderSignals(lastSignalItems);
-      try {
-        blockFullscreenUi("Loading full holder transaction history...");
-        const details = await loadTokenHolders(mint, { mode: "full", limit: 40 });
-        const match = lastSignalItems.find((item) => item.ok && (item.mint === mint || item.signal?.mint === mint));
-        if (match?.signal?.killSwitch?.risk) {
-          match.signal.killSwitch.risk.holderProfiles = details.holderProfiles || [];
-          match.signal.killSwitch.risk.holderBehavior = details.holderBehavior || {};
-          fullHolderHistoryLoaded.add(mint);
-        }
-      } catch (error) {
-        notifyActionError(error, `load full holder details for ${shortMint(mint)}`);
-      } finally {
-        unblockFullscreenUi();
-        loadingFullHolderHistory.delete(mint);
-        renderSignals(lastSignalItems);
-      }
-    });
-  });
 }
 
 function renderSignals(items) {
   if (!signalFeed) return;
   lastSignalItems = items || [];
-  const visibleMints = new Set();
   lastSignalItems.forEach((item) => {
     if (!item?.ok) return;
-    const mint = String(item.mint || item.signal?.mint || "");
-    if (mint) visibleMints.add(mint);
     cacheTokenMeta(item.signal?.token || null, String(item.mint || item.signal?.mint || ""));
-  });
-  Array.from(fullHolderHistoryLoaded).forEach((mint) => {
-    if (!visibleMints.has(mint)) fullHolderHistoryLoaded.delete(mint);
-  });
-  Array.from(loadingFullHolderHistory).forEach((mint) => {
-    if (!visibleMints.has(mint)) loadingFullHolderHistory.delete(mint);
   });
   renderHeatmap(lastSignalItems);
   let viewItems = filteredAndSortedItems(lastSignalItems);
@@ -4498,25 +4544,26 @@ function renderDiscovery(items) {
           <div class="discover-actions">
             <a href="${escapeHtml(links.dexscreener || "#")}" target="_blank" rel="noreferrer">DexScreener</a>
             <a href="${escapeHtml(links.birdeye || "#")}" target="_blank" rel="noreferrer">Birdeye</a>
-            <button data-add-mint="${escapeHtml(mint)}">Add to Watchlist</button>
+            <button data-scan-mint="${escapeHtml(mint)}">Scan This Token</button>
           </div>
         </article>
       `;
     })
     .join("");
 
-  document.querySelectorAll("button[data-add-mint]").forEach((button) => {
+  document.querySelectorAll("button[data-scan-mint]").forEach((button) => {
     button.addEventListener("click", async () => {
-      setButtonBusy(button, true, "Adding...");
+      setButtonBusy(button, true, "Scanning...");
       try {
-        if (!ensureWalletConnected("add discovery token to watchlist")) return;
-        const mint = String(button.getAttribute("data-add-mint") || "");
+        if (!ensureWalletConnected("scan discovered token")) return;
+        const mint = String(button.getAttribute("data-scan-mint") || "");
         if (!mint) return;
-        const saved = await api("/api/watchlist/add", { mint }, true);
-        setWatchlistMints(saved.mints || []);
-        pushMessage(`Added ${shortMint(mint)} to watchlist`, "ok");
+        await runSingleMintScan(mint, {
+          loadingMessage: "Scanning selected random token...",
+          successPrefix: "Random selection scan completed for"
+        });
       } catch (error) {
-        notifyActionError(error, "add discovery token to watchlist");
+        notifyActionError(error, "scan discovered token");
       } finally {
         setButtonBusy(button, false);
       }
@@ -4524,133 +4571,88 @@ function renderDiscovery(items) {
   });
 }
 
-async function scanWatchlist(options = {}) {
+function normalizeSignalItems(items) {
+  return (items || [])
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const mint = String(item.mint || item.signal?.token?.mint || item.signal?.mint || "").trim();
+      if (!mint) return null;
+      if (item.ok === false) {
+        return { mint, ok: false, error: String(item.error || "scan failed") };
+      }
+      return {
+        mint,
+        ok: true,
+        signalId: Number(item.signalId || 0) || undefined,
+        signal: item.signal || {}
+      };
+    })
+    .filter(Boolean);
+}
+
+function processScanItems(items, successMessage) {
+  const normalized = normalizeSignalItems(items);
+  if (!normalized.length) {
+    throw new Error("Scanner returned no token data in this pass.");
+  }
+  renderSignals(normalized);
+  updateSessionAnalyticsFromItems(normalized);
+  evaluateSignalAlerts(normalized);
+  renderAnalytics();
+  if (successMessage) {
+    pushMessage(successMessage, "ok");
+  }
+  return normalized;
+}
+
+async function runSingleMintScan(mint, options = {}) {
+  const loadingMessage = String(options.loadingMessage || "Running scan and building report...");
+  const successPrefix = String(options.successPrefix || "Manual scan completed for");
+  blockFullscreenUi(loadingMessage);
+  try {
+    const response = await api("/api/signal", { mint }, true, "POST", {
+      timeoutMs: MANUAL_SCAN_TIMEOUT_MS,
+      maxAttempts: 1
+    });
+    processScanItems(
+      [{ mint, ok: true, signalId: response.signalId, signal: response.signal }],
+      `${successPrefix} ${shortMint(mint)}`
+    );
+  } finally {
+    unblockFullscreenUi();
+  }
+}
+
+async function scanRandomToken(options = {}) {
   if (!ensureWalletConnected("run scanner scan")) {
     throw buildWalletRequiredError("run scanner scan");
   }
   const shouldBlockUi = Boolean(options.blockUi);
-  const blockMessage = String(options.blockMessage || "Scanning tokens. Please wait...");
+  const blockMessage = String(options.blockMessage || "Scanning one random token. Please wait...");
+  const showDiscoveryCard = options.showDiscoveryCard !== false;
   if (shouldBlockUi) {
     blockFullscreenUi(blockMessage);
   }
   try {
-    const response = await api("/api/watchlist/scan", {}, true, "POST", {
+    const response = await api("/api/discovery/suggest", { limit: 1 }, true, "POST", {
       timeoutMs: MANUAL_SCAN_TIMEOUT_MS,
       maxAttempts: 1
     });
-    const items = response.items || [];
-    renderSignals(items);
-    updateSessionAnalyticsFromItems(items);
-    evaluateSignalAlerts(items);
-    renderAnalytics();
-    pushMessage(`Scanned ${response.watchlist?.length || 0} scanner tokens`, "ok");
+    const rawItems = Array.isArray(response.items) ? response.items : [];
+    const normalized = normalizeSignalItems(rawItems);
+    const first = normalized[0];
+    if (!first) {
+      throw new Error("No random token available right now. Try again.");
+    }
+    if (showDiscoveryCard) {
+      renderDiscovery(rawItems.slice(0, 1));
+    }
+    processScanItems([first], `Random scan completed for ${shortMint(first.mint)}`);
+    return first;
   } finally {
     if (shouldBlockUi) {
       unblockFullscreenUi();
     }
-  }
-}
-
-function stopScan() {
-  if (scanTimer) {
-    clearInterval(scanTimer);
-    scanTimer = null;
-  }
-  scanStopAt = 0;
-  setScanStatus("Stopped");
-  syncScannerModeUi();
-}
-
-async function startScan() {
-  if (selectedScannerMode() !== "dynamic") {
-    pushMessage("Scanner is in Manual mode. Use Manual token scan or switch to Dynamic mode.", "info");
-    return;
-  }
-  if (!dynamicScanEligible()) {
-    pushMessage("Dynamic scan is premium-only and temporarily disabled right now.", "error");
-    return;
-  }
-  if (!ensureWalletConnected("start dynamic scan")) return;
-  setButtonBusy(startScanButton, true, "Starting...");
-  const intervalSec = resolveScanIntervalSec();
-  const durationHours = Math.min(24, Math.max(1, Number(scanHoursInput?.value || 24)));
-  if (scanHoursInput) scanHoursInput.value = String(durationHours);
-
-  try {
-    stopScan();
-    if (!watchlistMints.length) {
-      throw new Error("Add at least 1 token from Random Token Ideas first.");
-    }
-    await saveWatchlist({ quiet: true });
-    resetSessionAnalytics();
-    renderAnalytics();
-    await scanWatchlist({
-      blockUi: true,
-      blockMessage: "Running initial scan batch. Please wait..."
-    });
-
-    scanStopAt = Date.now() + durationHours * 60 * 60 * 1000;
-    setScanStatus(`Live (${intervalSec}s)`, "ok");
-
-    scanTimer = setInterval(async () => {
-      if (Date.now() >= scanStopAt) {
-        stopScan();
-        pushMessage("Scan duration ended", "info");
-        return;
-      }
-
-      try {
-        setScanStatus("Scanning", "busy");
-        await scanWatchlist();
-        setScanStatus("Live", "ok");
-      } catch (error) {
-        if (isRateLimitedError(error)) {
-          stopScan();
-          setScanStatus("Rate limited", "busy");
-          notifyActionError(error, "continue dynamic scan");
-          pushMessage("Dynamic scan paused due rate limit. Wait about 60 seconds, then restart scan.", "info");
-          return;
-        }
-        setScanStatus("Error", "error");
-        notifyActionError(error, "continue dynamic scan", { toast: false });
-      }
-    }, intervalSec * 1000);
-    syncScannerModeUi();
-  } catch (error) {
-    if (isRateLimitedError(error)) {
-      setScanStatus("Rate limited", "busy");
-    } else {
-      setScanStatus("Error", "error");
-    }
-    notifyActionError(error, "start dynamic scan");
-  } finally {
-    setButtonBusy(startScanButton, false);
-    syncScannerModeUi();
-  }
-}
-
-async function startGuidedScan() {
-  setButtonBusy(startGuidedScanButton, true, "Starting...");
-  try {
-    setWorkspace("scanner");
-    applyBeginnerSetup({ quiet: true });
-    if (!authToken) {
-      throw new Error("Connect wallet first (Step 1).");
-    }
-    if (!watchlistMints.length) {
-      throw new Error("Add at least 1 token from Random Token Ideas first (Step 2).");
-    }
-
-    await saveWatchlist({ quiet: true });
-    await startScan();
-    const intervalSec = resolveScanIntervalSec();
-    setGuidedStatus(`Guided scan running every ${intervalSec}s. You can review results in Live Scanner Results.`);
-    pushMessage("Guided scan started successfully.", "ok");
-  } catch (error) {
-    setGuidedStatus("Guided scan blocked. Complete Step 1 and Step 2 first.");
-    notifyActionError(error, "start guided scan");
-  } finally {
-    setButtonBusy(startGuidedScanButton, false);
   }
 }
 
@@ -4665,6 +4667,18 @@ async function connectWallet() {
     const connected = await provider.connect();
     const wallet = connected.publicKey.toString();
 
+    const access = await api(`/api/access/kobx?wallet=${encodeURIComponent(wallet)}`, null, false, "GET", {
+      timeoutMs: 20000,
+      maxAttempts: 1
+    });
+    if (!access?.eligible) {
+      await disconnectPhantom(provider);
+      clearLocalSessionState();
+      setNetworkStatus("KOBX required", "error");
+      showKobxAccessBlocked(access);
+      return;
+    }
+
     const nonce = await api("/api/auth/nonce", { wallet });
     const encoded = new TextEncoder().encode(nonce.message);
     const signed = await provider.signMessage(encoded, "utf8");
@@ -4676,24 +4690,19 @@ async function connectWallet() {
       signature: signatureBase64
     });
 
-    authToken = verify.token;
+    authToken = "cookie-session";
     userWallet = wallet;
     userPlan = String(verify.user?.plan || "free").toLowerCase();
-    localStorage.setItem("enigma_token", authToken);
     localStorage.setItem("enigma_wallet", userWallet);
     localStorage.setItem("enigma_plan", userPlan);
     setAuthState();
     pushMessage("Wallet connected", "ok");
-
-    const watchlist = await api("/api/watchlist", null, true);
-    setWatchlistMints(watchlist.mints || []);
 
     await refreshStats();
     await refreshUserProfile();
     await loadPaperConfig();
     await loadPaperPerformance();
     await loadEngineConfig();
-    applySavedTempoPreset();
     applySavedOperatingPreset();
     await loadEnginePositions();
     profileWorkspaceLoadedAt = 0;
@@ -4701,44 +4710,30 @@ async function connectWallet() {
       await loadProfileWorkspaceData({ force: true, silent: true });
     }
   } catch (error) {
-    notifyActionError(error, "connect wallet");
+    if (String(error?.code || "").toUpperCase() === "KOBX_REQUIRED") {
+      await disconnectPhantom(window.solana);
+      clearLocalSessionState();
+      setNetworkStatus("KOBX required", "error");
+      showKobxAccessBlocked(error);
+    } else {
+      notifyActionError(error, "connect wallet");
+    }
   } finally {
     setButtonBusy(connectWalletButton, false);
   }
 }
 
-async function saveWatchlist(options = {}) {
-  if (!ensureWalletConnected("save watchlist")) return;
-  const quiet = Boolean(options.quiet);
-  try {
-    const mints = watchlistMints.join(",");
-    if (!mints) {
-      throw new Error("Add at least 1 mint before saving");
-    }
-    const saved = await api("/api/watchlist", { mints }, true, "PUT");
-    setWatchlistMints(saved.mints || []);
-    if (!quiet) {
-      pushMessage(`Watchlist synced (${saved.mints.length} tokens)`, "ok");
-    }
-  } catch (error) {
-    if (!quiet) {
-      notifyActionError(error, "save watchlist");
-    }
-  }
-}
-
 async function discoverSuggestions() {
-  if (!ensureWalletConnected("load token suggestions")) return;
+  if (!ensureWalletConnected("run random scan")) return;
   setButtonBusy(discoverTokensButton, true, "Scanning...");
   try {
-    const response = await api("/api/discovery/suggest", { limit: 5 }, true, "POST", {
-      timeoutMs: MANUAL_SCAN_TIMEOUT_MS,
-      maxAttempts: 1
+    await scanRandomToken({
+      blockUi: true,
+      blockMessage: "Running random scan and building report...",
+      showDiscoveryCard: true
     });
-    renderDiscovery(response.items || []);
-    pushMessage(`Loaded ${response.items?.length || 0} discovery suggestions`, "ok");
   } catch (error) {
-    notifyActionError(error, "load token suggestions");
+    notifyActionError(error, "run random scan");
   } finally {
     setButtonBusy(discoverTokensButton, false);
   }
@@ -4758,39 +4753,28 @@ async function scanManualMint() {
   }
 
   setButtonBusy(scanManualButton, true, "Scanning...");
-  blockFullscreenUi("Running manual scan and building report...");
   try {
-    const response = await api("/api/signal", { mint }, true, "POST", {
-      timeoutMs: MANUAL_SCAN_TIMEOUT_MS,
-      maxAttempts: 1
+    await runSingleMintScan(mint, {
+      loadingMessage: "Running manual scan and building report...",
+      successPrefix: "Manual scan completed for"
     });
-    const items = [{ mint, ok: true, signalId: response.signalId, signal: response.signal }];
-    renderSignals(items);
-    updateSessionAnalyticsFromItems(items);
-    evaluateSignalAlerts(items);
-    renderAnalytics();
-    pushMessage(`Manual scan completed for ${shortMint(mint)}`, "ok");
   } catch (error) {
     notifyActionError(error, "run manual scan");
   } finally {
-    unblockFullscreenUi();
     setButtonBusy(scanManualButton, false);
   }
 }
 
 async function hydrateSession() {
-  if (!authToken) return;
+  const hadClientSessionHint = Boolean(authToken || userWallet);
   setNetworkStatus("Syncing...", "busy");
 
   try {
-    const watchlist = await api("/api/watchlist", null, true);
-    setWatchlistMints(watchlist.mints || []);
     await refreshUserProfile();
     await refreshStats();
     await loadPaperConfig();
     await loadPaperPerformance();
     await loadEngineConfig();
-    applySavedTempoPreset();
     applySavedOperatingPreset();
     await loadEnginePositions();
     startAgentPriceMonitor();
@@ -4809,12 +4793,19 @@ async function hydrateSession() {
       scheduleSessionReconnect(error?.message || "network");
       return;
     }
+    if (!hadClientSessionHint) {
+      authToken = "";
+      userWallet = "";
+      userPlan = "free";
+      setAuthState();
+      setNetworkStatus(navigator.onLine ? "Connected" : "Offline", navigator.onLine ? "ok" : "error");
+      return;
+    }
     stopRealtimeMonitor();
     stopAgentPriceMonitor();
     authToken = "";
     userWallet = "";
     userPlan = "free";
-    localStorage.removeItem("enigma_token");
     localStorage.removeItem("enigma_wallet");
     localStorage.removeItem("enigma_plan");
     setAuthState();
@@ -4862,15 +4853,6 @@ refreshProfileWorkspaceButton?.addEventListener("click", async () => {
   if (!ensureWalletConnected("refresh profile workspace")) return;
   await loadProfileWorkspaceData({ force: true });
 });
-applyBeginnerSetupButton?.addEventListener("click", () => {
-  applyBeginnerSetup();
-});
-startGuidedScanButton?.addEventListener("click", async () => {
-  await startGuidedScan();
-});
-agentOperatingPresetSelect?.addEventListener("change", () => {
-  applyOperatingPreset(String(agentOperatingPresetSelect.value || "beginner"));
-});
 agentRunTestButton?.addEventListener("click", async () => {
   setButtonBusy(agentRunTestButton, true, "Running...");
   try {
@@ -4898,12 +4880,6 @@ tradeActivityClearButton?.addEventListener("click", () => {
   resetTradeActivity();
   pushMessage("Trade activity cleared.", "info");
 });
-paperBeginner25Button?.addEventListener("click", () => {
-  applyPaperBeginner25Preset();
-});
-paperTestModelSelect?.addEventListener("change", () => {
-  applyPaperTestModel(String(paperTestModelSelect.value || "guardian_balanced"));
-});
 agentSaveTargetButton?.addEventListener("click", () => {
   saveAgentTargetMint({ notify: true });
 });
@@ -4912,21 +4888,6 @@ agentTargetMintInput?.addEventListener("keydown", (event) => {
     event.preventDefault();
     saveAgentTargetMint({ notify: true });
   }
-});
-startScanButton?.addEventListener("click", startScan);
-stopScanButton?.addEventListener("click", stopScan);
-scannerRunModeSelect?.addEventListener("change", () => {
-  if (selectedScannerMode() !== "dynamic" && scanTimer) {
-    stopScan();
-    pushMessage("Dynamic scan stopped. Scanner is now in Manual mode.", "info");
-  }
-  syncScannerModeUi();
-});
-scanSpeedSelect?.addEventListener("change", () => {
-  const current = String(scanSpeedSelect.value || STANDARD_SCAN_INTERVAL_SEC);
-  localStorage.setItem("enigma_scan_speed", current);
-  syncScanSpeedUi();
-  syncScannerModeUi();
 });
 discoverTokensButton?.addEventListener("click", discoverSuggestions);
 scanManualButton?.addEventListener("click", scanManualMint);
@@ -5015,12 +4976,6 @@ document.addEventListener("visibilitychange", () => {
     stopAgentPriceMonitor();
   }
 });
-if (scanSpeedSelect) {
-  const savedScanSpeed = String(localStorage.getItem("enigma_scan_speed") || STANDARD_SCAN_INTERVAL_SEC);
-  scanSpeedSelect.value = SCAN_SPEED_PRESETS.has(savedScanSpeed) ? savedScanSpeed : String(STANDARD_SCAN_INTERVAL_SEC);
-}
-syncScanSpeedUi();
-setGuidedStatus("Need help? Use default setup, then start dynamic scan.");
 syncAlertUi();
 syncThresholdUi();
 renderHeatmap([]);
@@ -5043,10 +4998,10 @@ applyLivePreviewMode();
 setNetworkStatus(navigator.onLine ? "Connected" : "Offline", navigator.onLine ? "ok" : "error");
 startSpaceEntryAnimation();
 hydrateSession();
-pushMessage("Quick path: Connect Wallet -> Add Random Token Ideas -> Start Dynamic Scan.", "info");
-pushMessage("Standard scanner cadence is 30 seconds per batch.", "info");
+pushMessage("Quick path: Connect Wallet -> Scan Random Token or run a Manual token scan.", "info");
+pushMessage("Scanner Workspace is optimized for one-token analysis per action in this release.", "info");
 pushMessage(
-  "Set 1 Agent Token, choose an Operating Preset, then click Run Test. Each cycle evaluates Safe, Balanced, and Fast models for that token.",
+  "Set 1 Agent Token, define budget, trade amount, and check cadence, then click Run Test. AIG Core handles the internal paper-trading rules automatically.",
   "info"
 );
 if (PAPER_ONLY_MODE) {
