@@ -106,6 +106,7 @@ const HOLDER_DEEP_LIMIT = 20;
 const KOBX_MINT = "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump";
 const KOBX_REQUIRED_BALANCE = 500_000;
 const KOBX_BUY_URL = `https://pump.fun/coin/${KOBX_MINT}`;
+const PAPER_RUN_MAX_MINUTES = 8;
 
 let authToken = "";
 let userWallet = localStorage.getItem("enigma_wallet") || "";
@@ -117,6 +118,7 @@ let historicalStats = null;
 let alertEvents = [];
 let sessionTrendPoints = [];
 let paperTradeTimer = null;
+let paperRunCapTimer = null;
 let paperRunHistory = [];
 let paperRunInFlight = false;
 let paperSessionStartedAt = null;
@@ -2614,6 +2616,10 @@ function stopPaperLoop() {
     clearInterval(paperTradeTimer);
     paperTradeTimer = null;
   }
+  if (paperRunCapTimer) {
+    clearTimeout(paperRunCapTimer);
+    paperRunCapTimer = null;
+  }
   stopRealtimeMonitor();
   if (paperSessionStartedAt && (wasRunning || !paperSessionStoppedAt)) {
     paperSessionStoppedAt = new Date().toISOString();
@@ -3988,6 +3994,13 @@ async function startPaperLoop() {
     paperTradeTimer = setInterval(async () => {
       await runPaperTradeOnce({ agentMints });
     }, intervalSec * 1000);
+    if (paperRunCapTimer) {
+      clearTimeout(paperRunCapTimer);
+    }
+    paperRunCapTimer = setTimeout(() => {
+      stopPaperLoop();
+      pushMessage(`Paper run auto-stopped after ${PAPER_RUN_MAX_MINUTES} minutes (daily cap per run).`, "info");
+    }, PAPER_RUN_MAX_MINUTES * 60 * 1000);
     startRealtimeMonitor("paper");
     startAgentPriceMonitor();
     setPaperStatus("Running", "ok");
