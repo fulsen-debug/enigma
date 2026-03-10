@@ -21,16 +21,16 @@
       .proto-card {
         border: 1px solid var(--line);
         border-radius: 14px;
-        background: linear-gradient(180deg, rgba(255, 249, 232, 0.98), rgba(246, 228, 181, 0.95));
+        background: linear-gradient(180deg, rgba(16, 22, 50, 0.96), rgba(8, 13, 33, 0.98));
         padding: 14px;
       }
       .proto-stage {
-        border: 1px solid #cfa764;
+        border: 1px solid rgba(92, 109, 202, 0.72);
         border-radius: 16px;
         padding: 14px;
         background:
-          radial-gradient(circle at 90% 0%, rgba(241, 177, 76, 0.24), transparent 35%),
-          linear-gradient(180deg, rgba(255, 249, 232, 0.98), rgba(244, 223, 169, 0.95));
+          radial-gradient(circle at 90% 0%, rgba(129, 90, 255, 0.2), transparent 35%),
+          linear-gradient(180deg, rgba(16, 22, 50, 0.96), rgba(8, 13, 33, 0.98));
       }
       .mock {
         display: grid;
@@ -40,14 +40,19 @@
       .mock-box {
         border: 1px solid var(--line);
         border-radius: 10px;
-        background: #fff5dd;
+        background: linear-gradient(180deg, rgba(10, 14, 38, 0.98), rgba(6, 10, 28, 0.98));
         padding: 10px;
       }
       .mock-line {
         height: 10px;
         border-radius: 999px;
-        background: #d9b475;
+        background: rgba(130, 149, 248, 0.4);
         margin: 8px 0;
+      }
+      .proto-card p,
+      .proto-stage p,
+      .mock-box h3 {
+        color: #d9e2ff;
       }
       .mock-line.good { background: #2f8e5a; }
       .mock-line.warn { background: #9a6a2d; }
@@ -58,7 +63,7 @@
       }
     </style>
   </head>
-  <body>
+  <body class="theme-dark">
     <header class="hero">
       <h1>KOBECOIN AI Guardian Extension Prototype</h1>
       <p>Investor preview: Pump.fun-native risk guardian and trading co-pilot</p>

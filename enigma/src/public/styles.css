@@ -3565,6 +3565,78 @@ body.theme-dark .trade-log-status {
   color: #dfe5ff !important;
 }
 
+body.theme-dark .hero,
+body.theme-dark .nav,
+body.theme-dark .doc {
+  color: #e8ecff !important;
+}
+
+body.theme-dark .hero p,
+body.theme-dark .hero li,
+body.theme-dark .nav a,
+body.theme-dark .doc-card p,
+body.theme-dark .doc-card li,
+body.theme-dark .doc-card ol,
+body.theme-dark .doc-card ul,
+body.theme-dark .doc-card td {
+  color: #d9e2ff !important;
+}
+
+body.theme-dark .nav a {
+  background: linear-gradient(180deg, rgba(23, 31, 71, 0.88), rgba(11, 16, 43, 0.94)) !important;
+  border-color: rgba(92, 109, 202, 0.72) !important;
+  text-shadow: none;
+}
+
+body.theme-dark .nav a:hover,
+body.theme-dark .nav a:focus-visible,
+body.theme-dark .doc-card a {
+  color: #9fc7ff !important;
+}
+
+body.theme-dark .doc-card h2,
+body.theme-dark .doc-card h3,
+body.theme-dark .doc-card h4,
+body.theme-dark .doc-card strong,
+body.theme-dark .doc-card th {
+  color: #f3f5ff !important;
+}
+
+body.theme-dark .doc-card pre,
+body.theme-dark .table-scroll {
+  background: linear-gradient(180deg, rgba(10, 14, 38, 0.98), rgba(6, 10, 28, 0.98)) !important;
+  border-color: rgba(89, 102, 196, 0.55) !important;
+}
+
+body.theme-dark .doc-card code {
+  color: #cfe0ff !important;
+  background: rgba(96, 117, 232, 0.14);
+  border-radius: 6px;
+  padding: 1px 4px;
+}
+
+body.theme-dark .doc-card pre code {
+  background: transparent;
+  padding: 0;
+}
+
+body.theme-dark .doc-card th,
+body.theme-dark .doc-card td {
+  border-bottom-color: rgba(89, 102, 196, 0.42) !important;
+}
+
+body.theme-dark .doc-link-btn {
+  background: linear-gradient(180deg, rgba(24, 32, 74, 0.92), rgba(12, 18, 48, 0.96)) !important;
+  border-color: rgba(98, 111, 201, 0.72) !important;
+  color: #edf1ff !important;
+}
+
+body.theme-dark .doc-link-btn:hover,
+body.theme-dark .doc-link-btn:focus-visible {
+  background: linear-gradient(180deg, rgba(33, 45, 98, 0.96), rgba(15, 21, 54, 0.98)) !important;
+  color: #ffffff !important;
+}
+
 body.theme-dark .paper-kpi,
 body.theme-dark .mini-grid > div,
 body.theme-dark .risk-strip,
