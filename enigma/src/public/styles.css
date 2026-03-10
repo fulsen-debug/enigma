@@ -3183,7 +3183,8 @@ body.space-entry .app {
   flex-wrap: wrap;
 }
 
-.theme-toggle {
+.theme-toggle,
+.theme-shortcut-link {
   width: auto;
   min-width: 114px;
   padding: 7px 12px;
@@ -3191,6 +3192,13 @@ body.space-entry .app {
   font-weight: 700;
   margin: 0;
   line-height: 1.1;
+}
+
+.theme-shortcut-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
 }
 
 .workspace-shared > .row.between {
@@ -3202,7 +3210,8 @@ body.space-entry .app {
 }
 
 .workspace-head-actions .badge,
-.workspace-head-actions .theme-toggle {
+.workspace-head-actions .theme-toggle,
+.workspace-head-actions .theme-shortcut-link {
   margin: 0;
   align-self: center;
 }

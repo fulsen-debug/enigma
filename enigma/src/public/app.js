@@ -6,7 +6,6 @@ const showAgentWorkspaceButton = document.querySelector("#show-agent-workspace")
 const showProfileWorkspaceButton = document.querySelector("#show-profile-workspace");
 const workspaceSummary = document.querySelector("#workspace-summary");
 const networkStatusBadge = document.querySelector("#network-status");
-const themeToggleButton = document.querySelector("#theme-toggle");
 const brandLogo = document.querySelector(".brand-logo");
 const sidebarNebula = document.querySelector("#sidebar-nebula");
 const sidebarOrb = document.querySelector("#sidebar-orb");
@@ -339,34 +338,10 @@ const mintDisplayCache = new Map();
 const PROFILE_WORKSPACE_CACHE_MS = 30 * 1000;
 const AGENT_PRICE_POLL_MS = 5000;
 const MANUAL_SCAN_TIMEOUT_MS = 90000;
-const THEME_STORAGE_KEY = "enigma_theme";
-
-function applyTheme(theme, persist = true) {
-  const mode = String(theme || "").toLowerCase() === "light" ? "light" : "dark";
-  document.body.classList.remove("theme-light", "theme-dark");
-  document.body.classList.add(mode === "light" ? "theme-light" : "theme-dark");
-  document.body.dataset.theme = mode;
-  if (persist) {
-    localStorage.setItem(THEME_STORAGE_KEY, mode);
-  }
-  if (themeToggleButton) {
-    themeToggleButton.textContent = mode === "light" ? "Light Theme" : "Dark Theme";
-    themeToggleButton.setAttribute(
-      "aria-label",
-      mode === "light" ? "Switch to dark theme" : "Switch to light theme"
-    );
-  }
-}
-
-function initThemeToggle() {
-  const saved = String(localStorage.getItem(THEME_STORAGE_KEY) || "").toLowerCase();
-  const initial =
-    saved === "light" || saved === "dark"
-      ? saved
-      : window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
-        ? "light"
-        : "dark";
-  applyTheme(initial, false);
+function applyTheme() {
+  document.body.classList.remove("theme-light");
+  document.body.classList.add("theme-dark");
+  document.body.dataset.theme = "dark";
 }
 
 function initBrandLogoAsset() {
@@ -5046,13 +5021,8 @@ engineStopLoopButton?.addEventListener("click", () => {
   stopEngineLoop();
   pushMessage("Live agent stopped", "info");
 });
-themeToggleButton?.addEventListener("click", () => {
-  const nextTheme = document.body.classList.contains("theme-light") ? "dark" : "light";
-  applyTheme(nextTheme);
-});
-
 bindTradeConsoleControls();
-initThemeToggle();
+applyTheme();
 initBrandLogoAsset();
 initSidebarVisualAssets();
 initWorkspace();
