@@ -1,2 +1,18 @@
-# enigma
-a tool-using AI agent built for traders. It generates daily market briefs, performs risk checks and due diligence, summarizes on-chain and news inputs, and supports structured journaling and review. Enigma does not execute trades it strengthens decision-making, discipline, and workflow through organized, actionable analysis.
+# AI Guardian Workspace
+
+Monorepo wrapper for the deployable app in `./enigma`.
+
+Current first-release product:
+- `Scanner Workspace`: one-token trader analysis
+- `Agent Workspace`: one-token autonomous paper-trading workflow
+
+Use:
+
+```bash
+npm run dev
+npm run build
+npm run web
+```
+
+All commands proxy into:
+- [enigma/package.json](/workspaces/enigma/enigma/package.json)
