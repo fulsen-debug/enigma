@@ -4159,6 +4159,45 @@ body.theme-dark .sidebar.sidebar-product .panel.wallet-card {
   border-color: rgba(125, 146, 240, 0.55) !important;
 }
 
+body.theme-dark .sidebar.sidebar-product .wallet-access-summary,
+body.theme-dark .sidebar.sidebar-product .scanner-quota-summary {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(136, 160, 255, 0.25);
+  background: rgba(9, 16, 36, 0.55);
+  color: rgba(223, 233, 255, 0.85);
+  line-height: 1.45;
+}
+
+body.theme-dark .sidebar.sidebar-product .wallet-access-summary strong,
+body.theme-dark .sidebar.sidebar-product .scanner-quota-summary strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+body.theme-dark .sidebar.sidebar-product .wallet-access-summary .tier-pill,
+body.theme-dark .sidebar.sidebar-product .scanner-quota-summary .tier-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  margin-left: 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(86, 190, 255, 0.3);
+  background: rgba(12, 40, 72, 0.6);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+body.theme-dark .sidebar.sidebar-product .wallet-access-summary .tier-pill.high,
+body.theme-dark .sidebar.sidebar-product .scanner-quota-summary .tier-pill.high {
+  border-color: rgba(84, 224, 164, 0.5);
+  background: rgba(20, 74, 52, 0.7);
+  color: rgba(200, 255, 228, 0.92);
+}
+
 body.theme-dark .sidebar.sidebar-product .panel {
   backdrop-filter: blur(4px);
 }

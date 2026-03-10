@@ -13,6 +13,7 @@ export interface UserRecord {
 export interface UsageRecord {
   signal_calls: number;
   chat_calls: number;
+  scanner_calls: number;
 }
 
 export interface AutoTradeConfigRecord {
@@ -128,6 +129,7 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   day TEXT NOT NULL,
   signal_calls INTEGER NOT NULL DEFAULT 0,
   chat_calls INTEGER NOT NULL DEFAULT 0,
+  scanner_calls INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, day)
 );
 
@@ -259,6 +261,12 @@ CREATE TABLE IF NOT EXISTS withdrawal_requests (
   updated_at TEXT NOT NULL
 );
 `);
+
+try {
+  db.exec("ALTER TABLE usage_daily ADD COLUMN scanner_calls INTEGER NOT NULL DEFAULT 0");
+} catch {
+  // Column already exists in upgraded environments.
+}
 
 function ensureColumnExists(table: string, column: string, definition: string): void {
   const rows = db
@@ -625,15 +633,15 @@ function todayKey(): string {
 export function getUsage(userId: number): UsageRecord {
   const day = todayKey();
   const row = db
-    .prepare("SELECT signal_calls, chat_calls FROM usage_daily WHERE user_id = ? AND day = ?")
+    .prepare("SELECT signal_calls, chat_calls, scanner_calls FROM usage_daily WHERE user_id = ? AND day = ?")
     .get(userId, day) as UsageRecord | undefined;
-  return row || { signal_calls: 0, chat_calls: 0 };
+  return row || { signal_calls: 0, chat_calls: 0, scanner_calls: 0 };
 }
 
-export function incrementUsage(userId: number, field: "signal_calls" | "chat_calls"): UsageRecord {
+export function incrementUsage(userId: number, field: "signal_calls" | "chat_calls" | "scanner_calls"): UsageRecord {
   const day = todayKey();
   db.prepare(
-    "INSERT INTO usage_daily (user_id, day, signal_calls, chat_calls) VALUES (?, ?, 0, 0) ON CONFLICT(user_id, day) DO NOTHING"
+    "INSERT INTO usage_daily (user_id, day, signal_calls, chat_calls, scanner_calls) VALUES (?, ?, 0, 0, 0) ON CONFLICT(user_id, day) DO NOTHING"
   ).run(userId, day);
 
   db.prepare(`UPDATE usage_daily SET ${field} = ${field} + 1 WHERE user_id = ? AND day = ?`).run(

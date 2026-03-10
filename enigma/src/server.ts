@@ -107,7 +107,14 @@ const AUTH_COOKIE_SECURE = String(process.env.NODE_ENV || "development") === "pr
 const PREMIUM_TELEGRAM = String(process.env.ENIGMA_PREMIUM_TELEGRAM || "@KOBECOIN_SUPPORT").trim();
 const ADMIN_TOKEN = String(process.env.ENIGMA_ADMIN_TOKEN || "").trim();
 const KOBX_MINT = "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump";
-const KOBX_REQUIRED_BALANCE = 1_000_000;
+const KOBX_REQUIRED_BALANCE = Math.max(
+  0,
+  Number(process.env.ENIGMA_KOBX_REQUIRED_BALANCE || 500_000)
+);
+const KOBX_HIGH_TIER_BALANCE = Math.max(
+  KOBX_REQUIRED_BALANCE,
+  Number(process.env.ENIGMA_KOBX_HIGH_TIER_BALANCE || 3_000_000)
+);
 const KOBX_BUY_URL = `https://pump.fun/coin/${KOBX_MINT}`;
 const PREMIUM_SOL_ADDRESS = String(
   process.env.ENIGMA_PREMIUM_SOL_ADDRESS || "ZEe2kStwjE8SNs61Vcrdmn63JHxrKAEswNg5Nex3sVe"
@@ -1289,15 +1296,71 @@ async function getKobxAccessStatus(wallet: string): Promise<{
   actualBalance: number;
   eligible: boolean;
   buyUrl: string;
+  scannerDailyLimit: number;
+  scannerDailyUsed: number;
+  scannerDailyRemaining: number;
+  scannerTier: "none" | "base" | "high";
 }> {
   const actualBalance = await getWalletTokenBalance(wallet, KOBX_MINT);
+  const tier = actualBalance >= KOBX_HIGH_TIER_BALANCE ? "high" : actualBalance >= KOBX_REQUIRED_BALANCE ? "base" : "none";
   return {
     mint: KOBX_MINT,
     requiredBalance: KOBX_REQUIRED_BALANCE,
     actualBalance,
     eligible: actualBalance >= KOBX_REQUIRED_BALANCE,
     buyUrl: KOBX_BUY_URL
+    ,
+    scannerDailyLimit: tier === "high" ? 5 : tier === "base" ? 2 : 0,
+    scannerDailyUsed: 0,
+    scannerDailyRemaining: tier === "high" ? 5 : tier === "base" ? 2 : 0,
+    scannerTier: tier
   };
+}
+
+function enrichScannerQuota(access: Awaited<ReturnType<typeof getKobxAccessStatus>>, usage: { scanner_calls?: number }) {
+  const used = Number(usage?.scanner_calls || 0);
+  const limit = Number(access.scannerDailyLimit || 0);
+  return {
+    ...access,
+    scannerDailyUsed: used,
+    scannerDailyRemaining: Math.max(0, limit - used)
+  };
+}
+
+async function buildScannerAccessStatus(userId: number, wallet: string) {
+  const access = await getKobxAccessStatus(wallet);
+  return enrichScannerQuota(access, getUsage(userId));
+}
+
+async function enforceScannerDailyLimit(req: AuthedRequest, res: express.Response): Promise<{
+  ok: boolean;
+  access?: Awaited<ReturnType<typeof buildScannerAccessStatus>>;
+}> {
+  if (!req.user) {
+    res.status(401).json({ error: "unauthorized" });
+    return { ok: false };
+  }
+  const access = await buildScannerAccessStatus(req.user.id, req.user.wallet);
+  if (!access.eligible) {
+    res.status(403).json({
+      error: "KOBX balance requirement not met",
+      code: "KOBX_REQUIRED",
+      ...access
+    });
+    return { ok: false };
+  }
+  if (access.scannerDailyRemaining <= 0) {
+    res.status(429).json({
+      error: "daily scanner limit reached for current KOBX balance tier",
+      code: "SCANNER_LIMIT_REACHED",
+      ...access,
+      hint: access.scannerTier === "base"
+        ? "Hold 3,000,000+ KOBX to unlock 5 scans/day, or wait for daily reset."
+        : "Wait for daily reset to scan again."
+    });
+    return { ok: false };
+  }
+  return { ok: true, access };
 }
 
 function extractTransferRecordsToAddress(
@@ -1433,7 +1496,9 @@ app.get("/api/access/kobx", async (req, res) => {
       return res.status(400).json({ error: "wallet is required" });
     }
     const status = await getKobxAccessStatus(wallet);
-    return res.json(status);
+    const user = getUserByWallet(wallet);
+    const payload = user ? enrichScannerQuota(status, getUsage(user.id)) : status;
+    return res.json(payload);
   } catch (error) {
     return res.status(502).json({
       error: error instanceof Error ? error.message : "KOBX access check failed"
@@ -1462,11 +1527,13 @@ app.post("/api/auth/verify", async (req, res) => {
 
   try {
     const access = await getKobxAccessStatus(wallet);
-    if (!access.eligible) {
+    const knownUser = getUserByWallet(wallet);
+    const payload = knownUser ? enrichScannerQuota(access, getUsage(knownUser.id)) : access;
+    if (!payload.eligible) {
       return res.status(403).json({
         error: "KOBX balance requirement not met",
         code: "KOBX_REQUIRED",
-        ...access
+        ...payload
       });
     }
   } catch (error) {
@@ -1744,7 +1811,7 @@ app.post("/api/admin/withdrawals/:id/reject", (req, res) => {
   return res.json({ ok: true, request: updated });
 });
 
-app.get("/api/profile/overview", authRequired, enforceQuota("chat_calls"), (req: AuthedRequest, res) => {
+app.get("/api/profile/overview", authRequired, enforceQuota("chat_calls"), async (req: AuthedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "unauthorized" });
   }
@@ -1753,7 +1820,8 @@ app.get("/api/profile/overview", authRequired, enforceQuota("chat_calls"), (req:
   const stats = getDashboardStats(req.user.id);
   const balance = getUserManagedBalance(req.user.id);
   const openPositions = listAutoTradePositions(req.user.id, "OPEN");
-  return res.json({ user: req.user, stats, balance, openPositionsCount: openPositions.length, usage });
+  const access = await buildScannerAccessStatus(req.user.id, req.user.wallet);
+  return res.json({ user: req.user, stats, balance, openPositionsCount: openPositions.length, usage, access });
 });
 
 app.get("/api/profile/history", authRequired, enforceQuota("chat_calls"), (req: AuthedRequest, res) => {
@@ -1826,13 +1894,14 @@ app.post("/api/withdrawals/request", authRequired, enforceQuota("chat_calls"), (
   });
 });
 
-app.get("/api/auth/me", authRequired, (req: AuthedRequest, res) => {
+app.get("/api/auth/me", authRequired, async (req: AuthedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "unauthorized" });
   }
 
   const stats = getDashboardStats(req.user.id);
-  return res.json({ user: req.user, stats });
+  const access = await buildScannerAccessStatus(req.user.id, req.user.wallet);
+  return res.json({ user: req.user, stats, access, usage: getUsage(req.user.id) });
 });
 
 app.get("/api/health", async (_req, res) => {
@@ -1861,6 +1930,8 @@ app.post(
       if (!req.user) {
         return res.status(401).json({ error: "unauthorized" });
       }
+      const quota = await enforceScannerDailyLimit(req, res);
+      if (!quota.ok) return;
 
       const mint = String(req.body.mint || "").trim();
       const normalized = normalizeTrackedAssetId(mint);
@@ -1870,7 +1941,9 @@ app.post(
 
       const output = await buildStoredSignal(req.user.id, normalized);
       const usage = incrementUsage(req.user.id, "signal_calls");
-      return res.json({ ...output, usage });
+      const scannerUsage = incrementUsage(req.user.id, "scanner_calls");
+      const access = enrichScannerQuota(await getKobxAccessStatus(req.user.wallet), scannerUsage);
+      return res.json({ ...output, usage: scannerUsage, signalUsage: usage, access });
     } catch (error) {
       return res.status(500).json({ error: (error as Error).message });
     }
@@ -1965,6 +2038,8 @@ app.post(
       if (!req.user) {
         return res.status(401).json({ error: "unauthorized" });
       }
+      const quota = await enforceScannerDailyLimit(req, res);
+      if (!quota.ok) return;
 
       const limit = Math.min(10, Math.max(3, Number(req.body.limit || 5)));
       const candidates = await discoverNewSolanaMints(30);
@@ -2010,10 +2085,14 @@ app.post(
         .slice(0, limit);
 
       const usage = incrementUsage(req.user.id, "signal_calls");
+      const scannerUsage = incrementUsage(req.user.id, "scanner_calls");
+      const access = enrichScannerQuota(await getKobxAccessStatus(req.user.wallet), scannerUsage);
       return res.json({
         ts: new Date().toISOString(),
         items,
-        usage,
+        usage: scannerUsage,
+        signalUsage: usage,
+        access,
         note: "Discovery suggestions are probabilistic and may include high-risk tokens"
       });
     } catch (error) {
@@ -2109,14 +2188,15 @@ app.get(
   }
 );
 
-app.get("/api/dashboard/stats", authRequired, (req: AuthedRequest, res) => {
+app.get("/api/dashboard/stats", authRequired, async (req: AuthedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "unauthorized" });
   }
 
   const usage = getUsage(req.user.id);
   const stats = getDashboardStats(req.user.id);
-  return res.json({ stats, usage });
+  const access = await buildScannerAccessStatus(req.user.id, req.user.wallet);
+  return res.json({ stats, usage, access });
 });
 
 app.get("/api/autotrade/config", authRequired, (req: AuthedRequest, res) => {

@@ -104,7 +104,7 @@ const LIVE_MODE_PREVIEW_DISABLED = PAPER_ONLY_MODE;
 const HOLDER_SAMPLE_LIMIT = 10;
 const HOLDER_DEEP_LIMIT = 20;
 const KOBX_MINT = "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump";
-const KOBX_REQUIRED_BALANCE = 1_000_000;
+const KOBX_REQUIRED_BALANCE = 500_000;
 const KOBX_BUY_URL = `https://pump.fun/coin/${KOBX_MINT}`;
 
 let authToken = "";
@@ -134,6 +134,7 @@ let agentPriceWindowSec = normalizeAgentPriceWindowSec(
 );
 let profileWorkspaceLoadedAt = 0;
 let profileWorkspaceLoading = false;
+let scannerAccessStatus = null;
 let tradeActivityEvents = [];
 let tradeActivitySystemNotes = [];
 let latestEngineOpenPositions = [];
@@ -538,12 +539,20 @@ function renderDashboardProfileOverview(data) {
   const balance = data?.balance || {};
   const stats = data?.stats || {};
   const totals = stats?.totals || {};
+  const access = data?.access || scannerAccessStatus || {};
   const wallet = String(user.wallet || "");
+  const kobxBalance = Number(access.actualBalance || 0);
+  const scanLimit = Number(access.scannerDailyLimit || 0);
+  const scanRemaining = Number(access.scannerDailyRemaining || 0);
+  const scanTier = String(access.scannerTier || "none").toUpperCase();
   dashboardProfileOverview.innerHTML = `
     <div class="paper-kpi"><span>Connected Wallet</span><strong>${escapeHtml(wallet ? shortMint(wallet, 6, 6) : "N/A")}</strong></div>
     <div class="paper-kpi"><span>Plan</span><strong>${escapeHtml(String(user.plan || "free").toUpperCase())}</strong></div>
     <div class="paper-kpi"><span>Managed Balance</span><strong>${formatSol(balance.lamports)} SOL</strong></div>
     <div class="paper-kpi"><span>Open Positions</span><strong>${formatNumber(data?.openPositionsCount || 0, 0)}</strong></div>
+    <div class="paper-kpi"><span>KOBX Balance</span><strong>${formatNumber(kobxBalance, 2)} KOBX</strong></div>
+    <div class="paper-kpi"><span>Scan Tier</span><strong>${escapeHtml(scanTier)}</strong></div>
+    <div class="paper-kpi"><span>Scans Remaining</span><strong>${formatNumber(scanRemaining, 0)} / ${formatNumber(scanLimit, 0)}</strong></div>
     <div class="paper-kpi"><span>Total Scans</span><strong>${formatNumber(totals.signals || 0, 0)}</strong></div>
     <div class="paper-kpi"><span>Total Forecasts</span><strong>${formatNumber(totals.forecasts || 0, 0)}</strong></div>
     <div class="paper-kpi"><span>Total Wins</span><strong>${formatNumber(totals.wins || 0, 0)}</strong></div>
@@ -755,6 +764,10 @@ async function loadProfileWorkspaceData({ force = false, silent = false } = {}) 
       api("/api/profile/overview", null, true, "GET"),
       api("/api/profile/history", null, true, "GET")
     ]);
+    if (overviewData?.access) {
+      scannerAccessStatus = overviewData.access;
+      renderScannerAccessSummary(scannerAccessStatus);
+    }
     renderDashboardProfileOverview(overviewData);
     renderDashboardSignalTimeline(historyData.recentSignals || [], historyData.recentRuns || []);
     renderDashboardPaymentHistory(historyData.payments || []);
@@ -1533,6 +1546,7 @@ function clearLocalSessionState() {
   authToken = "";
   userWallet = "";
   userPlan = "free";
+  scannerAccessStatus = null;
   localStorage.removeItem("enigma_wallet");
   localStorage.removeItem("enigma_plan");
   setAuthState();
@@ -1551,7 +1565,10 @@ async function disconnectPhantom(provider = window.solana) {
 function showKobxAccessBlocked(access = {}) {
   const actualBalance = Number(access.actualBalance || 0);
   const requiredBalance = Number(access.requiredBalance || KOBX_REQUIRED_BALANCE);
-  const message = `Access requires at least ${formatNumber(requiredBalance, 2)} KOBX. Connected wallet balance: ${formatNumber(actualBalance, 2)} KOBX.`;
+  const tierHint = requiredBalance <= 500000
+    ? "Hold at least 500,000 KOBX to unlock 2 scans/day."
+    : "Hold at least 3,000,000 KOBX to unlock 5 scans/day.";
+  const message = `Access requires at least ${formatNumber(requiredBalance, 2)} KOBX. Connected wallet balance: ${formatNumber(actualBalance, 2)} KOBX. ${tierHint}`;
   pushMessage(`${message} Buy KOBX on Pump.fun to continue.`, "error", { toast: false });
   showToastWindow(message, "error", {
     title: "KOBX Required",
@@ -2104,6 +2121,12 @@ function friendlyErrorMessage(error, actionLabel = "continue") {
   if (code === "AUTH_REQUIRED" || status === 401 || status === 403) {
     return `Connect wallet first to ${actionLabel}. If already connected, reconnect Phantom and retry.`;
   }
+  if (code === "SCANNER_LIMIT_REACHED") {
+    const remaining = Number(error?.scannerDailyRemaining ?? 0);
+    const limit = Number(error?.scannerDailyLimit ?? 0);
+    const resetHint = "Daily limit reached. Wait for UTC reset or increase KOBX holdings.";
+    return limit > 0 ? `Daily scan limit reached (${remaining}/${limit} left). ${resetHint}` : resetHint;
+  }
   if (status === 429 || code === "HTTP_429") {
     return "Too many requests right now. Wait a few seconds, then retry.";
   }
@@ -2181,6 +2204,7 @@ function setAuthState() {
       setNetworkStatus("Wallet required", "busy");
     }
     syncScannerModeUi();
+    renderScannerAccessSummary(null);
     return;
   }
 
@@ -2189,6 +2213,51 @@ function setAuthState() {
   planStatus.textContent = normalizedPlan.toUpperCase();
   planStatus.className = normalizedPlan === "pro" ? "badge ok" : "badge busy";
   syncScannerModeUi();
+  renderScannerAccessSummary(scannerAccessStatus);
+}
+
+function formatScannerTierPill(access = {}) {
+  const tier = String(access.scannerTier || "none").toLowerCase();
+  if (tier === "high") {
+    return `<span class="tier-pill high">High Tier</span>`;
+  }
+  if (tier === "base") {
+    return `<span class="tier-pill">Base Tier</span>`;
+  }
+  return "<span class=\"tier-pill\">No Access</span>";
+}
+
+function renderScannerAccessSummary(access = {}) {
+  const walletSummary = document.querySelector("#wallet-access-summary");
+  const quotaSummary = document.querySelector("#scanner-quota-summary");
+  if (!walletSummary && !quotaSummary) return;
+  if (!authToken || !access || Object.keys(access).length === 0) {
+    const guide = "Connect wallet to view KOBX balance and scanner quota. Tiers: 500K KOBX = 2 scans/day, 3M+ KOBX = 5 scans/day.";
+    if (walletSummary) walletSummary.textContent = guide;
+    if (quotaSummary) quotaSummary.textContent = guide;
+    return;
+  }
+  const actual = Number(access.actualBalance || 0);
+  const required = Number(access.requiredBalance || KOBX_REQUIRED_BALANCE);
+  const limit = Number(access.scannerDailyLimit || 0);
+  const used = Number(access.scannerDailyUsed || 0);
+  const remaining = Number(access.scannerDailyRemaining || 0);
+  const tierLabel = formatScannerTierPill(access);
+  const eligible = Boolean(access.eligible);
+  const nextTierHint = "Hold 3,000,000+ KOBX to unlock 5 scans/day.";
+  const gateHint = "Hold at least 500,000 KOBX to unlock the scanner.";
+  const walletLine = eligible
+    ? `Balance: <strong>${formatNumber(actual, 2)} KOBX</strong>${tierLabel}`
+    : `Balance: <strong>${formatNumber(actual, 2)} KOBX</strong>${tierLabel}<br>${gateHint}`;
+  const quotaLine = eligible
+    ? `Daily scans: <strong>${remaining}</strong> left of ${limit}. Used ${used} today. ${tierLabel}<br>${nextTierHint}`
+    : `Daily scans: <strong>0</strong> available. ${gateHint}`;
+  if (walletSummary) {
+    walletSummary.innerHTML = walletLine;
+  }
+  if (quotaSummary) {
+    quotaSummary.innerHTML = quotaLine;
+  }
 }
 
 function syncScannerModeUi() {
@@ -3994,6 +4063,10 @@ async function refreshStats() {
   if (!authToken) return;
   const response = await api("/api/dashboard/stats", null, true);
   updateStats(response.stats);
+  if (response.access) {
+    scannerAccessStatus = response.access;
+    renderScannerAccessSummary(scannerAccessStatus);
+  }
 }
 
 async function refreshUserProfile() {
@@ -4005,6 +4078,10 @@ async function refreshUserProfile() {
   localStorage.setItem("enigma_wallet", userWallet);
   localStorage.setItem("enigma_plan", userPlan);
   setAuthState();
+  if (response.access) {
+    scannerAccessStatus = response.access;
+    renderScannerAccessSummary(scannerAccessStatus);
+  }
 }
 
 function signalCard(item) {
@@ -4602,6 +4679,12 @@ function processScanItems(items, successMessage) {
   if (successMessage) {
     pushMessage(successMessage, "ok");
   }
+  if (scannerAccessStatus) {
+    scannerAccessStatus.scannerDailyUsed = Number(scannerAccessStatus.scannerDailyUsed || 0) + 1;
+    const limit = Number(scannerAccessStatus.scannerDailyLimit || 0);
+    scannerAccessStatus.scannerDailyRemaining = Math.max(0, limit - scannerAccessStatus.scannerDailyUsed);
+    renderScannerAccessSummary(scannerAccessStatus);
+  }
   return normalized;
 }
 
@@ -4678,6 +4761,8 @@ async function connectWallet() {
       showKobxAccessBlocked(access);
       return;
     }
+    scannerAccessStatus = access;
+    renderScannerAccessSummary(scannerAccessStatus);
 
     const nonce = await api("/api/auth/nonce", { wallet });
     const encoded = new TextEncoder().encode(nonce.message);
