@@ -29,6 +29,7 @@
         <h2>1) Connect Wallet</h2>
         <p>Open <a href="/">Dashboard</a>, click <code>Connect Phantom</code>, then wait for login confirmation.</p>
         <p><strong>Note:</strong> You do not need to enter Helius/Jupiter/admin API keys as a user.</p>
+        <p><strong>Scanner access:</strong> wallets must hold at least <code>500,000 KOBX</code>. Daily scan tiers are <code>2/day</code> for <code>500K+</code> and <code>5/day</code> for <code>3M+</code>.</p>
       </section>
 
       <section class="doc-card">
@@ -53,13 +54,11 @@
         <ol>
           <li>Open <code>Trading Console (Paper Agent)</code>.</li>
           <li>Set one <code>Agent Token</code>.</li>
-          <li>In <code>Test Mode (Paper)</code>, click <code>Apply $25 Beginner Preset</code>.</li>
-          <li>Pick a tempo preset (<code>1m Scalp</code>, <code>5m Momentum</code>, or <code>15m Cycle</code>) if you want faster accumulation loops.</li>
-          <li>Optional for faster entries: enable <code>Allow CAUTION entries</code> under Advanced Test Rules.</li>
-          <li>Click <code>Run Test</code> and let it run for several cycles.</li>
+          <li>Set <code>Paper Budget</code>, <code>Test Amount Per Trade</code>, and <code>Check Every (sec)</code>.</li>
+          <li>Click <code>Run Test</code> and let the paper loop monitor the token automatically.</li>
           <li>Review entries/exits in <code>Trade Activity (Buy/Sell Visual)</code> and table results.</li>
         </ol>
-        <p><strong>Note:</strong> The agent is deterministic and paper-only in this first release.</p>
+        <p><strong>Note:</strong> The agent is deterministic and paper-only in this first release. Each paper run auto-stops after <code>8 minutes</code>.</p>
       </section>
 
       <section class="doc-card">
@@ -75,6 +74,7 @@
       <section class="doc-card">
         <h2>Need Help</h2>
         <p>For premium or activation support, use Telegram handle shown on the Premium page.</p>
+        <p>Developer and deployment docs: <a href="/developers.html">Developer Docs</a>. Repository: <a href="https://github.com/fulsen-debug/enigma" target="_blank" rel="noreferrer">github.com/fulsen-debug/enigma</a></p>
       </section>
     </main>
   </body>

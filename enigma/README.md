@@ -2,6 +2,9 @@
 
 AI Guardian is a web product with two workspaces:
 
+Repository:
+- `https://github.com/fulsen-debug/enigma`
+
 - `Scanner Workspace`: fast, one-token analysis for traders
 - `Agent Workspace`: autonomous paper-trading logic for one selected token
 

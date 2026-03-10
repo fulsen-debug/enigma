@@ -2,6 +2,9 @@
 
 ## Product Scope
 
+Repository:
+- `https://github.com/fulsen-debug/enigma`
+
 AI Guardian first release has two workspaces:
 
 - `Scanner Workspace`: one-token trader analysis
