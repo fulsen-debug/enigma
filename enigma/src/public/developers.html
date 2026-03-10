@@ -47,6 +47,8 @@ HELIUS_API_KEY=&lt;key&gt;
 HELIUS_API_KEYS=&lt;key1,key2,key3&gt;
 # Optional alternative:
 # SOLANA_RPC_URL=&lt;https-rpc-endpoint&gt;
+ENIGMA_KOBX_REQUIRED_BALANCE=500000
+ENIGMA_KOBX_HIGH_TIER_BALANCE=3000000
 
 # Live safety rails (recommended)
 ENIGMA_SAFETY_MAX_TOTAL_EXPOSURE_USD=500
@@ -75,6 +77,7 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
           <li>Configure <code>HELIUS_API_KEY</code> or <code>HELIUS_API_KEYS</code> for parsed wallet activity, funding-source checks, wallet identity enrichment, and Helius-compatible RPC top-20 holder concentration.</li>
           <li>Configure either <code>HELIUS_API_KEY</code> or <code>SOLANA_RPC_URL</code> for Solana RPC access.</li>
           <li>Use persistent storage for SQLite data in production.</li>
+          <li>Scanner access is gated by KOBX balance; daily scan limits are tiered by KOBX holdings.</li>
           <li>Put the service behind TLS + reverse proxy (Nginx/Cloudflare/load balancer).</li>
           <li>Set <code>ENIGMA_PREMIUM_TELEGRAM</code> and <code>ENIGMA_ADMIN_TOKEN</code> for premium onboarding.</li>
           <li>Do not set <code>ENIGMA_ALLOW_FREE_LIVE=1</code> in final production. Keep live execution access policy controlled.</li>

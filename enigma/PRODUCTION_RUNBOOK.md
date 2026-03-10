@@ -30,6 +30,8 @@ Run these checks serially. Do not run smoke and extended QA in parallel against 
 - `ENIGMA_JWT_SECRET` set to a strong non-default value
 - `HELIUS_API_KEY` / `HELIUS_API_KEYS` or `SOLANA_RPC_URL`
 - `ENIGMA_DB_PATH` pointing to persistent storage
+- `ENIGMA_KOBX_REQUIRED_BALANCE=500000`
+- `ENIGMA_KOBX_HIGH_TIER_BALANCE=3000000`
 
 Recommended:
 - persistent disk mounted at `/var/data`
@@ -60,11 +62,14 @@ Then verify in the browser:
 2. wallet connect works
 3. random scan works
 4. manual token scan works
+4a. scanner gate requires >= 500K KOBX
+4b. daily scan limit matches KOBX tier (2/day or 5/day)
 5. holder table renders
 6. AIG Forensics renders verified concentration / wallet activity source note
 7. Download PNG and Share on X buttons render for scanner cards
 6. agent workspace loads config/history
 7. paper test starts and logs actions
+7a. paper test auto-stops after 8 minutes
 8. refresh preserves login via cookie session
 
 ## Cookie/Auth Verification

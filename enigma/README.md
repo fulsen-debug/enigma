@@ -13,7 +13,7 @@ This first release is deterministic and rules-based. It does not require an LLM.
 - Manual token scan
 - Random token discovery
 - Token risk and market analysis
-- Provider-backed holder concentration when available
+- Holder concentration uses Helius-compatible RPC `getTokenLargestAccounts` (top 20)
 - Helius-backed wallet activity and labeling when available
 - AIG Forensics summary with verified vs inferred signals
 - Download PNG / Share on X
@@ -24,6 +24,7 @@ This first release is deterministic and rules-based. It does not require an LLM.
 - Policy-gated buy candidate selection
 - Risk-managed exits: TP, SL, trailing stop, max hold, cooldown
 - Position and activity history
+- Each paper run auto-stops after 8 minutes (daily run cap)
 
 ### Not in First Release
 - Full lifetime holder history
@@ -65,6 +66,12 @@ Minimum production environment:
 - `ENIGMA_JWT_SECRET=<32+ random chars>`
 - `HELIUS_API_KEY=<key>` or `HELIUS_API_KEYS=<key1,key2,key3>` or `SOLANA_RPC_URL=<rpc>`
 - `ENIGMA_DB_PATH=/var/data/enigma_data.sqlite`
+- `ENIGMA_KOBX_REQUIRED_BALANCE=500000`
+- `ENIGMA_KOBX_HIGH_TIER_BALANCE=3000000`
+
+Scanner access tiers:
+- `>= 500,000 KOBX` => 2 scans/day
+- `>= 3,000,000 KOBX` => 5 scans/day
 
 Live execution variables still exist in the codebase, but they are not part of this first-release product surface.
 

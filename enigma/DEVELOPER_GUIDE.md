@@ -102,6 +102,9 @@ Main persisted entities:
 - wallet activity and wallet labeling prefer Helius when configured
 - bundle/coordinated-risk remains AIG inference layered on top of provider-backed facts
 - public live trading is not part of the release
+- scanner requires KOBX balance gate
+- daily scanner limits are tiered by KOBX holdings
+- paper agent auto-stops after 8 minutes per run
 
 ## QA Commands
 
@@ -127,6 +130,8 @@ Required production env:
 - `ENIGMA_JWT_SECRET`
 - `HELIUS_API_KEY` / `HELIUS_API_KEYS` or `SOLANA_RPC_URL`
 - `ENIGMA_DB_PATH=/var/data/enigma_data.sqlite`
+- `ENIGMA_KOBX_REQUIRED_BALANCE=500000`
+- `ENIGMA_KOBX_HIGH_TIER_BALANCE=3000000`
 
 Keep for first release:
 - `ENIGMA_EXECUTION_ENABLED=0`

@@ -52,6 +52,9 @@
           <li>Review verdict, Market Regime panel (Volatility Index + ADX), and risk details before considering entry</li>
           <li>Use alerts to detect important status or risk changes while monitoring</li>
         </ol>
+        <p class="small muted">
+          Scanner access requires a KOBX balance. Tiers: 500,000 KOBX = 2 scans/day, 3,000,000+ KOBX = 5 scans/day.
+        </p>
       </section>
 
       <section class="doc-card">
@@ -110,6 +113,7 @@
           <li>Layered same-token entries are supported up to <code>Max Open Positions</code> with <code>Open Cooldown</code> control.</li>
           <li><code>Check Every (sec)</code> controls reaction speed: lower values react faster to TP/SL/trailing events, higher values reduce API load.</li>
           <li>Engine guardrails auto-adjust invalid combinations so <code>SL</code> and <code>Trailing Stop</code> stay below <code>TP</code>.</li>
+          <li>Each paper run auto-stops after 8 minutes to enforce session caps.</li>
           <li>Live execution is not part of this first release surface.</li>
         </ul>
       </section>
