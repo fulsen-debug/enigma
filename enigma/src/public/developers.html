@@ -168,7 +168,71 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
       </section>
 
       <section class="doc-card">
-        <h2>6) Jupiter Ultra Execution Bridge</h2>
+        <h2>6) Scanner API Integration Examples</h2>
+        <p>Use the scanner as a backend risk service for your own dashboard, bot, or trading page.</p>
+        <pre><code>curl -X POST https://your-domain.com/api/signal \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer &lt;JWT&gt;" \
+  -d '{
+    "mint":"48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump"
+  }'</code></pre>
+        <pre><code>curl "https://your-domain.com/api/token/holders?mint=48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump&limit=10&mode=sample" \
+  -H "authorization: Bearer &lt;JWT&gt;"</code></pre>
+        <p>Recommended frontend pattern:</p>
+        <pre><code>const scan = await fetch("/api/signal", {
+  method: "POST",
+  credentials: "include",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ mint })
+}).then((r) => r.json());
+
+renderVerdict(scan.signal.status);
+renderRisk(scan.signal.killSwitch);
+renderForensics(scan.signal.rugPullRisk, scan.signal.killSwitch?.risk);
+renderLinks(scan.signal.links);</code></pre>
+      </section>
+
+      <section class="doc-card">
+        <h2>7) Report Generation Integration</h2>
+        <p>If another product needs AIG-style reports, use the scanner JSON as the source document and map these blocks directly:</p>
+        <ul>
+          <li><code>signal.token</code>: identity, symbol, image</li>
+          <li><code>signal.market</code>: price, liquidity, volume, flow</li>
+          <li><code>signal.killSwitch</code>: status, score, risk narrative</li>
+          <li><code>signal.marketRegime</code>: volatility, ADX, regime label</li>
+          <li><code>signal.tradePlan</code>: entry zone, support, stop, targets</li>
+          <li><code>signal.rugPullRisk</code>: bundle risk and forensic summary</li>
+        </ul>
+        <pre><code>const report = {
+  mint,
+  symbol: scan.signal.token.symbol,
+  status: scan.signal.status,
+  patternScore: scan.signal.patternScore,
+  confidence: scan.signal.confidence,
+  market: scan.signal.market,
+  tradePlan: scan.signal.tradePlan,
+  forensics: scan.signal.rugPullRisk
+};</code></pre>
+        <p>The web app uses this same payload to render the dashboard card, PNG export, and X share summary.</p>
+      </section>
+
+      <section class="doc-card">
+        <h2>8) CLI Usage and Automation</h2>
+        <p>Use the CLI for internal operations, scripted checks, or scheduled scanner jobs.</p>
+<pre><code>git clone https://github.com/fulsen-debug/enigma.git
+cd enigma/enigma
+npm install
+cp .env.example .env
+npm run build
+npm run enigma -- --help</code></pre>
+        <p>Typical commands:</p>
+        <pre><code>npm run enigma -- risk-check --mint 48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump
+npm run enigma -- daily-brief
+npm run enigma -- journal --note "Scanner blocked entry due to bundle risk"</code></pre>
+      </section>
+
+      <section class="doc-card">
+        <h2>9) Jupiter Ultra Execution Bridge</h2>
         <p>Recommended execution chain:</p>
         <ol>
           <li>Risk Gate: Kobecoin AI Guardian scan + policy decision</li>
@@ -181,7 +245,7 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
       </section>
 
       <section class="doc-card">
-        <h2>7) Browser Extension Architecture (Manifest V3)</h2>
+        <h2>10) Browser Extension Architecture (Manifest V3)</h2>
         <ul>
           <li>Content script reads token mint from Pump.fun route/DOM.</li>
           <li>Background service worker authenticates with Kobecoin AI Guardian API.</li>
@@ -212,21 +276,7 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
       </section>
 
       <section class="doc-card">
-        <h2>8) CLI Usage (Local and Ops)</h2>
-<pre><code>git clone &lt;repo&gt;
-cd &lt;project-root&gt;
-npm install
-cp .env.example .env
-npm run build
-npm run enigma -- --help</code></pre>
-        <p>Typical commands:</p>
-        <pre><code>npm run enigma -- risk-check --mint &lt;TOKEN_MINT&gt;
-npm run enigma -- daily-brief
-npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</code></pre>
-      </section>
-
-      <section class="doc-card">
-        <h2>9) Selling the API to Other Companies</h2>
+        <h2>11) Selling the API to Other Companies</h2>
         <p>Recommended commercial model for KOBECOIN:</p>
         <ul>
           <li>Issue customer API keys at gateway layer (mapped to tenant account).</li>
@@ -254,7 +304,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
       </section>
 
       <section class="doc-card">
-        <h2>10) Security + Compliance Controls</h2>
+        <h2>12) Security + Compliance Controls</h2>
         <ul>
           <li>Rotate JWT secret and any upstream API credentials regularly.</li>
           <li>Use WAF + per-tenant throttling to reduce abuse risk.</li>
@@ -265,7 +315,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
       </section>
 
       <section class="doc-card">
-        <h2>11) QA + Release Gate</h2>
+        <h2>13) QA + Release Gate</h2>
         <ol>
           <li>Run <code>npm run build</code></li>
           <li>Run <code>npm test</code></li>
@@ -276,7 +326,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
       </section>
 
       <section class="doc-card">
-        <h2>12) Production Summary</h2>
+        <h2>14) Production Summary</h2>
         <p>Kobecoin AI Guardian is now positioned as a trader safety + execution-intelligence layer:</p>
         <ul>
           <li>UI scanner for discretionary users</li>
@@ -287,7 +337,7 @@ npm run enigma -- journal --note "Entry cancelled due to kill-switch warning"</c
       </section>
 
       <section class="doc-card">
-        <h2>13) Auto-Trade Mode (Policy Controlled)</h2>
+        <h2>15) Auto-Trade Mode (Policy Controlled)</h2>
         <p>Auto-trade is implemented as a policy engine with safe defaults.</p>
         <ul>
           <li>Agent loop is single-token mode: pass one <code>mint</code> per run/tick request.</li>

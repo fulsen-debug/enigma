@@ -139,6 +139,31 @@
         <p>If your organization needs automation, use the API and CLI guides in the developer page.</p>
         <p>For trading platform integrations (including Pump.fun workflows), follow <a href="/developers.html">Developer Docs</a>.</p>
       </section>
+
+      <section class="doc-card">
+        <h2>11) Export and Sharing Workflow</h2>
+        <ul>
+          <li>Use <code>Download PNG</code> in the scanner card to export a branded report image.</li>
+          <li>Use <code>Share on X</code> to open a prefilled post with scanner verdict, concentration, and forensic summary.</li>
+          <li>Use the scanner card itself as the primary operator report. It includes verified facts, AIG inference, holder behavior, and external links.</li>
+        </ul>
+      </section>
+
+      <section class="doc-card">
+        <h2>12) Integrating Scanner Reports Into Another System</h2>
+        <p>Typical usage pattern:</p>
+        <ol>
+          <li>Authenticate the wallet session with <code>/api/auth/nonce</code> and <code>/api/auth/verify</code>.</li>
+          <li>Request a scan with <code>/api/signal</code>.</li>
+          <li>Optionally request deeper holder behavior with <code>/api/token/holders</code>.</li>
+          <li>Render the returned verdict and risk fields in your own dashboard or trade page.</li>
+        </ol>
+        <pre><code>POST /api/signal
+{
+  "mint": "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump"
+}</code></pre>
+        <p>The response includes the full scanner report: token, market, kill-switch, market regime, trader plan, rug risk, forensics, links, and holder behavior summary.</p>
+      </section>
     </main>
   </body>
 </html>

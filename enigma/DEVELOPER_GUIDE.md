@@ -67,6 +67,45 @@ Core first-release endpoints:
 - `GET /api/autotrade/positions`
 - `GET /api/autotrade/performance`
 
+## Scanner Integration
+
+Use the scanner as a risk-report service for your own application.
+
+Example request:
+
+```bash
+curl -X POST https://your-domain.com/api/signal \
+  -H "authorization: Bearer <JWT>" \
+  -H "content-type: application/json" \
+  -d '{"mint":"48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump"}'
+```
+
+Optional holder table request:
+
+```bash
+curl "https://your-domain.com/api/token/holders?mint=48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump&limit=10&mode=sample" \
+  -H "authorization: Bearer <JWT>"
+```
+
+Recommended rendering blocks from the scanner payload:
+- `signal.token`
+- `signal.market`
+- `signal.killSwitch`
+- `signal.marketRegime`
+- `signal.tradePlan`
+- `signal.rugPullRisk`
+- `signal.links`
+
+## CLI
+
+CLI is available for internal automation:
+
+```bash
+npm run enigma -- risk-check --mint 48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump
+npm run enigma -- daily-brief
+npm run enigma -- journal --note "Scanner blocked entry due to bundle risk"
+```
+
 ## Auth Model
 
 - Wallet signs nonce
