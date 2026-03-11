@@ -3571,6 +3571,15 @@ body.theme-dark .doc {
   color: #e8ecff !important;
 }
 
+body.theme-dark .hero {
+  border-color: rgba(92, 109, 202, 0.72) !important;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(95, 136, 255, 0.18), transparent 24%),
+    radial-gradient(circle at 82% 0%, rgba(144, 84, 255, 0.16), transparent 22%),
+    linear-gradient(180deg, rgba(16, 22, 50, 0.96), rgba(8, 13, 33, 0.98)) !important;
+  box-shadow: 0 20px 44px rgba(3, 6, 20, 0.55), inset 0 1px 0 rgba(164, 142, 255, 0.12);
+}
+
 body.theme-dark .hero p,
 body.theme-dark .hero li,
 body.theme-dark .nav a,

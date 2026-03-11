@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>KOBECOIN AI Guardian Developer Docs</title>
+    <title>AI Guardian Developer Docs</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="theme-dark">
     <header class="hero">
-      <h1>KOBECOIN AI Guardian Developer Docs</h1>
-      <p>Production integration guide for API, CLI, browser extension, and partner platforms</p>
+      <h1>AI Guardian Developer Docs</h1>
+      <p>Production integration guide for API, CLI, browser extension, and partner platforms. Powered by Kobecoin.</p>
       <div class="nav">
         <a href="/">Dashboard</a>
         <a href="/start.html">Start Here</a>
@@ -33,7 +33,7 @@
 
       <section class="doc-card">
         <h2>1) Product + Integration Scope</h2>
-        <p><strong>KOBECOIN AI Guardian</strong> is a Solana risk-intelligence layer designed for traders and trading platforms.</p>
+        <p><strong>AI Guardian</strong> is a Solana risk-intelligence layer designed for traders and trading platforms.</p>
         <ul>
           <li>Pre-entry token behavior analysis (kill-switch, concentration, authorities, connected holders)</li>
           <li>One-token scanner workflow for fast discretionary review</li>
@@ -139,7 +139,7 @@ ENIGMA_BREAKEVEN_LOCK_PCT=0.15</code></pre>
               <tr><td><code>/api/withdrawals/me</code></td><td>GET</td><td>Yes</td><td>User withdrawal list + balance</td></tr>
               <tr><td><code>/api/withdrawals/request</code></td><td>POST</td><td>Yes</td><td>Create withdrawal request</td></tr>
               <tr><td><code>/api/signal</code></td><td>POST</td><td>Yes</td><td>Single-token scan</td></tr>
-              <tr><td><code>/api/discovery/suggest</code></td><td>POST</td><td>Yes</td><td>New token candidate suggestions</td></tr>
+              <tr><td><code>/api/discovery/suggest</code></td><td>POST</td><td>Yes</td><td>Single-token random candidate suggestion</td></tr>
               <tr><td><code>/api/token/holders</code></td><td>GET</td><td>Yes</td><td>Holder profile table + behavior</td></tr>
               <tr><td><code>/api/token/market/live</code></td><td>GET</td><td>Yes</td><td>Realtime price snapshot + chart points (no signal quota)</td></tr>
               <tr><td><code>/api/forecast/resolve</code></td><td>POST</td><td>Yes</td><td>Resolve trade outcome feedback</td></tr>
@@ -235,26 +235,26 @@ npm run enigma -- journal --note "Scanner blocked entry due to bundle risk"</cod
         <h2>9) Jupiter Ultra Execution Bridge</h2>
         <p>Recommended execution chain:</p>
         <ol>
-          <li>Risk Gate: Kobecoin AI Guardian scan + policy decision</li>
+          <li>Risk Gate: AI Guardian scan + policy decision</li>
           <li>Quote/Order: Jupiter <code>/ultra/v1/order</code></li>
           <li>Signing: user wallet signs base64 tx</li>
           <li>Execute: Jupiter <code>/ultra/v1/execute</code></li>
-          <li>Monitor: Kobecoin AI Guardian scanner loop + alerts</li>
+          <li>Monitor: AI Guardian scanner loop + alerts</li>
         </ol>
-        <p>Best practice: never execute when Kobecoin AI Guardian verdict is <code>HIGH_RISK</code> unless trader explicitly overrides.</p>
+        <p>Best practice: never execute when AI Guardian verdict is <code>HIGH_RISK</code> unless trader explicitly overrides.</p>
       </section>
 
       <section class="doc-card">
         <h2>10) Browser Extension Architecture (Manifest V3)</h2>
         <ul>
           <li>Content script reads token mint from Pump.fun route/DOM.</li>
-          <li>Background service worker authenticates with Kobecoin AI Guardian API.</li>
+          <li>Background service worker authenticates with AI Guardian API.</li>
           <li>Popup/side panel displays verdict, reasons, and risk trend.</li>
           <li>Use extension notifications + sound on status flip and threshold breach.</li>
         </ul>
         <pre><code>{
   "manifest_version": 3,
-  "name": "KOBECOIN AI Guardian Guard",
+  "name": "AI Guardian Guard",
   "permissions": ["storage", "notifications", "activeTab", "scripting"],
   "host_permissions": [
     "https://pump.fun/*",
@@ -327,7 +327,7 @@ npm run enigma -- journal --note "Scanner blocked entry due to bundle risk"</cod
 
       <section class="doc-card">
         <h2>14) Production Summary</h2>
-        <p>Kobecoin AI Guardian is now positioned as a trader safety + execution-intelligence layer:</p>
+        <p>AI Guardian is positioned as a trader safety + execution-intelligence layer, powered by Kobecoin:</p>
         <ul>
           <li>UI scanner for discretionary users</li>
           <li>API platform for partner integrations</li>
@@ -341,8 +341,8 @@ npm run enigma -- journal --note "Scanner blocked entry due to bundle risk"</cod
         <p>Auto-trade is implemented as a policy engine with safe defaults.</p>
         <ul>
           <li>Agent loop is single-token mode: pass one <code>mint</code> per run/tick request.</li>
-          <li>Watchlist endpoints remain scanner-only.</li>
-          <li>Default mode is <code>paper</code> and disabled</li>
+          <li>The shipped UI uses scanner one-token mode and random single-token suggestions. Watchlist flows are not part of the public product surface.</li>
+          <li>Default mode is <code>paper</code>.</li>
           <li>Engine tick supports layered entries on the same agent mint, bounded by <code>maxOpenPositions</code> and <code>cooldownSec</code>.</li>
           <li>Per-user execution locks prevent overlapping <code>/run</code>, <code>/engine/tick</code>, and <code>/monitor</code> calls from opening duplicate concurrent cycles.</li>
           <li><code>/api/autotrade/*</code> has dedicated rate limiting for loop safety under high-frequency polling.</li>
@@ -350,8 +350,8 @@ npm run enigma -- journal --note "Scanner blocked entry due to bundle risk"</cod
           <li><code>allowHighRiskEntries=true</code> can force entries even in HIGH_RISK state (extreme risk).</li>
           <li><code>minPatternScore</code> can be set to <code>0</code> to disable pattern gate in policy checks.</li>
           <li>Only <code>FAVORABLE</code> signals that pass thresholds become buy candidates</li>
-          <li>Live mode can execute Jupiter swaps when execution env + signer are configured</li>
-          <li>Dashboard trading UI maps directly to these endpoints: <code>Test Mode (Paper)</code> -> <code>/api/autotrade/config</code> and <code>/api/autotrade/run</code>, <code>Live Mode (Agent)</code> -> <code>/api/autotrade/execution-config</code>, <code>/api/autotrade/engine/tick</code>, and <code>/api/autotrade/monitor</code></li>
+          <li>Live execution remains policy-controlled and is not part of the public first-release UI.</li>
+          <li>Dashboard trading UI maps directly to these endpoints: paper mode -> <code>/api/autotrade/config</code>, <code>/api/autotrade/run</code>, <code>/api/autotrade/execution-config</code>, and <code>/api/autotrade/engine/tick</code>.</li>
           <li>UI guardrails normalize invalid exits automatically (<code>SL</code> and <code>trailingStopPct</code> remain below <code>tpPct</code>) before saving execution config</li>
           <li>Run history retention is capped by <code>ENIGMA_AUTOTRADE_RUN_RETENTION</code> (default <code>1200</code>) to avoid unbounded log growth.</li>
         </ul>
