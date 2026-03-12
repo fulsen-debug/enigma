@@ -4598,6 +4598,68 @@ async function runPaperTradeOnce(options = {}) {
   });
   setPaperStatus("Running", "busy");
   try {
+    if (getActiveAgentProvider().id === "openclaw") {
+      const mint = agentMints[0];
+      const budgetUsd = Number(paperBudgetInput?.value || agentTradeState.budgetUsd || 100);
+      const execution = await getActiveAgentProvider().executeMission({
+        workspaceId: mint,
+        mint,
+        budgetUsd
+      });
+      const signal = execution?.raw?.signal || null;
+      if (signal?.token) {
+        cacheTokenMeta(signal.token, mint);
+      }
+      const executionRaw = execution?.raw?.execution || {};
+      const engineResponse = executionRaw?.raw?.engineResponse || executionRaw?.engineResponse || null;
+      if (signal) {
+        const decisionLike = {
+          ...signal,
+          mint,
+          signalStatus: String(signal.status || "CAUTION"),
+          decision: String(signal.status || "").toUpperCase() === "FAVORABLE" ? "BUY_CANDIDATE" : "SKIP",
+          confidence: Number(signal.confidence ?? signal.killSwitch?.confidence ?? 0),
+          patternScore: Number(signal.patternScore || 0),
+          token: signal.token || null
+        };
+        renderAgentScannerSummary([decisionLike], { ts: new Date().toISOString() });
+      }
+      if (engineResponse?.actions) {
+        pushTradeActionEvents(engineResponse.actions || [], {
+          ts: engineResponse.ts || new Date().toISOString(),
+          mode: engineResponse.mode || "paper"
+        });
+      }
+      if (engineResponse?.positions?.open) {
+        renderEnginePositions(engineResponse.positions.open || []);
+      } else if (execution?.mission?.livePosition) {
+        renderEnginePositions([execution.mission.livePosition]);
+      } else {
+        renderEnginePositions([]);
+      }
+      updateAgentTradeState({
+        missionModel: {
+          ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+          ...(execution?.mission || {})
+        },
+        missionStatus: execution?.mission?.missionStatus || "executing",
+        isExecuteLoading: false
+      });
+      try {
+        await loadPaperPerformance();
+      } catch (error) {
+        pushMessage(`History refresh skipped: ${error.message}`, "info");
+      }
+      pushMessage(
+        execution?.mission?.livePosition
+          ? `OpenClaw mission executed on ${shortMint(mint, 4, 4)} and is now monitoring the guarded position.`
+          : `OpenClaw mission evaluated ${shortMint(mint, 4, 4)} and kept execution guarded.`,
+        execution?.mission?.livePosition ? "ok" : "info"
+      );
+      setPaperStatus("Running", "ok");
+      return true;
+    }
+
     const selectedModel = CORE_AGENT_MODEL_KEY;
     const runResponses = [];
     const runErrors = [];

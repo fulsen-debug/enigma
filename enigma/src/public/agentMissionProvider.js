@@ -1,4 +1,4 @@
-const OPENCLAW_WORKSPACE_FILES = [
+export const OPENCLAW_WORKSPACE_FILES = [
   "SOUL.md",
   "USER.md",
   "THESIS.md",
@@ -36,6 +36,20 @@ function firstPositive(values = []) {
 
 function cloneActivity(activity = []) {
   return Array.isArray(activity) ? activity.map((item) => ({ ...item })) : [];
+}
+
+function formatCompactPct(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "0%";
+  return `${num.toFixed(1)}%`;
+}
+
+function formatCompactUsd(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "$0";
+  if (num >= 1_000_000) return `$${(num / 1_000_000).toFixed(2)}M`;
+  if (num >= 1_000) return `$${(num / 1_000).toFixed(1)}K`;
+  return `$${num.toFixed(2)}`;
 }
 
 function buildThesisFromDecisionLike(source = {}) {
@@ -155,6 +169,20 @@ function withProviderMetadata(model, providerId, providerLabel, artifacts = {}) 
   };
 }
 
+function resolveWorkspaceId(value, fallback = "") {
+  if (typeof value === "object" && value !== null) {
+    return String(value.workspaceId || value.mint || fallback || "").trim();
+  }
+  return String(value || fallback || "").trim();
+}
+
+function resolveBudget(value, fallback = 0) {
+  if (typeof value === "object" && value !== null) {
+    return Number(value.budgetUsd || fallback || 0);
+  }
+  return Number(value || fallback || 0);
+}
+
 export function createLegacyPaperAgentProvider({ request }) {
   const providerId = "legacy-paper";
   const providerLabel = "Legacy Paper Engine";
@@ -238,14 +266,8 @@ export function createLegacyPaperAgentProvider({ request }) {
   }
 
   async function previewMission(workspaceIdOrOptions, budgetUsd) {
-    const workspaceId =
-      typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
-        ? workspaceIdOrOptions.mint || workspaceIdOrOptions.workspaceId || ""
-        : workspaceIdOrOptions;
-    const effectiveBudget =
-      typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
-        ? workspaceIdOrOptions.budgetUsd
-        : budgetUsd;
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
+    const effectiveBudget = resolveBudget(workspaceIdOrOptions, budgetUsd);
     const response = await request("/api/signal", { mint: workspaceId }, true, "POST");
     const thesis = buildThesisFromDecisionLike({
       ...(response.signal || {}),
@@ -262,7 +284,7 @@ export function createLegacyPaperAgentProvider({ request }) {
       stopLoss: thesis.stopLoss,
       takeProfit: thesis.takeProfit,
       holdHorizon: thesis.holdHorizon,
-      filledAmount: Number(effectiveBudget || 0)
+      filledAmount: effectiveBudget
     };
     model.activity = [
       {
@@ -277,14 +299,8 @@ export function createLegacyPaperAgentProvider({ request }) {
   }
 
   async function executeMission(workspaceIdOrOptions, budgetUsd, options = {}) {
-    const workspaceId =
-      typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
-        ? workspaceIdOrOptions.mint || workspaceIdOrOptions.workspaceId || ""
-        : workspaceIdOrOptions;
-    const effectiveBudget =
-      typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
-        ? workspaceIdOrOptions.budgetUsd
-        : budgetUsd;
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
+    const effectiveBudget = resolveBudget(workspaceIdOrOptions, budgetUsd);
     const runResponse = await request(
       "/api/autotrade/run",
       {
@@ -306,10 +322,7 @@ export function createLegacyPaperAgentProvider({ request }) {
   }
 
   async function closePosition(workspaceIdOrOptions, positionId) {
-    const workspaceId =
-      typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
-        ? workspaceIdOrOptions.mint || workspaceIdOrOptions.workspaceId || ""
-        : workspaceIdOrOptions;
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
     const effectivePositionId =
       typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
         ? workspaceIdOrOptions.positionId
@@ -335,10 +348,7 @@ export function createLegacyPaperAgentProvider({ request }) {
   }
 
   async function haltMission(workspaceIdOrOptions) {
-    const workspaceId =
-      typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
-        ? workspaceIdOrOptions.workspaceId || workspaceIdOrOptions.mint || ""
-        : workspaceIdOrOptions;
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
     const response = await request("/api/autotrade/halt", {}, true, "POST");
     const model = createEmptyMissionModel(providerId);
     model.missionStatus = "halted";
@@ -355,28 +365,22 @@ export function createLegacyPaperAgentProvider({ request }) {
   }
 
   async function getMissionState(workspaceIdOrOptions) {
-    const workspaceId =
-      typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
-        ? workspaceIdOrOptions.workspaceId || workspaceIdOrOptions.mint || ""
-        : workspaceIdOrOptions;
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
     const positions = await request("/api/autotrade/positions", null, true, "GET");
     return {
       raw: positions,
       mission: normalizePositionsResponse((positions?.positions || []).filter((position) => {
         if (!workspaceId) return true;
-        return String(position?.mint || "") === String(workspaceId || "");
+        return String(position?.mint || "") === workspaceId;
       }))
     };
   }
 
   async function getActivity(workspaceIdOrOptions) {
-    const workspaceId =
-      typeof workspaceIdOrOptions === "object" && workspaceIdOrOptions !== null
-        ? workspaceIdOrOptions.workspaceId || workspaceIdOrOptions.mint || ""
-        : workspaceIdOrOptions;
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
     const monitor = await request("/api/autotrade/monitor", null, true, "GET");
     const mission = normalizeMonitorResponse(monitor || {});
-    if (workspaceId && mission.livePosition && String(mission.livePosition.mint || "") !== String(workspaceId)) {
+    if (workspaceId && mission.livePosition && String(mission.livePosition.mint || "") !== workspaceId) {
       mission.livePosition = null;
       mission.missionStatus = "exited";
     }
@@ -413,7 +417,8 @@ function createOpenClawWorkspaceArtifacts(workspaceId, mission) {
       "",
       `Workspace: ${workspaceId || "unassigned"}`,
       "Mission profile: Kobecoin AI operator console",
-      "Primary workflow: allocate budget, preview thesis, execute, monitor, explain."
+      "Primary workflow: allocate budget, preview thesis, execute, monitor, explain.",
+      "Execution backend: guarded paper runtime until live execution is explicitly enabled."
     ].join("\n"),
     "USER.md": [
       "# Operator Intent",
@@ -429,7 +434,9 @@ function createOpenClawWorkspaceArtifacts(workspaceId, mission) {
       `Confidence: ${Math.round(Number(thesis.confidence || 0) * 100)}%`,
       `Risk posture: ${thesis.riskPosture || "Standby"}`,
       "",
-      thesis.summary || "No thesis recorded yet."
+      thesis.summary || "No thesis recorded yet.",
+      "",
+      ...(Array.isArray(thesis.reasons) ? thesis.reasons.map((reason) => `- ${reason}`) : [])
     ].join("\n"),
     "STATE.json": JSON.stringify(
       {
@@ -461,7 +468,144 @@ function createOpenClawWorkspaceArtifacts(workspaceId, mission) {
   };
 }
 
-export function createFutureOpenClawAgentProvider({ request, fallbackProvider, storage }) {
+function createMissionActivity(title, message, tone = "info", meta = "", ts = new Date().toISOString()) {
+  return { ts, title, message, tone, meta };
+}
+
+function quoteFromSignal(signal, budgetUsd) {
+  const tradePlan = signal?.tradePlan || {};
+  const entryLow = firstPositive([tradePlan.buyZone?.low]);
+  const entryHigh = firstPositive([tradePlan.buyZone?.high, entryLow]);
+  const entryMid =
+    entryLow && entryHigh ? Number(((entryLow + entryHigh) / 2).toFixed(12)) : firstPositive([entryLow, entryHigh]);
+  return {
+    budgetUsd: Number(budgetUsd || 0),
+    entryLow,
+    entryHigh,
+    entryMid,
+    takeProfit: firstPositive([
+      Array.isArray(tradePlan.resistance) ? tradePlan.resistance[0] : tradePlan.resistance
+    ]),
+    stopLoss: firstPositive([tradePlan.stopLoss]),
+    holdHorizon: signal?.marketRegime?.timeframe
+      ? `${String(signal.marketRegime.timeframe)} horizon`
+      : "Adaptive hold horizon"
+  };
+}
+
+function createOpenClawRuntimeThesis({ workspaceId, signal, quote, marketSnapshot, position }) {
+  const base = buildThesisFromDecisionLike({
+    ...(signal || {}),
+    mint: workspaceId,
+    token: signal?.token || null
+  });
+  const snapshot = marketSnapshot || signal?.market || {};
+  const status = normalizeSignalStatus(signal?.status || signal?.signalStatus);
+  const confidence = Math.max(
+    0,
+    Math.min(1, Number(signal?.confidence ?? signal?.killSwitch?.confidence ?? base.confidence ?? 0))
+  );
+  const buys = Number(signal?.market?.flow24h?.buys || 0);
+  const sells = Number(signal?.market?.flow24h?.sells || 0);
+  const bundleRisk = Number(signal?.bundleRiskScore || 0);
+  const connected = Number(signal?.holderProfile?.connectedPct || 0);
+  const newWallets = Number(signal?.holderProfile?.newWalletPct || 0);
+  const reasons = [
+    status === "FAVORABLE"
+      ? "OpenClaw sees constructive structure and can request guarded execution."
+      : status === "CAUTION"
+        ? "OpenClaw sees partial confirmation and keeps the mission selective."
+        : "OpenClaw sees elevated risk and keeps the mission in observation mode.",
+    `Order flow reads ${buys} buys vs ${sells} sells in the latest 24h sample.`,
+    `Connected holders ${formatCompactPct(connected)} | new wallets ${formatCompactPct(newWallets)} | bundle risk ${formatCompactPct(bundleRisk)}.`,
+    snapshot?.priceUsd ? `Spot ${formatCompactUsd(snapshot.priceUsd)} | liquidity ${formatCompactUsd(signal?.market?.liquidityUsd || 0)}.` : ""
+  ].filter(Boolean);
+  return {
+    ...base,
+    status,
+    confidence,
+    riskPosture:
+      bundleRisk >= 55 || connected >= 30
+        ? "Defensive"
+        : status === "FAVORABLE"
+          ? "Constructive"
+          : status === "CAUTION"
+            ? "Guarded"
+            : "Standby",
+    actionIntent:
+      position
+        ? "Manage active position"
+        : status === "FAVORABLE"
+          ? "Request guarded execution"
+          : status === "CAUTION"
+            ? "Preview and wait for confirmation"
+            : "Stand down",
+    executionPosture: position ? "Monitoring guarded execution" : "OpenClaw planned / guarded execution",
+    summary:
+      position
+        ? "OpenClaw is actively supervising a live guarded position."
+        : reasons[0] || base.summary,
+    reasons,
+    note:
+      position
+        ? "Position is live. OpenClaw keeps adjusting around runtime feedback and market structure."
+        : status === "FAVORABLE"
+          ? "OpenClaw sees enough structure to request guarded execution."
+          : status === "CAUTION"
+            ? "OpenClaw keeps the thesis live but execution stays selective."
+            : "OpenClaw keeps the token under review and avoids weak structure.",
+    priceUsd: Number(snapshot?.priceUsd || base.priceUsd || 0),
+    entryLow: firstPositive([quote?.entryLow, base.entryLow]),
+    entryHigh: firstPositive([quote?.entryHigh, base.entryHigh]),
+    stopLoss: firstPositive([quote?.stopLoss, base.stopLoss]),
+    takeProfit: firstPositive([quote?.takeProfit, base.takeProfit]),
+    holdHorizon: quote?.holdHorizon || base.holdHorizon
+  };
+}
+
+export function createOpenClawMissionTools({ request, fallbackProvider }) {
+  return {
+    async getCurrentWorkspaceToken(input) {
+      const workspaceId = resolveWorkspaceId(input);
+      if (!workspaceId) throw new Error("workspace token is missing");
+      return { workspaceId, mint: workspaceId };
+    },
+    async getSignalPreview({ mint }) {
+      return request("/api/signal", { mint }, true, "POST");
+    },
+    async getTokenMarketSnapshot({ mint, signalResponse }) {
+      if (signalResponse?.signal?.market) return signalResponse.signal.market;
+      const latest = await request("/api/signal", { mint }, true, "POST");
+      return latest?.signal?.market || {};
+    },
+    async getQuoteForBudget({ budgetUsd, signalResponse }) {
+      return quoteFromSignal(signalResponse?.signal || null, budgetUsd);
+    },
+    async executeGuardedPaperTrade({ workspaceId, budgetUsd, tradeAmountUsd }) {
+      return fallbackProvider.executeMission(
+        { workspaceId, mint: workspaceId, budgetUsd, tradeAmountUsd },
+        budgetUsd,
+        { tradeAmountUsd }
+      );
+    },
+    async getOpenPosition({ workspaceId }) {
+      const response = await fallbackProvider.getMissionState({ workspaceId });
+      return {
+        raw: response.raw,
+        position: response?.mission?.livePosition || null,
+        mission: response?.mission || null
+      };
+    },
+    async closeOpenPosition({ workspaceId, positionId }) {
+      return fallbackProvider.closePosition({ workspaceId, mint: workspaceId, positionId });
+    },
+    async haltMission({ workspaceId }) {
+      return fallbackProvider.haltMission({ workspaceId });
+    }
+  };
+}
+
+export function createOpenClawRuntime({ tools, storage, now = () => new Date().toISOString() }) {
   const providerId = "openclaw";
   const providerLabel = "OpenClaw Mission Adapter";
   const baseStorage =
@@ -488,7 +632,7 @@ export function createFutureOpenClawAgentProvider({ request, fallbackProvider, s
     }
   }
 
-  function writeWorkspaceState(workspaceId, mission) {
+  function persistMission(workspaceId, mission) {
     const artifacts = createOpenClawWorkspaceArtifacts(workspaceId, mission);
     const payload = {
       workspaceId,
@@ -497,125 +641,209 @@ export function createFutureOpenClawAgentProvider({ request, fallbackProvider, s
       artifacts,
       mission
     };
-    try {
-      baseStorage.setItem(workspaceKey(workspaceId), JSON.stringify(payload));
-    } catch {
-      return artifacts;
-    }
+    baseStorage.setItem(workspaceKey(workspaceId), JSON.stringify(payload));
     return artifacts;
   }
 
-  function wrapMission(workspaceId, mission, extras = {}) {
-    const baseMission = mission ? { ...mission, activity: cloneActivity(mission.activity || []) } : createEmptyMissionModel(providerId);
-    const stored = readWorkspaceState(workspaceId);
-    const artifacts = extras.artifacts || stored?.artifacts || writeWorkspaceState(workspaceId, baseMission);
-    const activity = cloneActivity(baseMission.activity || stored?.mission?.activity || []);
-    return withProviderMetadata(
-      {
-        ...baseMission,
-        activity
-      },
-      providerId,
-      providerLabel,
-      artifacts
-    );
+  function wrapMission(workspaceId, mission) {
+    return withProviderMetadata(mission, providerId, providerLabel, persistMission(workspaceId, mission));
   }
 
-  async function getMissionState(workspaceId) {
-    const fromRuntime = await fallbackProvider.getMissionState(workspaceId);
-    const mission = wrapMission(workspaceId, fromRuntime.mission);
-    writeWorkspaceState(workspaceId, mission);
-    return { raw: fromRuntime.raw, mission };
-  }
-
-  async function previewMission(workspaceId, budgetUsd) {
-    const preview = await fallbackProvider.previewMission(workspaceId, budgetUsd);
-    const mission = wrapMission(workspaceId, {
-      ...preview.mission,
-      missionStatus: "planning",
+  function buildMission({
+    workspaceId,
+    missionStatus,
+    signalResponse = null,
+    marketSnapshot = null,
+    quote = null,
+    livePosition = null,
+    executionTrace = {},
+    activity = [],
+    previousMission = null
+  }) {
+    const mission = {
+      ...createEmptyMissionModel(providerId),
+      missionStatus,
+      thesis: createOpenClawRuntimeThesis({
+        workspaceId,
+        signal: signalResponse?.signal || previousMission?.rawSignal || null,
+        quote,
+        marketSnapshot,
+        position: livePosition
+      }),
+      rawSignal: signalResponse?.signal || previousMission?.rawSignal || null,
+      livePosition,
+      activity: cloneActivity(activity),
       executionTrace: {
-        ...preview.mission.executionTrace,
+        ...createEmptyMissionModel(providerId).executionTrace,
+        ...(previousMission?.executionTrace || {}),
+        ...executionTrace
+      }
+    };
+    return wrapMission(workspaceId, mission);
+  }
+
+  async function previewMission(workspaceIdOrOptions, budgetUsd) {
+    const token = await tools.getCurrentWorkspaceToken(workspaceIdOrOptions);
+    const effectiveBudget = resolveBudget(workspaceIdOrOptions, budgetUsd);
+    const signalResponse = await tools.getSignalPreview({ mint: token.mint, budgetUsd: effectiveBudget });
+    const marketSnapshot = await tools.getTokenMarketSnapshot({ mint: token.mint, signalResponse });
+    const quote = await tools.getQuoteForBudget({ workspaceId: token.workspaceId, budgetUsd: effectiveBudget, signalResponse, marketSnapshot });
+    const activity = [
+      createMissionActivity("Mission Initialized", "OpenClaw loaded workspace context and budget.", "info", `${effectiveBudget.toFixed(2)} USD`, now()),
+      createMissionActivity("Thesis Updated", "OpenClaw synthesized a fresh token thesis from live market and risk signals.", "info", normalizeSignalStatus(signalResponse?.signal?.status), now()),
+      createMissionActivity("Confidence Revised", "OpenClaw recalibrated confidence after reading structure, liquidity, and holder pressure.", "info", `${Math.round(Number(signalResponse?.signal?.confidence || 0) * 100)}%`, now()),
+      createMissionActivity("Preview Requested", "OpenClaw prepared a guarded execution outline and wrote mission artifacts.", "info", token.workspaceId, now())
+    ];
+    const mission = buildMission({
+      workspaceId: token.workspaceId,
+      missionStatus: "planning",
+      signalResponse,
+      marketSnapshot,
+      quote,
+      activity,
+      executionTrace: {
         previewState: "OpenClaw mission preview ready",
-        filledAmount: Number(budgetUsd || 0)
+        submitted: "Awaiting Let AI Trade",
+        filledAmount: effectiveBudget,
+        averageEntry: quote.entryMid,
+        stopLoss: quote.stopLoss,
+        takeProfit: quote.takeProfit,
+        holdHorizon: quote.holdHorizon
+      }
+    });
+    return { raw: { signal: signalResponse.signal, signalResponse, marketSnapshot, quote }, mission };
+  }
+
+  async function executeMission(workspaceIdOrOptions, budgetUsd) {
+    const token = await tools.getCurrentWorkspaceToken(workspaceIdOrOptions);
+    const effectiveBudget = resolveBudget(workspaceIdOrOptions, budgetUsd);
+    const preview = await previewMission({ workspaceId: token.workspaceId, mint: token.mint, budgetUsd: effectiveBudget }, effectiveBudget);
+    const execution = await tools.executeGuardedPaperTrade({
+      workspaceId: token.workspaceId,
+      budgetUsd: effectiveBudget,
+      tradeAmountUsd: effectiveBudget
+    });
+    const livePosition = execution?.mission?.livePosition || null;
+    const activity = [
+      createMissionActivity("Execution Requested", "OpenClaw requested guarded paper execution from the runtime backend.", "ok", `${effectiveBudget.toFixed(2)} USD`, now()),
+      createMissionActivity(livePosition ? "Execution Confirmed" : "Execution Deferred", livePosition ? "Guarded runtime confirmed a paper position for the mission." : "Guarded runtime evaluated the mission and kept execution on hold.", livePosition ? "ok" : "info", token.workspaceId, now()),
+      ...cloneActivity(preview.mission.activity || []),
+      ...cloneActivity(execution?.mission?.activity || [])
+    ].slice(0, 40);
+    const mission = buildMission({
+      workspaceId: token.workspaceId,
+      missionStatus: livePosition ? "monitoring" : "executing",
+      signalResponse: preview.raw.signalResponse,
+      marketSnapshot: preview.raw.marketSnapshot,
+      quote: preview.raw.quote,
+      livePosition,
+      activity,
+      executionTrace: {
+        previewState: "OpenClaw preview executed",
+        submitted: livePosition ? "Execution confirmed" : "Execution evaluated",
+        txHash: execution?.mission?.executionTrace?.txHash || "paper-fill",
+        filledAmount: execution?.mission?.executionTrace?.filledAmount || effectiveBudget,
+        averageEntry: execution?.mission?.executionTrace?.averageEntry || preview.mission.executionTrace.averageEntry,
+        stopLoss: execution?.mission?.executionTrace?.stopLoss || preview.mission.executionTrace.stopLoss,
+        takeProfit: execution?.mission?.executionTrace?.takeProfit || preview.mission.executionTrace.takeProfit,
+        holdHorizon: execution?.mission?.executionTrace?.holdHorizon || preview.mission.executionTrace.holdHorizon,
+        currentPnlPct: execution?.mission?.executionTrace?.currentPnlPct ?? null
+      }
+    });
+    return { raw: { ...preview.raw, execution }, mission };
+  }
+
+  async function getMissionState(workspaceIdOrOptions) {
+    const token = await tools.getCurrentWorkspaceToken(workspaceIdOrOptions);
+    const stored = readWorkspaceState(token.workspaceId)?.mission || null;
+    const openPosition = await tools.getOpenPosition({ workspaceId: token.workspaceId });
+    const livePosition = openPosition?.position || null;
+    const mission = buildMission({
+      workspaceId: token.workspaceId,
+      missionStatus: livePosition ? "monitoring" : stored?.missionStatus || "scanning",
+      signalResponse: stored?.rawSignal ? { signal: stored.rawSignal } : null,
+      marketSnapshot: stored?.rawSignal?.market || null,
+      quote: {
+        entryMid: stored?.executionTrace?.averageEntry || null,
+        stopLoss: stored?.executionTrace?.stopLoss || null,
+        takeProfit: stored?.executionTrace?.takeProfit || null,
+        holdHorizon: stored?.executionTrace?.holdHorizon || null
       },
-      activity: [
-        {
-          ts: new Date().toISOString(),
-          tone: "info",
-          title: "Mission Briefed",
-          message: "OpenClaw adapter prepared the mission workspace and preview plan.",
-          meta: String(workspaceId || "")
-        },
-        ...cloneActivity(preview.mission.activity || [])
-      ]
+      livePosition,
+      previousMission: stored,
+      activity: cloneActivity(stored?.activity || []),
+      executionTrace: {
+        ...(stored?.executionTrace || {}),
+        currentPnlPct: openPosition?.mission?.executionTrace?.currentPnlPct ?? stored?.executionTrace?.currentPnlPct ?? null
+      }
     });
-    writeWorkspaceState(workspaceId, mission);
-    return { raw: preview.raw, mission };
+    return { raw: openPosition?.raw || stored || null, mission };
   }
 
-  async function executeMission(workspaceId, budgetUsd, options = {}) {
-    const execution = await fallbackProvider.executeMission(workspaceId, budgetUsd, options);
+  async function getActivity(workspaceIdOrOptions) {
+    const state = await getMissionState(workspaceIdOrOptions);
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
     const mission = wrapMission(workspaceId, {
-      ...execution.mission,
-      missionStatus: execution.mission.livePosition ? "monitoring" : "executing",
+      ...state.mission,
       activity: [
-        {
-          ts: new Date().toISOString(),
-          tone: "ok",
-          title: "Execution Routed",
-          message: "OpenClaw adapter delegated execution to the guarded runtime.",
-          meta: `${Number(budgetUsd || 0).toFixed(2)} USD`
-        },
-        ...cloneActivity(execution.mission.activity || [])
-      ]
+        createMissionActivity(
+          "Monitoring Tick",
+          state.mission.livePosition
+            ? "OpenClaw refreshed the mission after a monitoring pass."
+            : "OpenClaw checked the workspace and found no active guarded position.",
+          "info",
+          workspaceId,
+          now()
+        ),
+        ...cloneActivity(state.mission.activity || [])
+      ].slice(0, 40)
     });
-    writeWorkspaceState(workspaceId, mission);
-    return { raw: execution.raw, mission };
+    return { raw: state.raw, mission };
   }
 
-  async function closePosition(workspaceId, positionId) {
-    const result = await fallbackProvider.closePosition(workspaceId, positionId);
-    const mission = wrapMission(workspaceId, {
-      ...result.mission,
+  async function closePosition(workspaceIdOrOptions, positionId) {
+    const token = await tools.getCurrentWorkspaceToken(workspaceIdOrOptions);
+    const response = await tools.closeOpenPosition({ workspaceId: token.workspaceId, positionId });
+    const stored = readWorkspaceState(token.workspaceId)?.mission || null;
+    const mission = buildMission({
+      workspaceId: token.workspaceId,
+      missionStatus: "exited",
+      signalResponse: stored?.rawSignal ? { signal: stored.rawSignal } : null,
+      marketSnapshot: stored?.rawSignal?.market || null,
+      previousMission: stored,
       activity: [
-        {
-          ts: new Date().toISOString(),
-          tone: "info",
-          title: "Operator Override",
-          message: "Position close was routed through the mission adapter.",
-          meta: String(positionId || workspaceId || "")
-        },
-        ...cloneActivity(result.mission.activity || [])
-      ]
+        createMissionActivity("Position Closed", "OpenClaw acknowledged the operator close and archived the mission.", "info", token.workspaceId, now()),
+        ...cloneActivity(response?.mission?.activity || stored?.activity || [])
+      ],
+      executionTrace: {
+        ...(stored?.executionTrace || {}),
+        submitted: "Closed by operator",
+        currentPnlPct: null
+      }
     });
-    writeWorkspaceState(workspaceId, mission);
-    return { raw: result.raw, mission };
+    return { raw: response?.raw || response, mission };
   }
 
-  async function haltMission(workspaceId) {
-    const result = await fallbackProvider.haltMission(workspaceId);
-    const mission = wrapMission(workspaceId, {
-      ...result.mission,
+  async function haltMission(workspaceIdOrOptions) {
+    const token = await tools.getCurrentWorkspaceToken(workspaceIdOrOptions);
+    const response = await tools.haltMission({ workspaceId: token.workspaceId });
+    const stored = readWorkspaceState(token.workspaceId)?.mission || null;
+    const mission = buildMission({
+      workspaceId: token.workspaceId,
+      missionStatus: "halted",
+      signalResponse: stored?.rawSignal ? { signal: stored.rawSignal } : null,
+      marketSnapshot: stored?.rawSignal?.market || null,
+      previousMission: stored,
       activity: [
-        {
-          ts: new Date().toISOString(),
-          tone: "error",
-          title: "Mission Halted",
-          message: "OpenClaw mission adapter marked the workspace halted.",
-          meta: "Operator action"
-        },
-        ...cloneActivity(result.mission.activity || [])
-      ]
+        createMissionActivity("Halt Acknowledged", "OpenClaw marked the mission halted and blocked further actions.", "error", token.workspaceId, now()),
+        ...cloneActivity(response?.mission?.activity || stored?.activity || [])
+      ],
+      executionTrace: {
+        ...(stored?.executionTrace || {}),
+        submitted: "Halt engaged"
+      }
     });
-    writeWorkspaceState(workspaceId, mission);
-    return { raw: result.raw, mission };
-  }
-
-  async function getActivity(workspaceId) {
-    const activity = await fallbackProvider.getActivity(workspaceId);
-    const mission = wrapMission(workspaceId, activity.mission);
-    writeWorkspaceState(workspaceId, mission);
-    return { raw: activity.raw, mission };
+    return { raw: response?.raw || response, mission };
   }
 
   return {
@@ -630,20 +858,61 @@ export function createFutureOpenClawAgentProvider({ request, fallbackProvider, s
     executeMission,
     closePosition,
     haltMission,
-    getActivity,
+    getActivity
+  };
+}
+
+export function createOpenClawAgentProvider({ request, fallbackProvider, storage }) {
+  const tools = createOpenClawMissionTools({ request, fallbackProvider });
+  const runtime = createOpenClawRuntime({ tools, storage });
+  return {
+    ...runtime,
     normalizePaperCycle(payload) {
-      const mission = fallbackProvider.normalizePaperCycle(payload);
-      return wrapMission(payload?.mint || payload?.workspaceId || "", mission);
+      const legacyMission = fallbackProvider.normalizePaperCycle(payload);
+      const workspaceId = resolveWorkspaceId(payload?.mint || payload?.workspaceId || "");
+      const mission = {
+        ...legacyMission,
+        thesis: createOpenClawRuntimeThesis({
+          workspaceId,
+          signal: payload?.runResponse?.decisions?.[0] || null,
+          quote: payload?.runResponse?.decisions?.[0]
+            ? quoteFromSignal(payload.runResponse.decisions[0], legacyMission.executionTrace?.filledAmount || 0)
+            : null,
+          marketSnapshot: payload?.runResponse?.decisions?.[0]?.market || null,
+          position: legacyMission.livePosition || null
+        }),
+        activity: [
+          createMissionActivity("Execution Delegated", "OpenClaw synchronized guarded execution into mission state.", "info", workspaceId),
+          ...cloneActivity(legacyMission.activity || [])
+        ]
+      };
+      return withProviderMetadata(
+        mission,
+        "openclaw",
+        "OpenClaw Mission Adapter",
+        createOpenClawWorkspaceArtifacts(workspaceId, mission)
+      );
     },
     normalizeMonitorResponse(response) {
-      const mission = fallbackProvider.normalizeMonitorResponse(response);
-      const workspaceId = mission.livePosition?.mint || "";
-      return wrapMission(workspaceId, mission);
+      const legacyMission = fallbackProvider.normalizeMonitorResponse(response);
+      const workspaceId = legacyMission.livePosition?.mint || "";
+      const mission = {
+        ...legacyMission,
+        activity: [
+          createMissionActivity("Monitoring Tick", "OpenClaw refreshed guarded runtime monitoring state.", "info", workspaceId),
+          ...cloneActivity(legacyMission.activity || [])
+        ]
+      };
+      return withProviderMetadata(mission, "openclaw", "OpenClaw Mission Adapter", createOpenClawWorkspaceArtifacts(workspaceId, mission));
     },
     normalizePositionsResponse(positions = []) {
-      const mission = fallbackProvider.normalizePositionsResponse(positions);
+      const legacyMission = fallbackProvider.normalizePositionsResponse(positions);
       const workspaceId = Array.isArray(positions) && positions[0] ? String(positions[0].mint || "") : "";
-      return wrapMission(workspaceId, mission);
+      return withProviderMetadata(legacyMission, "openclaw", "OpenClaw Mission Adapter", createOpenClawWorkspaceArtifacts(workspaceId, legacyMission));
     }
   };
+}
+
+export function createFutureOpenClawAgentProvider(options) {
+  return createOpenClawAgentProvider(options);
 }

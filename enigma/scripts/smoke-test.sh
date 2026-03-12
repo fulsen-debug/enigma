@@ -11,6 +11,7 @@ export NODE_ENV=development
 export ENIGMA_JWT_SECRET="enigma-smoke-secret"
 export ENIGMA_KOBX_REQUIRED_BALANCE=0
 export SOLANA_RPC_URL="${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}"
+export ENIGMA_DB_PATH="/tmp/enigma_smoke_$$.sqlite"
 TEST_MINT="${ENIGMA_SMOKE_TEST_MINT:-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v}"
 
 cleanup() {
