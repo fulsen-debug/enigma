@@ -79,6 +79,8 @@ const agentPriceStripContext = document.querySelector("#agent-price-strip-contex
 const agentActivityFeed = document.querySelector("#agent-activity-feed");
 const agentAdvancedDrawer = document.querySelector("#agent-advanced-drawer");
 const agentDiagnosticsDrawer = document.querySelector("#agent-diagnostics-drawer");
+const agentSessionHistory = document.querySelector("#agent-session-history");
+const agentWorkerDiagnostics = document.querySelector("#agent-worker-diagnostics");
 const agentModeView = document.querySelector("#agent-mode-view");
 const agentTrailingPreview = document.querySelector("#agent-trailing-preview");
 const agentOpenSlotsPreview = document.querySelector("#agent-open-slots-preview");
@@ -281,6 +283,11 @@ let agentTradeState = { ...DEFAULT_AGENT_MISSION_STATE };
 let agentMissionStream = null;
 let agentMissionStreamWorkspaceId = "";
 let agentMissionStreamReconnectTimer = null;
+let agentMissionStreamStatus = "idle";
+let agentMissionLastEventAt = "";
+let agentMissionLastHeartbeatAt = "";
+let agentMissionDiagnostics = null;
+let agentMissionSessions = [];
 const legacyPaperAgentProvider = createLegacyPaperAgentProvider({ request: api });
 const futureOpenClawAgentProvider = createFutureOpenClawAgentProvider({
   request: api,
@@ -302,6 +309,7 @@ function stopAgentMissionStream() {
     agentMissionStream = null;
   }
   agentMissionStreamWorkspaceId = "";
+  agentMissionStreamStatus = "idle";
 }
 
 function saveAgentMissionSessionId(sessionId) {
@@ -360,6 +368,7 @@ function applyMissionStreamSnapshot(snapshot) {
 
 function applyMissionStreamSessionEvent(payload) {
   if (!payload || typeof payload !== "object") return;
+  agentMissionLastEventAt = String(payload.ts || new Date().toISOString());
   saveAgentMissionSessionId(payload.sessionId);
   if (payload.sessionId) {
     updateAgentTradeState({
@@ -373,6 +382,7 @@ function applyMissionStreamSessionEvent(payload) {
 
 function applyMissionStreamStatusEvent(payload) {
   if (!payload || typeof payload !== "object") return;
+  agentMissionLastEventAt = String(payload.ts || new Date().toISOString());
   const nextStatus = String(payload.missionStatus || "").trim().toLowerCase();
   if (!nextStatus) return;
   updateAgentTradeState({
@@ -387,6 +397,7 @@ function applyMissionStreamStatusEvent(payload) {
 
 function applyMissionStreamActivityEvent(payload) {
   if (!payload || typeof payload !== "object" || !payload.activity) return;
+  agentMissionLastEventAt = String(payload.activity?.ts || new Date().toISOString());
   if (payload.sessionId) {
     saveAgentMissionSessionId(payload.sessionId);
   }
@@ -404,6 +415,7 @@ function startAgentMissionStream(workspaceId) {
   }
   stopAgentMissionStream();
   agentMissionStreamWorkspaceId = normalizedWorkspaceId;
+  agentMissionStreamStatus = "connecting";
   const source = new EventSource(
     `/api/mission/workspaces/${encodeURIComponent(normalizedWorkspaceId)}/stream`
   );
@@ -411,8 +423,18 @@ function startAgentMissionStream(workspaceId) {
     try {
       const payload = JSON.parse(event.data || "{}");
       if (payload?.snapshot) {
+        agentMissionStreamStatus = "live";
+        agentMissionLastEventAt = String(payload.snapshot?.updatedAt || new Date().toISOString());
         applyMissionStreamSnapshot(payload.snapshot);
       }
+    } catch {}
+  });
+  source.addEventListener("heartbeat", (event) => {
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      agentMissionStreamStatus = "live";
+      agentMissionLastHeartbeatAt = String(payload.ts || new Date().toISOString());
+      renderAgentDiagnostics();
     } catch {}
   });
   source.addEventListener("session", (event) => {
@@ -435,6 +457,8 @@ function startAgentMissionStream(workspaceId) {
       agentMissionStream.close();
       agentMissionStream = null;
     }
+    agentMissionStreamStatus = "reconnecting";
+    renderAgentDiagnostics();
     if (agentMissionStreamReconnectTimer || !authToken || agentMissionStreamWorkspaceId !== normalizedWorkspaceId) {
       return;
     }
@@ -446,6 +470,7 @@ function startAgentMissionStream(workspaceId) {
     }, 4000);
   };
   agentMissionStream = source;
+  renderAgentDiagnostics();
 }
 
 async function restoreAgentMissionSession(workspaceId) {
@@ -473,6 +498,42 @@ async function restoreAgentMissionSession(workspaceId) {
     }
     throw error;
   }
+}
+
+async function loadAgentMissionSessions(workspaceId) {
+  const normalizedWorkspaceId = String(workspaceId || "").trim();
+  if (!normalizedWorkspaceId || !authToken || getActiveAgentProvider().id !== "openclaw") {
+    agentMissionSessions = [];
+    renderMissionSessionHistory();
+    return [];
+  }
+  const response = await api(
+    `/api/mission/workspaces/${encodeURIComponent(normalizedWorkspaceId)}/sessions?limit=12`,
+    null,
+    true,
+    "GET"
+  );
+  agentMissionSessions = Array.isArray(response?.sessions) ? response.sessions : [];
+  renderMissionSessionHistory();
+  return agentMissionSessions;
+}
+
+async function loadAgentMissionDiagnostics(workspaceId) {
+  const normalizedWorkspaceId = String(workspaceId || "").trim();
+  if (!normalizedWorkspaceId || !authToken || getActiveAgentProvider().id !== "openclaw") {
+    agentMissionDiagnostics = null;
+    renderAgentDiagnostics();
+    return null;
+  }
+  const response = await api(
+    `/api/mission/workspaces/${encodeURIComponent(normalizedWorkspaceId)}/diagnostics`,
+    null,
+    true,
+    "GET"
+  );
+  agentMissionDiagnostics = response || null;
+  renderAgentDiagnostics();
+  return agentMissionDiagnostics;
 }
 
 function getPaperTestModelLabel(key) {
@@ -1594,6 +1655,8 @@ function saveAgentTargetMint(options = {}) {
     startAgentPriceMonitor();
     startAgentMissionStream(mints[0]);
     void restoreAgentMissionSession(mints[0]);
+    void loadAgentMissionSessions(mints[0]);
+    void loadAgentMissionDiagnostics(mints[0]);
   }
   renderAgentScannerSummary([]);
   return true;
@@ -1929,6 +1992,10 @@ function clearLocalSessionState() {
   userWallet = "";
   userPlan = "free";
   scannerAccessStatus = null;
+  agentMissionSessions = [];
+  agentMissionDiagnostics = null;
+  agentMissionLastEventAt = "";
+  agentMissionLastHeartbeatAt = "";
   saveAgentMissionSessionId("");
   localStorage.removeItem("enigma_wallet");
   localStorage.removeItem("enigma_plan");
@@ -2794,7 +2861,8 @@ function recordAgentActivity(message, tone = "info", options = {}) {
     tone: String(tone || "info"),
     title: String(options.title || ""),
     message: String(message || "").trim(),
-    meta: String(options.meta || "").trim()
+    meta: String(options.meta || "").trim(),
+    eventType: String(options.eventType || "activity")
   };
   if (!event.message) return;
   agentTradeState.activity = [event, ...(agentTradeState.activity || [])].slice(0, 40);
@@ -2803,6 +2871,42 @@ function recordAgentActivity(message, tone = "info", options = {}) {
     activity: agentTradeState.activity.slice()
   };
   renderAgentActivityFeed();
+}
+
+function classifyMissionEventType(item = {}) {
+  const explicit = String(item.eventType || "").trim();
+  if (explicit) return explicit;
+  const title = String(item.title || "").trim().toLowerCase();
+  if (title.includes("mission initialized")) return "mission_initialized";
+  if (title.includes("thesis")) return "thesis_updated";
+  if (title.includes("confidence")) return "confidence_revised";
+  if (title.includes("preview")) return "preview_requested";
+  if (title.includes("execution requested")) return "execution_requested";
+  if (title.includes("execution confirmed")) return "execution_confirmed";
+  if (title.includes("execution deferred")) return "execution_deferred";
+  if (title.includes("monitor")) return "monitoring_tick";
+  if (title.includes("position closed")) return "position_closed";
+  if (title.includes("halt")) return "halt_acknowledged";
+  return "activity";
+}
+
+function missionEventLabel(eventType) {
+  const labels = {
+    mission_initialized: "Mission Initialized",
+    thesis_updated: "Thesis Updated",
+    confidence_revised: "Confidence Revised",
+    preview_requested: "Preview Requested",
+    execution_requested: "Execution Requested",
+    execution_confirmed: "Execution Confirmed",
+    execution_deferred: "Execution Deferred",
+    monitoring_tick: "Monitoring Tick",
+    position_closed: "Position Closed",
+    halt_acknowledged: "Halt Acknowledged",
+    worker_warning: "Worker Warning",
+    worker_error: "Worker Error",
+    activity: "Agent Update"
+  };
+  return labels[String(eventType || "").trim()] || "Agent Update";
 }
 
 function renderAgentActivityFeed() {
@@ -2814,17 +2918,97 @@ function renderAgentActivityFeed() {
   }
 
   agentActivityFeed.innerHTML = activity
-    .map((item) => `
-      <article class="agent-activity-item ${escapeHtml(String(item.tone || "info"))}">
+    .map((item) => {
+      const eventType = classifyMissionEventType(item);
+      return `
+      <article class="agent-activity-item ${escapeHtml(String(item.tone || "info"))} event-${escapeHtml(eventType)}">
         <div class="agent-activity-topline">
-          <strong>${escapeHtml(item.title || "Agent Update")}</strong>
+          <strong>${escapeHtml(missionEventLabel(eventType))}</strong>
           <span>${escapeHtml(new Date(item.ts).toLocaleTimeString())}</span>
         </div>
         <p>${escapeHtml(item.message)}</p>
-        ${item.meta ? `<small>${escapeHtml(item.meta)}</small>` : ""}
+        <div class="agent-activity-meta-row">
+          <small class="agent-event-pill">${escapeHtml(eventType.replaceAll("_", " "))}</small>
+          ${item.meta ? `<small>${escapeHtml(item.meta)}</small>` : ""}
+        </div>
       </article>
-    `)
+    `;
+    })
     .join("");
+}
+
+function renderMissionSessionHistory() {
+  if (!agentSessionHistory) return;
+  const sessions = Array.isArray(agentMissionSessions) ? agentMissionSessions : [];
+  if (!sessions.length) {
+    agentSessionHistory.innerHTML = `<div class="agent-activity-empty">No prior mission sessions stored for this workspace yet.</div>`;
+    return;
+  }
+  agentSessionHistory.innerHTML = sessions
+    .map((session) => {
+      const isActive = String(session.sessionId || "") === String(agentTradeState.missionModel?.sessionId || "");
+      return `
+        <article class="agent-session-item ${isActive ? "active" : ""}">
+          <div class="agent-session-topline">
+            <strong>${escapeHtml(shortMint(String(session.sessionId || ""), 8, 8))}</strong>
+            <span>${escapeHtml(String(session.missionStatus || "scanning").replaceAll("_", " "))}</span>
+          </div>
+          <div class="agent-session-grid">
+            <span><label>Budget</label><strong>${formatUsd(Number(session.budgetUsd || 0))}</strong></span>
+            <span><label>Started</label><strong>${escapeHtml(formatDateTime(session.startedAt || session.updatedAt || ""))}</strong></span>
+            <span><label>Updated</label><strong>${escapeHtml(formatDateTime(session.updatedAt || ""))}</strong></span>
+            <span><label>Outcome</label><strong>${escapeHtml(String(session.outcome || "active").replaceAll("_", " "))}</strong></span>
+          </div>
+          ${session.thesisSummary ? `<p class="small muted">${escapeHtml(session.thesisSummary)}</p>` : ""}
+          <div class="agent-session-actions">
+            <span class="small muted">${escapeHtml(String(session.provider || "openclaw"))}</span>
+            <button type="button" class="secondary tiny-btn" data-resume-session="${escapeHtml(String(session.sessionId || ""))}" data-session-workspace="${escapeHtml(String(session.workspaceId || ""))}">Resume Session</button>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+  document.querySelectorAll("button[data-resume-session]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const sessionId = String(button.getAttribute("data-resume-session") || "").trim();
+      const workspaceId = String(button.getAttribute("data-session-workspace") || "").trim();
+      if (!sessionId || !workspaceId) return;
+      setButtonBusy(button, true, "Loading...");
+      try {
+        saveAgentMissionSessionId(sessionId);
+        const snapshot = await api(`/api/mission/sessions/${encodeURIComponent(sessionId)}`, null, true, "GET");
+        if (String(snapshot.workspaceId || "") !== workspaceId) {
+          throw new Error("mission session does not match current workspace");
+        }
+        applyMissionStreamSnapshot(snapshot);
+        startAgentMissionStream(workspaceId);
+        pushMessage(`Resumed mission session ${shortMint(sessionId, 8, 8)}`, "ok");
+      } catch (error) {
+        notifyActionError(error, "resume mission session");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    });
+  });
+}
+
+function renderAgentDiagnostics() {
+  if (agentWorkerDiagnostics) {
+    const diagnostics = agentMissionDiagnostics || {};
+    agentWorkerDiagnostics.innerHTML = `
+      <div class="agent-diagnostics-status-grid">
+        <span><label>Worker Status</label><strong>${escapeHtml(String(diagnostics.workerStatus || "idle").replaceAll("_", " "))}</strong></span>
+        <span><label>Active Provider</label><strong>${escapeHtml(String(diagnostics.provider || agentTradeState.missionModel?.providerLabel || "openclaw"))}</strong></span>
+        <span><label>Active Session</label><strong>${escapeHtml(shortMint(String(diagnostics.sessionId || agentTradeState.missionModel?.sessionId || "none"), 8, 8))}</strong></span>
+        <span><label>Stream</label><strong>${escapeHtml(String(agentMissionStreamStatus || "idle"))}</strong></span>
+        <span><label>Last Event</label><strong>${escapeHtml(agentMissionLastEventAt ? formatDateTime(agentMissionLastEventAt) : "n/a")}</strong></span>
+        <span><label>Worker Heartbeat</label><strong>${escapeHtml(diagnostics.lastWorkerHeartbeat ? formatDateTime(diagnostics.lastWorkerHeartbeat) : agentMissionLastHeartbeatAt ? formatDateTime(agentMissionLastHeartbeatAt) : "n/a")}</strong></span>
+        <span><label>Fallback</label><strong>${escapeHtml(String(diagnostics.fallbackState || "legacy_guarded_paper_execution").replaceAll("_", " "))}</strong></span>
+        <span><label>Mission Status</label><strong>${escapeHtml(String(diagnostics.missionStatus || agentTradeState.missionStatus).replaceAll("_", " "))}</strong></span>
+      </div>
+    `;
+  }
+  renderMissionSessionHistory();
 }
 
 function renderAgentTokenIdentity() {
@@ -2949,6 +3133,7 @@ function renderAgentMissionConsole() {
   }
 
   renderAgentActivityFeed();
+  renderAgentDiagnostics();
 }
 
 function updateAgentTradeState(patch = {}) {
@@ -4491,6 +4676,8 @@ async function previewAgentMission() {
         currentPnl: "-"
       }
     });
+    await loadAgentMissionSessions(mint);
+    await loadAgentMissionDiagnostics(mint);
   } catch (error) {
     updateAgentTradeState({
       missionStatus: "halted",
@@ -4535,6 +4722,8 @@ async function closeAgentPosition() {
         currentPnl: "-"
       }
     });
+    await loadAgentMissionSessions(currentPosition.mint);
+    await loadAgentMissionDiagnostics(currentPosition.mint);
   } catch (error) {
     updateAgentTradeState({
       missionStatus: "halted",
@@ -4554,8 +4743,9 @@ async function haltAgentMission() {
   try {
     stopPaperLoop();
     stopEngineLoop();
+    const workspaceId = resolveAgentTargetMint({ notify: false }) || "";
     const { mission } = await getActiveAgentProvider().haltMission({
-      workspaceId: resolveAgentTargetMint({ notify: false }) || ""
+      workspaceId
     });
     updateAgentTradeState({
       missionStatus: "halted",
@@ -4568,6 +4758,10 @@ async function haltAgentMission() {
         submitted: "Halt engaged"
       }
     });
+    if (workspaceId) {
+      await loadAgentMissionSessions(workspaceId);
+      await loadAgentMissionDiagnostics(workspaceId);
+    }
     pushMessage("Emergency halt engaged. Agent execution is disabled until re-armed.", "error");
   } catch (error) {
     updateAgentTradeState({
@@ -4839,6 +5033,8 @@ async function runPaperTradeOnce(options = {}) {
         missionStatus: execution?.mission?.missionStatus || "executing",
         isExecuteLoading: false
       });
+      await loadAgentMissionSessions(mint);
+      await loadAgentMissionDiagnostics(mint);
       try {
         await loadPaperPerformance();
       } catch (error) {
@@ -5871,6 +6067,8 @@ async function connectWallet() {
       const workspaceId = resolveAgentTargetMint({ notify: false });
       startAgentMissionStream(workspaceId);
       await restoreAgentMissionSession(workspaceId);
+      await loadAgentMissionSessions(workspaceId);
+      await loadAgentMissionDiagnostics(workspaceId);
     }
     profileWorkspaceLoadedAt = 0;
     if (document.body.classList.contains("workspace-profile")) {
@@ -5949,6 +6147,8 @@ async function hydrateSession() {
       const workspaceId = resolveAgentTargetMint({ notify: false });
       startAgentMissionStream(workspaceId);
       await restoreAgentMissionSession(workspaceId);
+      await loadAgentMissionSessions(workspaceId);
+      await loadAgentMissionDiagnostics(workspaceId);
     }
     reconnectBackoffMs = 5000;
     reconnectNoticeShown = false;

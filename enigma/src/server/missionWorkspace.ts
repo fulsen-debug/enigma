@@ -5,6 +5,7 @@ import {
   getLatestMissionSessionForWorkspace,
   getMissionSessionById,
   getMissionWorkspace,
+  listMissionSessionsForWorkspace,
   listMissionSessionEvents,
   listMissionWorkspaceFiles,
   upsertMissionSession,
@@ -139,6 +140,37 @@ export function loadMissionSessionSnapshot(userId: number, sessionId: string): M
     activity,
     updatedAt: session.updated_at || null
   };
+}
+
+export function listMissionWorkspaceSessions(
+  userId: number,
+  workspaceId: string,
+  limit = 20
+) {
+  return listMissionSessionsForWorkspace(userId, workspaceId, limit).map((session) => {
+    const mission = parseJsonObject<MissionModel>(session.missionJson, {} as MissionModel);
+    const livePosition =
+      mission && mission.livePosition && typeof mission.livePosition === "object"
+        ? (mission.livePosition as Record<string, unknown>)
+        : null;
+    return {
+      sessionId: session.sessionId,
+      workspaceId: session.workspaceId,
+      provider: session.provider,
+      budgetUsd: session.budgetUsd,
+      missionStatus: session.status,
+      startedAt: session.started_at,
+      updatedAt: session.updated_at,
+      endedAt: session.ended_at,
+      outcome: livePosition
+        ? "open_position"
+        : ["exited", "halted"].includes(session.status)
+          ? session.status
+          : "active",
+      thesisSummary: String((mission.thesis as Record<string, unknown>)?.summary || ""),
+      confidence: Number((mission.thesis as Record<string, unknown>)?.confidence || 0)
+    };
+  });
 }
 
 function broadcastMissionSnapshot(userId: number, workspaceId: string, snapshot: MissionSnapshot) {

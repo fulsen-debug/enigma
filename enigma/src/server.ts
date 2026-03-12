@@ -67,6 +67,7 @@ import {
 import {
   loadMissionWorkspaceSnapshot,
   loadMissionSessionSnapshot,
+  listMissionWorkspaceSessions,
   subscribeMissionWorkspaceStream,
   syncMissionWorkspace
 } from "./server/missionWorkspace.js";
@@ -1457,6 +1458,7 @@ async function buildStoredSignal(userId: number, mint: string): Promise<{ signal
 }
 
 const missionWorkerLoops = new Map<string, NodeJS.Timeout>();
+const missionWorkerHeartbeats = new Map<string, string>();
 
 function missionWorkerKey(userId: number, workspaceId: string, sessionId: string) {
   return `${userId}:${workspaceId}:${sessionId}`;
@@ -1739,10 +1741,10 @@ async function previewOpenClawMissionForUser(user: { id: number }, workspaceId: 
     quote,
     livePosition: null,
     activity: [
-      createServerMissionActivity("Mission Initialized", "OpenClaw loaded workspace context and budget.", "info", `${budgetUsd.toFixed(2)} USD`, new Date().toISOString(), "mission"),
-      createServerMissionActivity("Thesis Updated", "OpenClaw synthesized a fresh token thesis from live market and risk signals.", "info", String(decision.signalStatus || "SCANNING"), new Date().toISOString(), "thesis"),
-      createServerMissionActivity("Confidence Revised", "OpenClaw recalibrated confidence after reading structure, liquidity, and holder pressure.", "info", `${Math.round(Number(decision.confidence || 0) * 100)}%`, new Date().toISOString(), "confidence"),
-      createServerMissionActivity("Preview Requested", "OpenClaw prepared a guarded execution outline and wrote mission artifacts.", "info", workspaceId, new Date().toISOString(), "preview")
+      createServerMissionActivity("Mission Initialized", "OpenClaw loaded workspace context and budget.", "info", `${budgetUsd.toFixed(2)} USD`, new Date().toISOString(), "mission_initialized"),
+      createServerMissionActivity("Thesis Updated", "OpenClaw synthesized a fresh token thesis from live market and risk signals.", "info", String(decision.signalStatus || "SCANNING"), new Date().toISOString(), "thesis_updated"),
+      createServerMissionActivity("Confidence Revised", "OpenClaw recalibrated confidence after reading structure, liquidity, and holder pressure.", "info", `${Math.round(Number(decision.confidence || 0) * 100)}%`, new Date().toISOString(), "confidence_revised"),
+      createServerMissionActivity("Preview Requested", "OpenClaw prepared a guarded execution outline and wrote mission artifacts.", "info", workspaceId, new Date().toISOString(), "preview_requested")
     ],
     executionTrace: {
       previewState: "OpenClaw mission preview ready",
@@ -1770,9 +1772,12 @@ function stopMissionWorkerLoop(userId: number, workspaceId: string, sessionId: s
     clearInterval(timer);
     missionWorkerLoops.delete(key);
   }
+  missionWorkerHeartbeats.delete(key);
 }
 
 async function monitorOpenClawMissionSession(user: { id: number }, workspaceId: string, sessionId: string) {
+  const heartbeatTs = new Date().toISOString();
+  missionWorkerHeartbeats.set(missionWorkerKey(user.id, workspaceId, sessionId), heartbeatTs);
   const snapshot = loadMissionWorkspaceSnapshot(user.id, workspaceId);
   if (!snapshot.mission || snapshot.sessionId !== sessionId) {
     stopMissionWorkerLoop(user.id, workspaceId, sessionId);
@@ -1815,7 +1820,7 @@ async function monitorOpenClawMissionSession(user: { id: number }, workspaceId: 
         "info",
         workspaceId,
         new Date().toISOString(),
-        "monitor"
+        "monitoring_tick"
       ),
       ...((Array.isArray(previousMission.activity) ? previousMission.activity : []) as Array<Record<string, unknown>>)
     ].slice(0, 40),
@@ -1840,10 +1845,28 @@ async function monitorOpenClawMissionSession(user: { id: number }, workspaceId: 
 function startMissionWorkerLoop(user: { id: number }, workspaceId: string, sessionId: string) {
   const key = missionWorkerKey(user.id, workspaceId, sessionId);
   if (missionWorkerLoops.has(key)) return;
+  missionWorkerHeartbeats.set(key, new Date().toISOString());
   const timer = setInterval(() => {
     monitorOpenClawMissionSession(user, workspaceId, sessionId).catch(() => {});
   }, 5000);
   missionWorkerLoops.set(key, timer);
+}
+
+function getMissionWorkerDiagnostics(userId: number, workspaceId: string) {
+  const snapshot = loadMissionWorkspaceSnapshot(userId, workspaceId);
+  const sessionId = snapshot.sessionId || "";
+  const key = sessionId ? missionWorkerKey(userId, workspaceId, sessionId) : "";
+  const hasLoop = key ? missionWorkerLoops.has(key) : false;
+  return {
+    workspaceId,
+    sessionId: sessionId || null,
+    provider: snapshot.provider || "openclaw",
+    workerStatus: hasLoop ? "running" : snapshot.mission?.missionStatus === "halted" ? "halted" : "idle",
+    lastWorkerHeartbeat: key ? missionWorkerHeartbeats.get(key) || null : null,
+    fallbackState: "legacy_guarded_paper_execution",
+    missionStatus: String(snapshot.mission?.missionStatus || "scanning"),
+    updatedAt: snapshot.updatedAt || null
+  };
 }
 
 async function executeOpenClawMissionForUser(user: { id: number }, workspaceId: string, budgetUsd: number) {
@@ -1853,7 +1876,7 @@ async function executeOpenClawMissionForUser(user: { id: number }, workspaceId: 
   let livePosition = listAutoTradePositions(user.id, "OPEN").find((position) => position.mint === workspaceId) || null;
   let executionStatus = "Execution evaluated";
   const activities = [
-    createServerMissionActivity("Execution Requested", "OpenClaw requested guarded paper execution from the runtime backend.", "ok", `${budgetUsd.toFixed(2)} USD`, new Date().toISOString(), "execution")
+    createServerMissionActivity("Execution Requested", "OpenClaw requested guarded paper execution from the runtime backend.", "ok", `${budgetUsd.toFixed(2)} USD`, new Date().toISOString(), "execution_requested")
   ];
 
   if (!livePosition && preview.decision.decision === "BUY_CANDIDATE") {
@@ -1878,14 +1901,14 @@ async function executeOpenClawMissionForUser(user: { id: number }, workspaceId: 
       });
       executionStatus = "Execution confirmed";
       activities.push(
-        createServerMissionActivity("Execution Confirmed", "Guarded runtime confirmed a paper position for the mission.", "ok", workspaceId, new Date().toISOString(), "execution")
+        createServerMissionActivity("Execution Confirmed", "Guarded runtime confirmed a paper position for the mission.", "ok", workspaceId, new Date().toISOString(), "execution_confirmed")
       );
     }
   }
 
   if (!livePosition && preview.decision.decision !== "BUY_CANDIDATE") {
     activities.push(
-      createServerMissionActivity("Execution Deferred", "Guarded runtime evaluated the mission and kept execution on hold.", "info", workspaceId, new Date().toISOString(), "execution")
+      createServerMissionActivity("Execution Deferred", "Guarded runtime evaluated the mission and kept execution on hold.", "info", workspaceId, new Date().toISOString(), "execution_deferred")
     );
   }
 
@@ -2996,6 +3019,32 @@ app.get("/api/mission/workspaces/:workspaceId/activity", authRequired, (req: Aut
   });
 });
 
+app.get("/api/mission/workspaces/:workspaceId/sessions", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const workspaceId = String(req.params.workspaceId || "").trim();
+  if (!workspaceId) {
+    return res.status(400).json({ error: "workspaceId is required" });
+  }
+  const limit = Math.max(1, Math.min(50, Number(req.query.limit || 12)));
+  return res.json({
+    workspaceId,
+    sessions: listMissionWorkspaceSessions(req.user.id, workspaceId, limit)
+  });
+});
+
+app.get("/api/mission/workspaces/:workspaceId/diagnostics", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const workspaceId = String(req.params.workspaceId || "").trim();
+  if (!workspaceId) {
+    return res.status(400).json({ error: "workspaceId is required" });
+  }
+  return res.json(getMissionWorkerDiagnostics(req.user.id, workspaceId));
+});
+
 app.post("/api/mission/workspaces/:workspaceId/preview", authRequired, async (req: AuthedRequest, res) => {
   try {
     if (!req.user) {
@@ -3092,7 +3141,7 @@ app.post("/api/mission/workspaces/:workspaceId/close", authRequired, async (req:
       },
       livePosition: null,
       activity: [
-        createServerMissionActivity("Position Closed", "OpenClaw acknowledged the operator close and archived the mission.", "info", workspaceId, new Date().toISOString(), "close"),
+        createServerMissionActivity("Position Closed", "OpenClaw acknowledged the operator close and archived the mission.", "info", workspaceId, new Date().toISOString(), "position_closed"),
         ...((Array.isArray(previousMission.activity) ? previousMission.activity : []) as Array<Record<string, unknown>>)
       ].slice(0, 40),
       executionTrace: {
@@ -3161,7 +3210,7 @@ app.post("/api/mission/workspaces/:workspaceId/halt", authRequired, async (req: 
           ? ({ ...(previousMission.livePosition as Record<string, unknown>) } as Record<string, unknown>)
           : null,
       activity: [
-        createServerMissionActivity("Halt Acknowledged", "OpenClaw marked the mission halted and blocked further actions.", "error", workspaceId, new Date().toISOString(), "halt"),
+        createServerMissionActivity("Halt Acknowledged", "OpenClaw marked the mission halted and blocked further actions.", "error", workspaceId, new Date().toISOString(), "halt_acknowledged"),
         ...((Array.isArray(previousMission.activity) ? previousMission.activity : []) as Array<Record<string, unknown>>)
       ].slice(0, 40),
       executionTrace: {

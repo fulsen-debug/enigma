@@ -1556,6 +1556,34 @@ export function getLatestMissionSessionForWorkspace(
   };
 }
 
+export function listMissionSessionsForWorkspace(
+  userId: number,
+  workspaceId: string,
+  limit = 20
+): MissionSessionRecord[] {
+  const rows = db
+    .prepare(
+      `SELECT session_id, user_id, workspace_id, provider, budget_usd, status, mission_json, started_at, updated_at, ended_at
+       FROM mission_sessions
+       WHERE user_id = ? AND workspace_id = ?
+       ORDER BY updated_at DESC
+       LIMIT ?`
+    )
+    .all(userId, workspaceId, Math.max(1, Math.min(100, Number(limit || 20)))) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    sessionId: String(row.session_id || ""),
+    userId: Number(row.user_id),
+    workspaceId: String(row.workspace_id || ""),
+    provider: String(row.provider || ""),
+    budgetUsd: Number(row.budget_usd || 0),
+    status: String(row.status || "scanning"),
+    missionJson: String(row.mission_json || "{}"),
+    started_at: String(row.started_at || ""),
+    updated_at: String(row.updated_at || ""),
+    ended_at: row.ended_at ? String(row.ended_at) : null
+  }));
+}
+
 export function upsertMissionSession(input: {
   sessionId: string;
   userId: number;
