@@ -80,7 +80,9 @@ const agentActivityFeed = document.querySelector("#agent-activity-feed");
 const agentAdvancedDrawer = document.querySelector("#agent-advanced-drawer");
 const agentDiagnosticsDrawer = document.querySelector("#agent-diagnostics-drawer");
 const agentSessionHistory = document.querySelector("#agent-session-history");
+const agentSessionDetail = document.querySelector("#agent-session-detail");
 const agentWorkerDiagnostics = document.querySelector("#agent-worker-diagnostics");
+const agentRuntimeHealth = document.querySelector("#agent-runtime-health");
 const agentModeView = document.querySelector("#agent-mode-view");
 const agentTrailingPreview = document.querySelector("#agent-trailing-preview");
 const agentOpenSlotsPreview = document.querySelector("#agent-open-slots-preview");
@@ -288,6 +290,7 @@ let agentMissionLastEventAt = "";
 let agentMissionLastHeartbeatAt = "";
 let agentMissionDiagnostics = null;
 let agentMissionSessions = [];
+let agentMissionSessionDetail = null;
 const legacyPaperAgentProvider = createLegacyPaperAgentProvider({ request: api });
 const futureOpenClawAgentProvider = createFutureOpenClawAgentProvider({
   request: api,
@@ -364,6 +367,9 @@ function applyMissionStreamSnapshot(snapshot) {
       currentPnl: normalizedMissionModel.executionTrace?.currentPnlPct ?? agentTradeState.executionTrace.currentPnl
     }
   });
+  if (!agentMissionSessionDetail || String(agentMissionSessionDetail.sessionId || "") === String(snapshot.sessionId || "")) {
+    agentMissionSessionDetail = snapshot;
+  }
 }
 
 function applyMissionStreamSessionEvent(payload) {
@@ -401,7 +407,16 @@ function applyMissionStreamActivityEvent(payload) {
   if (payload.sessionId) {
     saveAgentMissionSessionId(payload.sessionId);
   }
-  appendAgentMissionActivity(payload.activity);
+  appendAgentMissionActivity({
+    ...(payload.activity || {}),
+    thesisFragment: payload.thesisFragment || payload.activity?.thesisFragment || "",
+    confidenceDelta: payload.confidenceDelta ?? payload.activity?.confidenceDelta ?? null,
+    executionStatus: payload.executionStatus || payload.activity?.executionStatus || "",
+    riskPosture: payload.riskPosture || payload.activity?.riskPosture || "",
+    actionIntent: payload.actionIntent || payload.activity?.actionIntent || "",
+    warningDetail: payload.warningDetail || payload.activity?.warningDetail || "",
+    errorDetail: payload.errorDetail || payload.activity?.errorDetail || ""
+  });
 }
 
 function startAgentMissionStream(workspaceId) {
@@ -515,6 +530,9 @@ async function loadAgentMissionSessions(workspaceId) {
   );
   agentMissionSessions = Array.isArray(response?.sessions) ? response.sessions : [];
   renderMissionSessionHistory();
+  if (!agentMissionSessionDetail && agentMissionSessions.length) {
+    void loadAgentMissionSessionDetail(agentMissionSessions[0].sessionId);
+  }
   return agentMissionSessions;
 }
 
@@ -534,6 +552,24 @@ async function loadAgentMissionDiagnostics(workspaceId) {
   agentMissionDiagnostics = response || null;
   renderAgentDiagnostics();
   return agentMissionDiagnostics;
+}
+
+async function loadAgentMissionSessionDetail(sessionId) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId || !authToken || getActiveAgentProvider().id !== "openclaw") {
+    agentMissionSessionDetail = null;
+    renderAgentDiagnostics();
+    return null;
+  }
+  const snapshot = await api(
+    `/api/mission/sessions/${encodeURIComponent(normalizedSessionId)}`,
+    null,
+    true,
+    "GET"
+  );
+  agentMissionSessionDetail = snapshot || null;
+  renderAgentDiagnostics();
+  return agentMissionSessionDetail;
 }
 
 function getPaperTestModelLabel(key) {
@@ -1993,6 +2029,7 @@ function clearLocalSessionState() {
   userPlan = "free";
   scannerAccessStatus = null;
   agentMissionSessions = [];
+  agentMissionSessionDetail = null;
   agentMissionDiagnostics = null;
   agentMissionLastEventAt = "";
   agentMissionLastHeartbeatAt = "";
@@ -2909,6 +2946,60 @@ function missionEventLabel(eventType) {
   return labels[String(eventType || "").trim()] || "Agent Update";
 }
 
+function classifyRuntimeHealth() {
+  const workerStatus = String(agentMissionDiagnostics?.workerStatus || "").trim();
+  const fallbackState = String(agentMissionDiagnostics?.fallbackState || "").trim();
+  if (agentMissionStreamStatus === "reconnecting") {
+    return {
+      tone: "warn",
+      label: "Reconnecting",
+      note: "Live mission stream dropped. UI is retrying the server event channel."
+    };
+  }
+  if (agentMissionStreamStatus === "idle" && getActiveAgentProvider().id === "openclaw") {
+    return {
+      tone: "warn",
+      label: "Stream Offline",
+      note: "Mission stream is not attached yet. Resume or start a mission to restore live telemetry."
+    };
+  }
+  if (workerStatus === "halted") {
+    return {
+      tone: "bad",
+      label: "Worker Halted",
+      note: "Mission worker is halted. Operator action is required before execution can resume."
+    };
+  }
+  if (fallbackState && fallbackState !== "legacy_guarded_paper_execution") {
+    return {
+      tone: "warn",
+      label: "Fallback Active",
+      note: fallbackState.replaceAll("_", " ")
+    };
+  }
+  if (workerStatus && workerStatus !== "running" && workerStatus !== "idle") {
+    return {
+      tone: "warn",
+      label: "Degraded",
+      note: `Worker reported ${workerStatus.replaceAll("_", " ")}.`
+    };
+  }
+  return {
+    tone: "ok",
+    label: "Worker Healthy",
+    note: "OpenClaw mission runtime and guarded execution bridge are operating normally."
+  };
+}
+
+function renderAgentRuntimeHealth() {
+  if (!agentRuntimeHealth) return;
+  const health = classifyRuntimeHealth();
+  agentRuntimeHealth.innerHTML = `
+    <span class="agent-health-badge ${escapeHtml(health.tone)}">${escapeHtml(health.label)}</span>
+    <p>${escapeHtml(health.note)}</p>
+  `;
+}
+
 function renderAgentActivityFeed() {
   if (!agentActivityFeed) return;
   const activity = Array.isArray(agentTradeState.activity) ? agentTradeState.activity : [];
@@ -2929,8 +3020,15 @@ function renderAgentActivityFeed() {
         <p>${escapeHtml(item.message)}</p>
         <div class="agent-activity-meta-row">
           <small class="agent-event-pill">${escapeHtml(eventType.replaceAll("_", " "))}</small>
+          ${
+            Number.isFinite(Number(item.confidenceDelta))
+              ? `<small>${escapeHtml(`${Number(item.confidenceDelta) >= 0 ? "+" : ""}${Number(item.confidenceDelta).toFixed(2)} confidence`)}</small>`
+              : ""
+          }
+          ${item.executionStatus ? `<small>${escapeHtml(String(item.executionStatus))}</small>` : ""}
           ${item.meta ? `<small>${escapeHtml(item.meta)}</small>` : ""}
         </div>
+        ${item.thesisFragment ? `<div class="agent-activity-fragment">${escapeHtml(String(item.thesisFragment))}</div>` : ""}
       </article>
     `;
     })
@@ -2962,12 +3060,29 @@ function renderMissionSessionHistory() {
           ${session.thesisSummary ? `<p class="small muted">${escapeHtml(session.thesisSummary)}</p>` : ""}
           <div class="agent-session-actions">
             <span class="small muted">${escapeHtml(String(session.provider || "openclaw"))}</span>
-            <button type="button" class="secondary tiny-btn" data-resume-session="${escapeHtml(String(session.sessionId || ""))}" data-session-workspace="${escapeHtml(String(session.workspaceId || ""))}">Resume Session</button>
+            <div class="agent-session-action-buttons">
+              <button type="button" class="secondary tiny-btn" data-view-session="${escapeHtml(String(session.sessionId || ""))}">View Detail</button>
+              <button type="button" class="secondary tiny-btn" data-resume-session="${escapeHtml(String(session.sessionId || ""))}" data-session-workspace="${escapeHtml(String(session.workspaceId || ""))}">Resume Session</button>
+            </div>
           </div>
         </article>
       `;
     })
     .join("");
+  document.querySelectorAll("button[data-view-session]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const sessionId = String(button.getAttribute("data-view-session") || "").trim();
+      if (!sessionId) return;
+      setButtonBusy(button, true, "Loading...");
+      try {
+        await loadAgentMissionSessionDetail(sessionId);
+      } catch (error) {
+        notifyActionError(error, "load mission detail");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    });
+  });
   document.querySelectorAll("button[data-resume-session]").forEach((button) => {
     button.addEventListener("click", async () => {
       const sessionId = String(button.getAttribute("data-resume-session") || "").trim();
@@ -2992,7 +3107,118 @@ function renderMissionSessionHistory() {
   });
 }
 
+function renderMissionSessionDetail() {
+  if (!agentSessionDetail) return;
+  const snapshot = agentMissionSessionDetail;
+  if (!snapshot?.mission) {
+    agentSessionDetail.innerHTML = `<div class="agent-activity-empty">Select a mission session to inspect thesis, execution trace, position snapshot, and timeline details.</div>`;
+    return;
+  }
+  const mission = snapshot.mission || {};
+  const thesis = mission.thesis || {};
+  const trace = mission.executionTrace || {};
+  const position = mission.livePosition || null;
+  const activity = Array.isArray(snapshot.activity) ? snapshot.activity : [];
+  agentSessionDetail.innerHTML = `
+    <div class="agent-session-detail-head">
+      <div>
+        <strong>${escapeHtml(shortMint(String(snapshot.sessionId || ""), 8, 8))}</strong>
+        <p class="small muted">${escapeHtml(String(snapshot.provider || "openclaw"))} | ${escapeHtml(formatDateTime(snapshot.updatedAt || ""))}</p>
+      </div>
+      <button type="button" class="secondary tiny-btn" data-resume-session-detail="${escapeHtml(String(snapshot.sessionId || ""))}" data-session-workspace-detail="${escapeHtml(String(snapshot.workspaceId || ""))}">Resume Session</button>
+    </div>
+    <div class="agent-session-grid">
+      <span><label>Budget</label><strong>${formatUsd(Number(snapshot.budgetUsd || 0))}</strong></span>
+      <span><label>Status</label><strong>${escapeHtml(String(mission.missionStatus || "scanning").replaceAll("_", " "))}</strong></span>
+      <span><label>Confidence</label><strong>${escapeHtml(`${Math.round(Number(thesis.confidence || 0) * 100)}%`)}</strong></span>
+      <span><label>Risk Posture</label><strong>${escapeHtml(String(thesis.riskPosture || "Standby"))}</strong></span>
+      <span><label>Action Intent</label><strong>${escapeHtml(String(thesis.actionIntent || "No action"))}</strong></span>
+      <span><label>Outcome</label><strong>${escapeHtml(position ? "open_position" : String(mission.missionStatus || "active"))}</strong></span>
+    </div>
+    <div class="agent-session-detail-block">
+      <h4>Thesis Snapshot</h4>
+      <p>${escapeHtml(String(thesis.summary || "No thesis snapshot stored."))}</p>
+      ${
+        Array.isArray(thesis.reasons) && thesis.reasons.length
+          ? `<ul>${thesis.reasons.map((reason) => `<li>${escapeHtml(String(reason))}</li>`).join("")}</ul>`
+          : ""
+      }
+    </div>
+    <div class="agent-session-detail-columns">
+      <div class="agent-session-detail-block">
+        <h4>Execution Trace</h4>
+        <div class="agent-session-grid">
+          <span><label>Preview</label><strong>${escapeHtml(String(trace.previewState || "-"))}</strong></span>
+          <span><label>Submitted</label><strong>${escapeHtml(String(trace.submitted || "-"))}</strong></span>
+          <span><label>Average Entry</label><strong>${escapeHtml(String(trace.averageEntry || "-"))}</strong></span>
+          <span><label>Current PnL</label><strong>${escapeHtml(String((trace.currentPnlPct ?? trace.currentPnl) || "-"))}</strong></span>
+        </div>
+      </div>
+      <div class="agent-session-detail-block">
+        <h4>Position Snapshot</h4>
+        ${
+          position
+            ? `<div class="agent-session-grid">
+                <span><label>Token</label><strong>${escapeHtml(shortMint(String(position.mint || snapshot.workspaceId || ""), 6, 6))}</strong></span>
+                <span><label>Entry</label><strong>${escapeHtml(formatPrice(Number(position.entryPriceUsd || 0)))}</strong></span>
+                <span><label>Size</label><strong>${escapeHtml(formatUsd(Number(position.positionUsd || 0)))}</strong></span>
+                <span><label>Opened</label><strong>${escapeHtml(formatDateTime(position.opened_at || ""))}</strong></span>
+              </div>`
+            : `<p class="small muted">No live position snapshot stored for this session.</p>`
+        }
+      </div>
+    </div>
+    <div class="agent-session-detail-block">
+      <h4>Session Timeline</h4>
+      <div class="agent-activity-feed compact">
+        ${
+          activity.length
+            ? activity
+                .map((item) => {
+                  const eventType = classifyMissionEventType(item);
+                  return `
+                    <article class="agent-activity-item ${escapeHtml(String(item.tone || "info"))} event-${escapeHtml(eventType)}">
+                      <div class="agent-activity-topline">
+                        <strong>${escapeHtml(missionEventLabel(eventType))}</strong>
+                        <span>${escapeHtml(new Date(item.ts).toLocaleTimeString())}</span>
+                      </div>
+                      <p>${escapeHtml(String(item.message || ""))}</p>
+                      <div class="agent-activity-meta-row">
+                        <small class="agent-event-pill">${escapeHtml(eventType.replaceAll("_", " "))}</small>
+                        ${item.meta ? `<small>${escapeHtml(String(item.meta))}</small>` : ""}
+                      </div>
+                    </article>
+                  `;
+                })
+                .join("")
+            : `<div class="agent-activity-empty">No session events stored.</div>`
+        }
+      </div>
+    </div>
+  `;
+  document.querySelectorAll("button[data-resume-session-detail]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const sessionId = String(button.getAttribute("data-resume-session-detail") || "").trim();
+      const workspaceId = String(button.getAttribute("data-session-workspace-detail") || "").trim();
+      if (!sessionId || !workspaceId) return;
+      setButtonBusy(button, true, "Loading...");
+      try {
+        saveAgentMissionSessionId(sessionId);
+        const resumedSnapshot = await api(`/api/mission/sessions/${encodeURIComponent(sessionId)}`, null, true, "GET");
+        applyMissionStreamSnapshot(resumedSnapshot);
+        startAgentMissionStream(workspaceId);
+        pushMessage(`Resumed mission session ${shortMint(sessionId, 8, 8)}`, "ok");
+      } catch (error) {
+        notifyActionError(error, "resume mission session");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    });
+  });
+}
+
 function renderAgentDiagnostics() {
+  renderAgentRuntimeHealth();
   if (agentWorkerDiagnostics) {
     const diagnostics = agentMissionDiagnostics || {};
     agentWorkerDiagnostics.innerHTML = `
@@ -3009,6 +3235,7 @@ function renderAgentDiagnostics() {
     `;
   }
   renderMissionSessionHistory();
+  renderMissionSessionDetail();
 }
 
 function renderAgentTokenIdentity() {

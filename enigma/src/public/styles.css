@@ -4173,6 +4173,55 @@ body.theme-dark .agent-provider-badge.legacy {
   color: #f3e1bb;
 }
 
+body.theme-dark .agent-runtime-health {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(205, 160, 89, 0.12);
+  background: linear-gradient(180deg, rgba(13, 18, 29, 0.86), rgba(9, 12, 21, 0.94));
+}
+
+body.theme-dark .agent-runtime-health p {
+  margin: 0;
+  color: rgba(218, 202, 175, 0.74);
+  font-size: 0.82rem;
+}
+
+body.theme-dark .agent-health-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(205, 160, 89, 0.22);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+body.theme-dark .agent-health-badge.ok {
+  color: #d9f6d8;
+  background: rgba(81, 155, 107, 0.18);
+  border-color: rgba(99, 179, 123, 0.3);
+}
+
+body.theme-dark .agent-health-badge.warn {
+  color: #f3e1bb;
+  background: rgba(205, 160, 89, 0.12);
+  border-color: rgba(205, 160, 89, 0.26);
+}
+
+body.theme-dark .agent-health-badge.bad {
+  color: #ffd5cb;
+  background: rgba(200, 94, 84, 0.14);
+  border-color: rgba(200, 94, 84, 0.28);
+}
+
 body.theme-dark .agent-hero-head h2 {
   margin: 0 0 8px;
   font-size: clamp(1.8rem, 2.8vw, 2.6rem);
@@ -4549,6 +4598,17 @@ body.theme-dark .agent-activity-item small {
   color: rgba(218, 202, 175, 0.76);
 }
 
+body.theme-dark .agent-activity-fragment {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(205, 160, 89, 0.12);
+  background: rgba(255, 255, 255, 0.02);
+  color: #f1e4c4;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 body.theme-dark .agent-activity-item.event-execution_confirmed,
 body.theme-dark .agent-activity-item.event-position_closed {
   border-color: rgba(104, 189, 139, 0.28);
@@ -4703,10 +4763,63 @@ body.theme-dark .agent-session-actions {
   flex-wrap: wrap;
 }
 
+body.theme-dark .agent-session-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 body.theme-dark .agent-session-actions .tiny-btn {
   width: auto;
   min-width: 138px;
   padding-inline: 14px;
+}
+
+body.theme-dark .agent-session-detail {
+  display: grid;
+  gap: 14px;
+}
+
+body.theme-dark .agent-session-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+body.theme-dark .agent-session-detail-head strong {
+  color: #fff1d1;
+  font-size: 1rem;
+}
+
+body.theme-dark .agent-session-detail-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+body.theme-dark .agent-session-detail-block {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(205, 160, 89, 0.12);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+body.theme-dark .agent-session-detail-block h4 {
+  color: #fff1d1;
+}
+
+body.theme-dark .agent-session-detail-block p,
+body.theme-dark .agent-session-detail-block li {
+  color: rgba(218, 202, 175, 0.8);
+}
+
+body.theme-dark .agent-activity-feed.compact {
+  max-height: 340px;
 }
 
 body.theme-dark .agent-diagnostic-card .messages {
@@ -4764,7 +4877,8 @@ body.theme-dark .agent-advanced-meta strong {
   body.theme-dark .agent-advanced-meta,
   body.theme-dark .agent-live-position-grid,
   body.theme-dark .agent-session-grid,
-  body.theme-dark .agent-diagnostics-status-grid {
+  body.theme-dark .agent-diagnostics-status-grid,
+  body.theme-dark .agent-session-detail-columns {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -4782,13 +4896,17 @@ body.theme-dark .agent-advanced-meta strong {
   body.theme-dark .agent-advanced-meta,
   body.theme-dark .agent-target-row,
   body.theme-dark .agent-session-grid,
-  body.theme-dark .agent-diagnostics-status-grid {
+  body.theme-dark .agent-diagnostics-status-grid,
+  body.theme-dark .agent-session-detail-columns {
     grid-template-columns: 1fr;
   }
 
   body.theme-dark .agent-session-actions,
+  body.theme-dark .agent-session-action-buttons,
   body.theme-dark .agent-activity-meta-row,
-  body.theme-dark .agent-session-topline {
+  body.theme-dark .agent-session-topline,
+  body.theme-dark .agent-session-detail-head,
+  body.theme-dark .agent-runtime-health {
     align-items: flex-start;
     flex-direction: column;
   }

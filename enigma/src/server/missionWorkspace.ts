@@ -70,6 +70,11 @@ function buildEventKey(item: MissionActivity) {
   ].join("|");
 }
 
+function toNumberOrNull(value: unknown) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
 function listActivityForSnapshot(userId: number, workspaceId: string, sessionId?: string | null) {
   return listMissionSessionEvents({ userId, workspaceId, sessionId: sessionId || null, limit: 40 }).map((entry) =>
     parseJsonObject<Record<string, unknown>>(entry.eventJson, {})
@@ -226,12 +231,27 @@ function broadcastMissionStructuredEvents(
     (previousSnapshot?.activity || []).map((item) => buildEventKey(item))
   );
   const appended = (snapshot.activity || []).filter((item) => !previousKeys.has(buildEventKey(item)));
+  const previousConfidence = toNumberOrNull((previousSnapshot?.mission?.thesis as Record<string, unknown> | undefined)?.confidence);
+  const currentThesis = (snapshot.mission?.thesis as Record<string, unknown> | undefined) || {};
+  const currentTrace = (snapshot.mission?.executionTrace as Record<string, unknown> | undefined) || {};
+  const currentConfidence = toNumberOrNull(currentThesis.confidence);
   for (const item of appended) {
     write("activity", {
       type: "activity",
       workspaceId,
       sessionId: snapshot.sessionId,
-      activity: item
+      activity: item,
+      title: String(item.title || ""),
+      summary: String(item.message || ""),
+      thesisFragment: String(item.thesisFragment || currentThesis.summary || ""),
+      confidence: currentConfidence,
+      confidenceDelta:
+        currentConfidence !== null && previousConfidence !== null ? Number((currentConfidence - previousConfidence).toFixed(4)) : null,
+      riskPosture: String(item.riskPosture || currentThesis.riskPosture || ""),
+      actionIntent: String(item.actionIntent || currentThesis.actionIntent || ""),
+      executionStatus: String(item.executionStatus || currentTrace.submitted || ""),
+      warningDetail: item.tone === "error" ? String(item.message || "") : "",
+      errorDetail: item.eventType === "worker_error" ? String(item.message || "") : ""
     });
   }
 }

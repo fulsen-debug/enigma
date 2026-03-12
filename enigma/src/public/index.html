@@ -231,6 +231,7 @@
                   <span class="small muted">Active Provider</span>
                   <span id="agent-provider-badge" class="agent-provider-badge">OpenClaw Mission Adapter</span>
                 </div>
+                <div id="agent-runtime-health" class="agent-runtime-health" aria-live="polite"></div>
                 <div class="agent-token-identity">
                   <div class="agent-token-avatar-wrap">
                     <div id="agent-current-token-avatar" class="token-avatar fallback large">A</div>
@@ -446,6 +447,16 @@
                     </div>
                   </div>
                   <div id="agent-session-history" class="agent-session-history"></div>
+                </section>
+
+                <section class="agent-diagnostic-card">
+                  <div class="row between">
+                    <div>
+                      <h3>Session Detail</h3>
+                      <p class="small muted">Inspect a stored mission without disrupting the active session.</p>
+                    </div>
+                  </div>
+                  <div id="agent-session-detail" class="agent-session-detail"></div>
                 </section>
 
                 <section class="agent-diagnostic-card">

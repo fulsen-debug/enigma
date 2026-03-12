@@ -1478,9 +1478,10 @@ function createServerMissionActivity(
   tone: "info" | "ok" | "error" = "info",
   meta = "",
   ts = new Date().toISOString(),
-  eventType = "activity"
+  eventType = "activity",
+  details: Record<string, unknown> = {}
 ) {
-  return { ts, title, message, tone, meta, eventType };
+  return { ts, title, message, tone, meta, eventType, ...details };
 }
 
 function normalizeMissionStatus(value: string) {
