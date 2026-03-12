@@ -64,6 +64,11 @@ import {
   estimateSpreadBps,
   simulateExecutionFill
 } from "./server/agentPolicy.js";
+import {
+  loadMissionWorkspaceSnapshot,
+  subscribeMissionWorkspaceStream,
+  syncMissionWorkspace
+} from "./server/missionWorkspace.js";
 
 function validateRuntimeConfig(): { mode: string; hasRpc: boolean } {
   const mode = String(process.env.NODE_ENV || "development");
@@ -2475,6 +2480,74 @@ app.get("/api/autotrade/positions", authRequired, (req: AuthedRequest, res) => {
   const usage = getUsage(req.user.id);
   const positions = listAutoTradePositions(req.user.id, status as "OPEN" | "CLOSED" | undefined);
   return res.json({ positions, usage });
+});
+
+app.get("/api/mission/workspaces/:workspaceId", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const workspaceId = String(req.params.workspaceId || "").trim();
+  if (!workspaceId) {
+    return res.status(400).json({ error: "workspaceId is required" });
+  }
+  return res.json(loadMissionWorkspaceSnapshot(req.user.id, workspaceId));
+});
+
+app.get("/api/mission/workspaces/:workspaceId/activity", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const workspaceId = String(req.params.workspaceId || "").trim();
+  if (!workspaceId) {
+    return res.status(400).json({ error: "workspaceId is required" });
+  }
+  const snapshot = loadMissionWorkspaceSnapshot(req.user.id, workspaceId);
+  return res.json({
+    workspaceId,
+    sessionId: snapshot.sessionId,
+    provider: snapshot.provider,
+    activity: snapshot.activity,
+    updatedAt: snapshot.updatedAt
+  });
+});
+
+app.post("/api/mission/workspaces/:workspaceId/sync", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const workspaceId = String(req.params.workspaceId || "").trim();
+  if (!workspaceId) {
+    return res.status(400).json({ error: "workspaceId is required" });
+  }
+  const mission = req.body?.mission;
+  if (!mission || typeof mission !== "object") {
+    return res.status(400).json({ error: "mission payload is required" });
+  }
+  const snapshot = syncMissionWorkspace({
+    userId: req.user.id,
+    workspaceId,
+    provider: String(req.body?.provider || mission.provider || "openclaw"),
+    budgetUsd: Number(req.body?.budgetUsd || mission.budgetUsd || 0),
+    sessionId: String(req.body?.sessionId || mission.sessionId || "").trim() || null,
+    ensureSession: Boolean(req.body?.ensureSession),
+    mission: mission as Record<string, unknown>,
+    workspaceArtifacts:
+      req.body?.workspaceArtifacts && typeof req.body.workspaceArtifacts === "object"
+        ? (req.body.workspaceArtifacts as Record<string, string>)
+        : {}
+  });
+  return res.json(snapshot);
+});
+
+app.get("/api/mission/workspaces/:workspaceId/stream", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const workspaceId = String(req.params.workspaceId || "").trim();
+  if (!workspaceId) {
+    return res.status(400).end();
+  }
+  subscribeMissionWorkspaceStream(req.user.id, workspaceId, res);
 });
 
 app.post("/api/autotrade/positions/close", authRequired, async (req: AuthedRequest, res) => {

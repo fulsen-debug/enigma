@@ -277,6 +277,9 @@ const DEFAULT_AGENT_MISSION_STATE = {
   }
 };
 let agentTradeState = { ...DEFAULT_AGENT_MISSION_STATE };
+let agentMissionStream = null;
+let agentMissionStreamWorkspaceId = "";
+let agentMissionStreamReconnectTimer = null;
 const legacyPaperAgentProvider = createLegacyPaperAgentProvider({ request: api });
 const futureOpenClawAgentProvider = createFutureOpenClawAgentProvider({
   request: api,
@@ -286,6 +289,81 @@ const futureOpenClawAgentProvider = createFutureOpenClawAgentProvider({
 
 function getActiveAgentProvider() {
   return OPENCLAW_PROVIDER_ENABLED ? futureOpenClawAgentProvider : legacyPaperAgentProvider;
+}
+
+function stopAgentMissionStream() {
+  if (agentMissionStreamReconnectTimer) {
+    clearTimeout(agentMissionStreamReconnectTimer);
+    agentMissionStreamReconnectTimer = null;
+  }
+  if (agentMissionStream) {
+    agentMissionStream.close();
+    agentMissionStream = null;
+  }
+  agentMissionStreamWorkspaceId = "";
+}
+
+function applyMissionStreamSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return;
+  const missionModel = snapshot.mission || null;
+  if (!missionModel) return;
+  updateAgentTradeState({
+    missionStatus: missionModel.missionStatus || agentTradeState.missionStatus,
+    missionModel,
+    activity: Array.isArray(snapshot.activity) ? snapshot.activity : missionModel.activity || [],
+    position: missionModel.livePosition || null,
+    executionTrace: {
+      previewState: missionModel.executionTrace?.previewState || agentTradeState.executionTrace.previewState,
+      submitted: missionModel.executionTrace?.submitted || agentTradeState.executionTrace.submitted,
+      txHash: missionModel.executionTrace?.txHash || agentTradeState.executionTrace.txHash,
+      filledAmount: missionModel.executionTrace?.filledAmount ?? agentTradeState.executionTrace.filledAmount,
+      averageEntry: missionModel.executionTrace?.averageEntry ?? agentTradeState.executionTrace.averageEntry,
+      stopLoss: missionModel.executionTrace?.stopLoss ?? agentTradeState.executionTrace.stopLoss,
+      takeProfit: missionModel.executionTrace?.takeProfit ?? agentTradeState.executionTrace.takeProfit,
+      holdHorizon: missionModel.executionTrace?.holdHorizon || agentTradeState.executionTrace.holdHorizon,
+      currentPnl: missionModel.executionTrace?.currentPnlPct ?? agentTradeState.executionTrace.currentPnl
+    }
+  });
+}
+
+function startAgentMissionStream(workspaceId) {
+  const normalizedWorkspaceId = String(workspaceId || "").trim();
+  if (!normalizedWorkspaceId || !authToken || getActiveAgentProvider().id !== "openclaw") {
+    stopAgentMissionStream();
+    return;
+  }
+  if (agentMissionStreamWorkspaceId === normalizedWorkspaceId && agentMissionStream) {
+    return;
+  }
+  stopAgentMissionStream();
+  agentMissionStreamWorkspaceId = normalizedWorkspaceId;
+  const source = new EventSource(
+    `/api/mission/workspaces/${encodeURIComponent(normalizedWorkspaceId)}/stream`
+  );
+  source.addEventListener("snapshot", (event) => {
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      if (payload?.snapshot) {
+        applyMissionStreamSnapshot(payload.snapshot);
+      }
+    } catch {}
+  });
+  source.onerror = () => {
+    if (agentMissionStream) {
+      agentMissionStream.close();
+      agentMissionStream = null;
+    }
+    if (agentMissionStreamReconnectTimer || !authToken || agentMissionStreamWorkspaceId !== normalizedWorkspaceId) {
+      return;
+    }
+    agentMissionStreamReconnectTimer = setTimeout(() => {
+      agentMissionStreamReconnectTimer = null;
+      if (agentMissionStreamWorkspaceId === normalizedWorkspaceId) {
+        startAgentMissionStream(normalizedWorkspaceId);
+      }
+    }, 4000);
+  };
+  agentMissionStream = source;
 }
 
 function getPaperTestModelLabel(key) {
@@ -1405,6 +1483,7 @@ function saveAgentTargetMint(options = {}) {
   }
   if (authToken) {
     startAgentPriceMonitor();
+    startAgentMissionStream(mints[0]);
   }
   renderAgentScannerSummary([]);
   return true;
@@ -1735,6 +1814,7 @@ function showToastWindow(text, tone = "info", options = {}) {
 }
 
 function clearLocalSessionState() {
+  stopAgentMissionStream();
   authToken = "";
   userWallet = "";
   userPlan = "free";
@@ -5673,6 +5753,7 @@ async function connectWallet() {
     await loadEngineConfig();
     applySavedOperatingPreset();
     await loadEnginePositions();
+    startAgentMissionStream(resolveAgentTargetMint({ notify: false }));
     profileWorkspaceLoadedAt = 0;
     if (document.body.classList.contains("workspace-profile")) {
       await loadProfileWorkspaceData({ force: true, silent: true });
@@ -5746,6 +5827,7 @@ async function hydrateSession() {
     applySavedOperatingPreset();
     await loadEnginePositions();
     startAgentPriceMonitor();
+    startAgentMissionStream(resolveAgentTargetMint({ notify: false }));
     reconnectBackoffMs = 5000;
     reconnectNoticeShown = false;
     setNetworkStatus("Connected", "ok");
@@ -5771,6 +5853,7 @@ async function hydrateSession() {
     }
     stopRealtimeMonitor();
     stopAgentPriceMonitor();
+    stopAgentMissionStream();
     authToken = "";
     userWallet = "";
     userPlan = "free";

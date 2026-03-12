@@ -98,6 +98,46 @@ export interface WithdrawalRequestRecord {
   updated_at: string;
 }
 
+export interface MissionWorkspaceRecord {
+  userId: number;
+  workspaceId: string;
+  provider: string;
+  activeSessionId: string | null;
+  missionJson: string;
+  updated_at: string;
+}
+
+export interface MissionWorkspaceFileRecord {
+  userId: number;
+  workspaceId: string;
+  fileName: string;
+  content: string;
+  updated_at: string;
+}
+
+export interface MissionSessionRecord {
+  sessionId: string;
+  userId: number;
+  workspaceId: string;
+  provider: string;
+  budgetUsd: number;
+  status: string;
+  missionJson: string;
+  started_at: string;
+  updated_at: string;
+  ended_at: string | null;
+}
+
+export interface MissionSessionEventRecord {
+  id: number;
+  sessionId: string;
+  userId: number;
+  workspaceId: string;
+  eventKey: string;
+  eventJson: string;
+  created_at: string;
+}
+
 const dbPath = resolve(process.cwd(), process.env.ENIGMA_DB_PATH || "./enigma_data.sqlite");
 mkdirSync(dirname(dbPath), { recursive: true });
 
@@ -259,6 +299,49 @@ CREATE TABLE IF NOT EXISTS withdrawal_requests (
   note TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mission_workspaces (
+  user_id INTEGER NOT NULL,
+  workspace_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  active_session_id TEXT,
+  mission_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, workspace_id)
+);
+
+CREATE TABLE IF NOT EXISTS mission_workspace_files (
+  user_id INTEGER NOT NULL,
+  workspace_id TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  content TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, workspace_id, file_name)
+);
+
+CREATE TABLE IF NOT EXISTS mission_sessions (
+  session_id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  workspace_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  budget_usd REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  mission_json TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  ended_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mission_session_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  workspace_id TEXT NOT NULL,
+  event_key TEXT NOT NULL,
+  event_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(session_id, event_key)
 );
 `);
 
@@ -1335,4 +1418,251 @@ export function closeAutoTradePosition(input: {
   ).run(input.markPriceUsd, now, input.closeReason, pnlPct, input.positionId, input.userId);
 
   return listAutoTradePositions(input.userId).find((item) => item.id === input.positionId) || null;
+}
+
+export function getMissionWorkspace(userId: number, workspaceId: string): MissionWorkspaceRecord | null {
+  const row = db
+    .prepare(
+      `SELECT user_id, workspace_id, provider, active_session_id, mission_json, updated_at
+       FROM mission_workspaces
+       WHERE user_id = ? AND workspace_id = ?`
+    )
+    .get(userId, workspaceId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    userId: Number(row.user_id),
+    workspaceId: String(row.workspace_id || ""),
+    provider: String(row.provider || ""),
+    activeSessionId: row.active_session_id ? String(row.active_session_id) : null,
+    missionJson: String(row.mission_json || "{}"),
+    updated_at: String(row.updated_at || "")
+  };
+}
+
+export function upsertMissionWorkspace(input: {
+  userId: number;
+  workspaceId: string;
+  provider: string;
+  activeSessionId?: string | null;
+  missionJson: string;
+}): MissionWorkspaceRecord {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO mission_workspaces (
+      user_id, workspace_id, provider, active_session_id, mission_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, workspace_id) DO UPDATE SET
+      provider = excluded.provider,
+      active_session_id = excluded.active_session_id,
+      mission_json = excluded.mission_json,
+      updated_at = excluded.updated_at`
+  ).run(
+    input.userId,
+    input.workspaceId,
+    input.provider,
+    input.activeSessionId ?? null,
+    input.missionJson,
+    now
+  );
+  return getMissionWorkspace(input.userId, input.workspaceId)!;
+}
+
+export function listMissionWorkspaceFiles(userId: number, workspaceId: string): MissionWorkspaceFileRecord[] {
+  const rows = db
+    .prepare(
+      `SELECT user_id, workspace_id, file_name, content, updated_at
+       FROM mission_workspace_files
+       WHERE user_id = ? AND workspace_id = ?
+       ORDER BY file_name ASC`
+    )
+    .all(userId, workspaceId) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    userId: Number(row.user_id),
+    workspaceId: String(row.workspace_id || ""),
+    fileName: String(row.file_name || ""),
+    content: String(row.content || ""),
+    updated_at: String(row.updated_at || "")
+  }));
+}
+
+export function upsertMissionWorkspaceFile(input: {
+  userId: number;
+  workspaceId: string;
+  fileName: string;
+  content: string;
+}): MissionWorkspaceFileRecord {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO mission_workspace_files (
+      user_id, workspace_id, file_name, content, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, workspace_id, file_name) DO UPDATE SET
+      content = excluded.content,
+      updated_at = excluded.updated_at`
+  ).run(input.userId, input.workspaceId, input.fileName, input.content, now);
+  return listMissionWorkspaceFiles(input.userId, input.workspaceId).find(
+    (item) => item.fileName === input.fileName
+  )!;
+}
+
+export function getMissionSessionById(userId: number, sessionId: string): MissionSessionRecord | null {
+  const row = db
+    .prepare(
+      `SELECT session_id, user_id, workspace_id, provider, budget_usd, status, mission_json, started_at, updated_at, ended_at
+       FROM mission_sessions
+       WHERE user_id = ? AND session_id = ?`
+    )
+    .get(userId, sessionId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    sessionId: String(row.session_id || ""),
+    userId: Number(row.user_id),
+    workspaceId: String(row.workspace_id || ""),
+    provider: String(row.provider || ""),
+    budgetUsd: Number(row.budget_usd || 0),
+    status: String(row.status || "scanning"),
+    missionJson: String(row.mission_json || "{}"),
+    started_at: String(row.started_at || ""),
+    updated_at: String(row.updated_at || ""),
+    ended_at: row.ended_at ? String(row.ended_at) : null
+  };
+}
+
+export function getLatestMissionSessionForWorkspace(
+  userId: number,
+  workspaceId: string
+): MissionSessionRecord | null {
+  const row = db
+    .prepare(
+      `SELECT session_id, user_id, workspace_id, provider, budget_usd, status, mission_json, started_at, updated_at, ended_at
+       FROM mission_sessions
+       WHERE user_id = ? AND workspace_id = ?
+       ORDER BY started_at DESC
+       LIMIT 1`
+    )
+    .get(userId, workspaceId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    sessionId: String(row.session_id || ""),
+    userId: Number(row.user_id),
+    workspaceId: String(row.workspace_id || ""),
+    provider: String(row.provider || ""),
+    budgetUsd: Number(row.budget_usd || 0),
+    status: String(row.status || "scanning"),
+    missionJson: String(row.mission_json || "{}"),
+    started_at: String(row.started_at || ""),
+    updated_at: String(row.updated_at || ""),
+    ended_at: row.ended_at ? String(row.ended_at) : null
+  };
+}
+
+export function upsertMissionSession(input: {
+  sessionId: string;
+  userId: number;
+  workspaceId: string;
+  provider: string;
+  budgetUsd: number;
+  status: string;
+  missionJson: string;
+  endedAt?: string | null;
+}): MissionSessionRecord {
+  const now = new Date().toISOString();
+  const existing = getMissionSessionById(input.userId, input.sessionId);
+  db.prepare(
+    `INSERT INTO mission_sessions (
+      session_id, user_id, workspace_id, provider, budget_usd, status, mission_json, started_at, updated_at, ended_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      provider = excluded.provider,
+      budget_usd = excluded.budget_usd,
+      status = excluded.status,
+      mission_json = excluded.mission_json,
+      updated_at = excluded.updated_at,
+      ended_at = excluded.ended_at`
+  ).run(
+    input.sessionId,
+    input.userId,
+    input.workspaceId,
+    input.provider,
+    input.budgetUsd,
+    input.status,
+    input.missionJson,
+    existing?.started_at || now,
+    now,
+    input.endedAt ?? null
+  );
+  return getMissionSessionById(input.userId, input.sessionId)!;
+}
+
+export function listMissionSessionEvents(input: {
+  userId: number;
+  workspaceId: string;
+  sessionId?: string | null;
+  afterId?: number;
+  limit?: number;
+}): MissionSessionEventRecord[] {
+  const afterId = Math.max(0, Number(input.afterId || 0));
+  const limit = Math.max(1, Math.min(200, Number(input.limit || 40)));
+  const rows = input.sessionId
+    ? db
+        .prepare(
+          `SELECT id, session_id, user_id, workspace_id, event_key, event_json, created_at
+           FROM mission_session_events
+           WHERE user_id = ? AND workspace_id = ? AND session_id = ? AND id > ?
+           ORDER BY id DESC
+           LIMIT ?`
+        )
+        .all(input.userId, input.workspaceId, input.sessionId, afterId, limit)
+    : db
+        .prepare(
+          `SELECT id, session_id, user_id, workspace_id, event_key, event_json, created_at
+           FROM mission_session_events
+           WHERE user_id = ? AND workspace_id = ? AND id > ?
+           ORDER BY id DESC
+           LIMIT ?`
+        )
+        .all(input.userId, input.workspaceId, afterId, limit);
+  return (rows as Array<Record<string, unknown>>)
+    .map((row) => ({
+      id: Number(row.id),
+      sessionId: String(row.session_id || ""),
+      userId: Number(row.user_id),
+      workspaceId: String(row.workspace_id || ""),
+      eventKey: String(row.event_key || ""),
+      eventJson: String(row.event_json || "{}"),
+      created_at: String(row.created_at || "")
+    }))
+    .reverse();
+}
+
+export function appendMissionSessionEvent(input: {
+  sessionId: string;
+  userId: number;
+  workspaceId: string;
+  eventKey: string;
+  eventJson: string;
+}): MissionSessionEventRecord | null {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT OR IGNORE INTO mission_session_events (
+      session_id, user_id, workspace_id, event_key, event_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(input.sessionId, input.userId, input.workspaceId, input.eventKey, input.eventJson, now);
+  const row = db
+    .prepare(
+      `SELECT id, session_id, user_id, workspace_id, event_key, event_json, created_at
+       FROM mission_session_events
+       WHERE session_id = ? AND event_key = ?`
+    )
+    .get(input.sessionId, input.eventKey) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    sessionId: String(row.session_id || ""),
+    userId: Number(row.user_id),
+    workspaceId: String(row.workspace_id || ""),
+    eventKey: String(row.event_key || ""),
+    eventJson: String(row.event_json || "{}"),
+    created_at: String(row.created_at || "")
+  };
 }
