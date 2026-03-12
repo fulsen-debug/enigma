@@ -215,75 +215,271 @@
           <div id="alert-feed" class="alert-feed"></div>
         </section>
 
-        <section class="panel trade-lab workspace-agent">
-          <div class="row between">
-            <h2>Trading Console (Paper Agent)</h2>
-            <span id="paper-test-status" class="badge">Idle</span>
-          </div>
-          <p class="muted">
-            Paper-only flow: Run starts autonomous monitoring for 1 Agent Token, Stop ends the loop.
-          </p>
-          <p class="small muted">Scanner and agent token inputs are separate. Test Mode and Live Agent use the Agent Token set below (1 token only).</p>
-
-          <div class="agent-target-row">
-            <div>
-              <label for="agent-target-mint">Agent Token (1 token for Test + Live)</label>
-              <input id="agent-target-mint" type="text" placeholder="Paste one token ID (Solana mint, BTC, ETH)" />
-            </div>
-            <button id="agent-save-target" class="secondary">Save Agent Token</button>
-          </div>
-
-          <div class="agent-primary-layout">
-            <section class="agent-price-panel">
-              <div class="row between">
-                <h3>Agent Token Live Price</h3>
-                <span id="agent-price-status" class="badge">Idle</span>
-              </div>
-              <div class="agent-price-layout">
-                <div class="agent-price-chart-col">
-                  <div id="agent-price-chart" class="session-trend"></div>
-                  <div id="agent-price-meta" class="trend-legend"></div>
-                </div>
-                <div class="agent-price-side">
-                  <span class="small muted">Chart Window</span>
-                  <div class="quick-amount-buttons agent-window-buttons">
-                    <button type="button" class="secondary quick-amount-btn" data-agent-price-window="60">1m</button>
-                    <button type="button" class="secondary quick-amount-btn" data-agent-price-window="300">5m</button>
-                    <button type="button" class="secondary quick-amount-btn" data-agent-price-window="900">15m</button>
+        <section class="panel trade-lab workspace-agent agent-console">
+          <div class="agent-console-shell">
+            <section class="agent-hero-strip">
+              <div class="agent-hero-copy">
+                <div class="agent-console-kicker">AI Guardian Trading Console</div>
+                <div class="row between agent-hero-head">
+                  <div>
+                    <h2>Let AIG run the mission</h2>
+                    <p class="small muted">Enter budget, review the AI thesis, and let the system evaluate, plan, execute, monitor, and explain the trade lifecycle.</p>
                   </div>
+                  <span id="paper-test-status" class="badge mission-status-badge">Idle</span>
+                </div>
+                <div class="agent-provider-inline">
+                  <span class="small muted">Active Provider</span>
+                  <span id="agent-provider-badge" class="agent-provider-badge">OpenClaw Mission Adapter</span>
+                </div>
+                <div class="agent-token-identity">
+                  <div class="agent-token-avatar-wrap">
+                    <div id="agent-current-token-avatar" class="token-avatar fallback large">A</div>
+                  </div>
+                  <div class="agent-token-copy">
+                    <span class="small muted">Current Token</span>
+                    <strong id="agent-current-token-label">No token selected</strong>
+                    <span id="agent-current-token-mint" class="agent-token-mint muted">Save one token to arm the console.</span>
+                  </div>
+                </div>
+              </div>
+              <div class="agent-hero-controls">
+                <div class="agent-budget-card">
+                  <label for="paper-budget">Allocate Budget</label>
+                  <div class="agent-budget-input-wrap">
+                    <span>$</span>
+                    <input id="paper-budget" type="number" min="10" max="1000000" value="100" />
+                  </div>
+                  <p class="small muted">AIG sizes entries, risk posture, and monitoring cadence from this budget. Paper runs auto-stop after 8 minutes.</p>
+                </div>
+                <div class="agent-hero-actions">
+                  <button id="agent-run-test" class="agent-primary-cta">Let AI Trade</button>
+                  <button id="agent-preview-plan" class="secondary">Preview Plan</button>
+                  <button id="agent-close-position" class="secondary">Close Position</button>
+                  <button id="agent-emergency-halt" class="secondary danger">Emergency Halt</button>
                 </div>
               </div>
             </section>
 
-            <section class="agent-simple-controls">
-              <h3>AIG Autopilot</h3>
-              <p class="small muted">
-                Single-model paper trader. Set your total budget, amount per trade, and check cadence. AIG Core handles entries, exits, and pauses automatically.
-              </p>
-              <div class="trade-config-grid">
-                <div>
-                  <label for="paper-budget">Paper Budget (USD)</label>
-                  <input id="paper-budget" type="number" min="10" max="1000000" value="100" />
+            <div class="agent-console-grid">
+              <section class="agent-mission-panel">
+                <div class="row between">
+                  <div>
+                    <h3>AI Thesis</h3>
+                    <p class="small muted">How the model reads the token right now.</p>
+                  </div>
+                  <div id="agent-confidence-meter" class="agent-confidence-meter">
+                    <span>Confidence</span>
+                    <strong>0%</strong>
+                  </div>
                 </div>
+                <div class="agent-mission-grid">
+                  <div class="agent-mission-card">
+                    <span>Mission Status</span>
+                    <strong id="agent-mission-status-label">Idle</strong>
+                    <small id="agent-mission-status-note">Waiting for a token and budget.</small>
+                  </div>
+                  <div class="agent-mission-card">
+                    <span>Risk Posture</span>
+                    <strong id="agent-risk-posture">Standby</strong>
+                    <small id="agent-risk-posture-note">No plan generated yet.</small>
+                  </div>
+                  <div class="agent-mission-card">
+                    <span>Action Intent</span>
+                    <strong id="agent-action-intent">No action</strong>
+                    <small id="agent-action-intent-note">Preview a plan to see intent.</small>
+                  </div>
+                  <div class="agent-mission-card">
+                    <span>Execution Posture</span>
+                    <strong id="agent-execution-posture">Paper Guarded</strong>
+                    <small id="agent-execution-posture-note">Single-token paper mode.</small>
+                  </div>
+                </div>
+                <div class="agent-thesis-panel">
+                  <p id="agent-thesis-summary" class="agent-thesis-summary">AIG will synthesize thesis, risk posture, and execution intent here.</p>
+                  <ul id="agent-thesis-reasons" class="agent-thesis-reasons">
+                    <li>Save one token and preview the plan to generate reasoning.</li>
+                  </ul>
+                </div>
+              </section>
+
+              <section class="agent-execution-panel">
+                <div class="row between">
+                  <div>
+                    <h3>Execution Trace</h3>
+                    <p class="small muted">Lifecycle from preview to paper execution.</p>
+                  </div>
+                  <span id="agent-execution-mode" class="pill caution">Paper Guarded</span>
+                </div>
+                <div id="agent-execution-trace" class="agent-trace-grid">
+                  <div><span>Preview State</span><strong>Not started</strong></div>
+                  <div><span>Submitted</span><strong>-</strong></div>
+                  <div><span>Tx Hash</span><strong>-</strong></div>
+                  <div><span>Filled Amount</span><strong>-</strong></div>
+                  <div><span>Average Entry</span><strong>-</strong></div>
+                  <div><span>Stop Loss</span><strong>-</strong></div>
+                  <div><span>Take Profit</span><strong>-</strong></div>
+                  <div><span>Hold Horizon</span><strong>-</strong></div>
+                  <div><span>Current PnL</span><strong>-</strong></div>
+                </div>
+                <div id="engine-summary" class="msg agent-engine-summary">Mission runtime idle.</div>
+              </section>
+
+              <section class="agent-chart-panel">
+                <div class="row between">
+                  <div>
+                    <h3>Market Panel</h3>
+                    <p class="small muted">Live price strip, chart window, and future execution markers.</p>
+                  </div>
+                  <span id="agent-price-status" class="badge">Idle</span>
+                </div>
+                <div class="agent-price-layout">
+                  <div class="agent-price-chart-col">
+                    <div class="agent-price-strip">
+                      <strong id="agent-price-strip-price">$0.00</strong>
+                      <span id="agent-price-strip-context" class="small muted">No active market pulse yet.</span>
+                    </div>
+                    <div id="agent-price-chart" class="session-trend agent-chart-surface"></div>
+                    <div id="agent-price-meta" class="trend-legend"></div>
+                  </div>
+                  <div class="agent-price-side">
+                    <span class="small muted">Chart Window</span>
+                    <div class="quick-amount-buttons agent-window-buttons">
+                      <button type="button" class="secondary quick-amount-btn" data-agent-price-window="60">1m</button>
+                      <button type="button" class="secondary quick-amount-btn" data-agent-price-window="300">5m</button>
+                      <button type="button" class="secondary quick-amount-btn" data-agent-price-window="900">15m</button>
+                    </div>
+                    <div class="agent-marker-legend">
+                      <span><i class="marker entry"></i>Entry</span>
+                      <span><i class="marker stop"></i>Stop</span>
+                      <span><i class="marker target"></i>Target</span>
+                      <span><i class="marker pulse"></i>Live Pulse</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <aside class="agent-side-stack">
+                <section class="agent-position-panel">
+                  <div class="row between">
+                    <div>
+                      <h3>Live Position</h3>
+                      <p class="small muted">Current managed paper position.</p>
+                    </div>
+                  </div>
+                  <div id="engine-open-positions" class="agent-live-position-card table-wrap"></div>
+                </section>
+
+                <section class="agent-activity-panel premium-feed-panel">
+                  <div class="row between">
+                    <div>
+                      <h3>Agent Activity</h3>
+                      <p class="small muted">Streaming operator feed from preview, execution, and monitoring.</p>
+                    </div>
+                    <button id="trade-activity-clear" class="secondary tiny-btn">Clear</button>
+                  </div>
+                  <div id="agent-activity-feed" class="agent-activity-feed"></div>
+                  <div id="live-monitor-status" class="msg">Realtime monitor idle.</div>
+                </section>
+              </aside>
+            </div>
+
+            <details id="agent-advanced-drawer" class="trade-advanced agent-advanced-drawer">
+              <summary>Advanced Controls</summary>
+              <div class="agent-advanced-grid">
                 <div>
-                  <label for="paper-max-position">Test Amount Per Trade (USD)</label>
+                  <label for="paper-max-position">Trade Amount Per Entry (USD)</label>
                   <input id="paper-max-position" type="number" min="1" max="50000" value="25" />
                 </div>
                 <div>
                   <label for="paper-interval">Check Every (sec)</label>
                   <input id="paper-interval" type="number" min="10" max="3600" value="30" />
                 </div>
+                <div>
+                  <label for="engine-sl">Stop Loss %</label>
+                  <input id="engine-sl" type="number" min="0.2" max="99" step="0.1" value="4" />
+                </div>
+                <div>
+                  <label for="engine-tp">Take Profit %</label>
+                  <input id="engine-tp" type="number" min="0.2" max="200" step="0.1" value="8" />
+                </div>
+                <div>
+                  <label for="engine-hold-minutes">Max Hold Time (min)</label>
+                  <input id="engine-hold-minutes" type="number" min="1" max="10080" value="120" />
+                </div>
+                <div>
+                  <label for="agent-mode-view">Mode</label>
+                  <input id="agent-mode-view" class="input-static" type="text" value="Paper Guarded" readonly />
+                </div>
               </div>
-              <div class="paper-actions">
-                <button id="agent-run-test">Run Test</button>
-                <button id="agent-stop-all" class="secondary">Stop</button>
+              <div class="agent-advanced-meta">
+                <span>Trailing stop <strong id="agent-trailing-preview">3%</strong></span>
+                <span>Open slots <strong id="agent-open-slots-preview">1</strong></span>
+                <span>Emergency halt <strong id="agent-halt-state">Armed</strong></span>
+                <span>Execution source <strong id="agent-provider-tag">OpenClaw Mission Adapter</strong></span>
               </div>
-              <p class="small muted">
-                Trade Activity shows actual paper BUY and SELL fills, win/loss count, realized PnL, unrealized PnL, and any current block reason.
-              </p>
-              <p class="small muted">Each paper run auto-stops after 8 minutes to enforce daily session limits.</p>
-            </section>
-          </div>
+            </details>
+
+            <details id="agent-diagnostics-drawer" class="trade-advanced agent-diagnostics-drawer">
+              <summary>Developer / Engine Details</summary>
+              <div class="agent-diagnostics-grid">
+                <section class="agent-diagnostic-card">
+                  <div class="row between">
+                    <div>
+                      <h3>Mission Token Setup</h3>
+                      <p class="small muted">Secondary operator control. Primary mission flow stays budget-first.</p>
+                    </div>
+                  </div>
+                  <div class="agent-target-row">
+                    <div>
+                      <label for="agent-target-mint">Mission Token</label>
+                      <input id="agent-target-mint" type="text" placeholder="Paste one token ID (Solana mint, BTC, ETH)" />
+                    </div>
+                    <button id="agent-save-target" class="secondary">Save Agent Token</button>
+                  </div>
+                </section>
+
+                <section class="agent-diagnostic-card agent-monitor-panel">
+                  <div class="agent-monitor-header">
+                    <div>
+                      <h3>Mission Archive</h3>
+                      <p class="small muted">Deep simulation details, scanner payload, buy/sell chart, and diagnostics.</p>
+                    </div>
+                  </div>
+                  <div class="agent-history-grid">
+                    <div class="agent-activity-section">
+                      <h3>Mission Archive Summary</h3>
+                      <div id="paper-summary" class="msg">No paper test run yet.</div>
+                      <div id="paper-session-timing" class="paper-chart-meta"></div>
+                      <div id="paper-results" class="table-wrap"></div>
+                      <div id="paper-equity-chart" class="session-trend"></div>
+                      <div id="paper-performance-runs" class="table-wrap"></div>
+                    </div>
+
+                    <div class="agent-activity-section">
+                      <h3>Trade Activity Visual</h3>
+                      <div id="trade-activity-chart" class="session-trend"></div>
+                      <div id="trade-activity-log" class="table-wrap"></div>
+                    </div>
+                  </div>
+
+                  <div class="agent-activity-section">
+                    <h3>Latest Scanner Report (Agent Token)</h3>
+                    <div id="agent-scanner-summary" class="table-wrap"></div>
+                  </div>
+                </section>
+
+                <section class="agent-diagnostic-card">
+                  <div class="row between">
+                    <div>
+                      <h3>Raw System Messages</h3>
+                      <p class="small muted">Low-level diagnostics are kept out of the main mission console.</p>
+                    </div>
+                  </div>
+                  <div id="messages" class="messages"></div>
+                </section>
+              </div>
+            </details>
+
           <div class="agent-hidden-rule-inputs" aria-hidden="true" hidden>
             <input id="paper-min-pattern" type="number" min="0" max="95" value="68" />
             <input id="paper-min-confidence" type="number" min="0.1" max="0.99" step="0.01" value="0.72" />
@@ -304,54 +500,7 @@
             <button id="engine-stop-loop" type="button">Stop Live Agent</button>
           </div>
 
-          <div id="engine-summary" class="msg agent-engine-summary">Engine idle.</div>
-
-          <section class="trade-advanced agent-activity-panel agent-monitor-panel">
-            <div class="agent-monitor-header">
-              <div>
-                <h3>Paper Trade Monitor</h3>
-                <p class="small muted">Live paper monitoring for executed BUY/SELL actions, realized PnL, open positions, and latest token analysis.</p>
-              </div>
-            </div>
-            <div class="agent-history-grid">
-              <div class="agent-activity-section">
-                <h3>Test Simulation History</h3>
-                <p class="small muted">Each row is one autonomous paper run for your Agent Token (1 token). This is simulation history, not exchange fills.</p>
-                <div id="paper-summary" class="msg">No paper test run yet.</div>
-                <div id="paper-session-timing" class="paper-chart-meta"></div>
-                <div id="paper-results" class="table-wrap"></div>
-                <div id="paper-equity-chart" class="session-trend"></div>
-                <div id="paper-performance-runs" class="table-wrap"></div>
-              </div>
-
-              <div class="agent-activity-section">
-                <div class="row between">
-                  <h3>Trade Activity (Buy/Sell Visual)</h3>
-                  <button id="trade-activity-clear" class="secondary tiny-btn">Clear Activity</button>
-                </div>
-                <div id="trade-activity-chart" class="session-trend"></div>
-                <div id="trade-activity-log" class="table-wrap"></div>
-                <div id="live-monitor-status" class="msg">Realtime monitor idle.</div>
-              </div>
-            </div>
-
-            <div class="agent-activity-section">
-              <h3>Autopilot Open Positions</h3>
-              <div id="engine-open-positions" class="table-wrap"></div>
-            </div>
-
-            <div class="agent-activity-section">
-              <h3>Latest Scanner Report (Agent Token)</h3>
-              <div id="agent-scanner-summary" class="table-wrap"></div>
-            </div>
-          </section>
-        </section>
-
-        <section class="panel workspace-shared">
-          <details class="trade-advanced">
-            <summary>Optional: System Messages</summary>
-            <div id="messages" class="messages"></div>
-          </details>
+          </div>
         </section>
       </main>
     </div>

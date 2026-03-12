@@ -2477,6 +2477,90 @@ app.get("/api/autotrade/positions", authRequired, (req: AuthedRequest, res) => {
   return res.json({ positions, usage });
 });
 
+app.post("/api/autotrade/positions/close", authRequired, async (req: AuthedRequest, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const requestedPositionId = Number(req.body?.positionId || 0);
+    const requestedMint = String(req.body?.mint || "").trim();
+    const openPositions = listAutoTradePositions(req.user.id, "OPEN");
+    if (!openPositions.length) {
+      return res.status(404).json({ error: "no open position" });
+    }
+
+    const selected =
+      openPositions.find((item) => requestedPositionId > 0 && item.id === requestedPositionId) ||
+      openPositions.find((item) => requestedMint && item.mint === requestedMint) ||
+      openPositions[0];
+
+    if (!selected) {
+      return res.status(404).json({ error: "matching open position not found" });
+    }
+
+    const market = await fetchRealtimeMarketSnapshot(selected.mint);
+    const markPriceUsd = Number(
+      market?.priceUsd || selected.lastPriceUsd || selected.entryPriceUsd || 0
+    );
+    if (!Number.isFinite(markPriceUsd) || markPriceUsd <= 0) {
+      return res.status(400).json({ error: "unable to price open position for manual close" });
+    }
+
+    const closed = closeAutoTradePosition({
+      userId: req.user.id,
+      positionId: selected.id,
+      markPriceUsd,
+      closeReason: "MANUAL_CLOSE"
+    });
+    if (!closed) {
+      return res.status(500).json({ error: "manual close failed" });
+    }
+
+    return res.json({
+      ok: true,
+      ts: new Date().toISOString(),
+      position: closed,
+      action: {
+        type: "CLOSE",
+        mint: closed.mint,
+        sizeUsd: closed.sizeUsd,
+        pnlPct: closed.pnlPct,
+        reason: "MANUAL_CLOSE"
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.post("/api/autotrade/halt", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  const currentPolicy = getAutoTradeConfig(req.user.id);
+  const currentExecution = getAutoTradeExecutionConfig(req.user.id);
+  const nextPolicy = putAutoTradeConfig(req.user.id, {
+    ...currentPolicy,
+    enabled: false,
+    mode: "paper"
+  });
+  const nextExecution = putAutoTradeExecutionConfig(req.user.id, {
+    ...currentExecution,
+    enabled: false,
+    mode: "paper"
+  });
+
+  return res.json({
+    ok: true,
+    ts: new Date().toISOString(),
+    halted: true,
+    config: nextPolicy,
+    executionConfig: nextExecution
+  });
+});
+
 app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res) => {
   let lockAcquired = false;
   try {

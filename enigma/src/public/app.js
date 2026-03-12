@@ -1,4 +1,9 @@
 import { buildMarketRegimeViewModel } from "./marketRegimeView.js";
+import {
+  createEmptyMissionModel,
+  createFutureOpenClawAgentProvider,
+  createLegacyPaperAgentProvider
+} from "./agentMissionProvider.js";
 
 const authState = document.querySelector("#auth-state");
 const showScannerWorkspaceButton = document.querySelector("#show-scanner-workspace");
@@ -49,6 +54,36 @@ const paperTestModelNote = document.querySelector("#paper-test-model-note");
 const paperMaxPositionInput = document.querySelector("#paper-max-position");
 const paperBudgetInput = document.querySelector("#paper-budget");
 const paperIntervalInput = document.querySelector("#paper-interval");
+const agentPreviewPlanButton = document.querySelector("#agent-preview-plan");
+const agentClosePositionButton = document.querySelector("#agent-close-position");
+const agentEmergencyHaltButton = document.querySelector("#agent-emergency-halt");
+const agentCurrentTokenAvatar = document.querySelector("#agent-current-token-avatar");
+const agentCurrentTokenLabel = document.querySelector("#agent-current-token-label");
+const agentCurrentTokenMint = document.querySelector("#agent-current-token-mint");
+const agentProviderBadge = document.querySelector("#agent-provider-badge");
+const agentMissionStatusLabel = document.querySelector("#agent-mission-status-label");
+const agentMissionStatusNote = document.querySelector("#agent-mission-status-note");
+const agentRiskPosture = document.querySelector("#agent-risk-posture");
+const agentRiskPostureNote = document.querySelector("#agent-risk-posture-note");
+const agentActionIntent = document.querySelector("#agent-action-intent");
+const agentActionIntentNote = document.querySelector("#agent-action-intent-note");
+const agentExecutionPosture = document.querySelector("#agent-execution-posture");
+const agentExecutionPostureNote = document.querySelector("#agent-execution-posture-note");
+const agentThesisSummary = document.querySelector("#agent-thesis-summary");
+const agentThesisReasons = document.querySelector("#agent-thesis-reasons");
+const agentConfidenceMeter = document.querySelector("#agent-confidence-meter");
+const agentExecutionMode = document.querySelector("#agent-execution-mode");
+const agentExecutionTrace = document.querySelector("#agent-execution-trace");
+const agentPriceStripPrice = document.querySelector("#agent-price-strip-price");
+const agentPriceStripContext = document.querySelector("#agent-price-strip-context");
+const agentActivityFeed = document.querySelector("#agent-activity-feed");
+const agentAdvancedDrawer = document.querySelector("#agent-advanced-drawer");
+const agentDiagnosticsDrawer = document.querySelector("#agent-diagnostics-drawer");
+const agentModeView = document.querySelector("#agent-mode-view");
+const agentTrailingPreview = document.querySelector("#agent-trailing-preview");
+const agentOpenSlotsPreview = document.querySelector("#agent-open-slots-preview");
+const agentHaltState = document.querySelector("#agent-halt-state");
+const agentProviderTag = document.querySelector("#agent-provider-tag");
 const paperBeginner25Button = document.querySelector("#paper-beginner-25");
 const paperSummary = document.querySelector("#paper-summary");
 const paperSessionTiming = document.querySelector("#paper-session-timing");
@@ -106,6 +141,8 @@ const KOBX_MINT = "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump";
 const KOBX_REQUIRED_BALANCE = 500_000;
 const KOBX_BUY_URL = `https://pump.fun/coin/${KOBX_MINT}`;
 const PAPER_RUN_MAX_MINUTES = 8;
+const OPENCLAW_PROVIDER_ENABLED =
+  localStorage.getItem("enigma_agent_provider") !== "legacy-paper";
 
 let authToken = "";
 let userWallet = localStorage.getItem("enigma_wallet") || "";
@@ -214,6 +251,42 @@ const CORE_ENGINE_PROFILE = {
   maxHoldMinutes: 120,
   cooldownSec: 30
 };
+const DEFAULT_AGENT_MISSION_STATE = {
+  missionStatus: "scanning",
+  budgetUsd: 100,
+  preview: null,
+  decision: null,
+  position: null,
+  activity: [],
+  isPreviewLoading: false,
+  isExecuteLoading: false,
+  emergencyStopEnabled: false,
+  advancedOpen: false,
+  error: null,
+  missionModel: createEmptyMissionModel(OPENCLAW_PROVIDER_ENABLED ? "openclaw" : "legacy-paper"),
+  executionTrace: {
+    previewState: "Not started",
+    submitted: "-",
+    txHash: "-",
+    filledAmount: "-",
+    averageEntry: "-",
+    stopLoss: "-",
+    takeProfit: "-",
+    holdHorizon: "-",
+    currentPnl: "-"
+  }
+};
+let agentTradeState = { ...DEFAULT_AGENT_MISSION_STATE };
+const legacyPaperAgentProvider = createLegacyPaperAgentProvider({ request: api });
+const futureOpenClawAgentProvider = createFutureOpenClawAgentProvider({
+  request: api,
+  fallbackProvider: legacyPaperAgentProvider,
+  storage: window.localStorage
+});
+
+function getActiveAgentProvider() {
+  return OPENCLAW_PROVIDER_ENABLED ? futureOpenClawAgentProvider : legacyPaperAgentProvider;
+}
 
 function getPaperTestModelLabel(key) {
   const model = paperTestModels[String(key || "").trim().toLowerCase()];
@@ -988,13 +1061,53 @@ function scannerBundleTone(score) {
   return "good";
 }
 
-function buildScannerShareImage(signal) {
+async function loadCanvasImage(url) {
+  const source = String(url || "").trim();
+  if (!source) return null;
+  try {
+    const response = await fetch(source, { credentials: "omit" });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = objectUrl;
+      });
+      return image;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  } catch (_error) {
+    return null;
+  }
+}
+
+function drawRoundedRect(ctx, x, y, width, height, radius) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + width - radius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+  ctx.lineTo(x + width, y + height - radius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  ctx.lineTo(x + radius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+}
+
+async function buildScannerShareImage(signal) {
   const forensics = buildScannerForensics(signal);
   const token = signal?.token || {};
   const mint = String(token.mint || signal?.mint || "").trim();
   const symbol = String(token.symbol || token.name || "TOKEN");
   const status = String(signal?.status || "N/A");
   const price = formatUsdPrice(signal?.market?.priceUsd || 0);
+  const aigLogo = await loadCanvasImage("/assets/icon.png");
+  const tokenImage = await loadCanvasImage(String(token.imageUrl || ""));
   const lines = [
     `Bundle Risk ${formatNumber(forensics.bundleRiskScore, 0)}/100 (${forensics.bundleRiskVerdict})`,
     `Top 10 Share ${formatPctCompact(forensics.top10ExLp, 1)} | Top 20 Share ${formatPctCompact(forensics.top20ExLp, 1)}`,
@@ -1027,20 +1140,60 @@ function buildScannerShareImage(signal) {
   ctx.lineWidth = 2;
   ctx.strokeRect(30, 30, canvas.width - 60, canvas.height - 60);
 
+  drawRoundedRect(ctx, 72, 66, 96, 96, 24);
+  ctx.fillStyle = "rgba(12, 19, 49, 0.92)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(132, 148, 255, 0.28)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  if (aigLogo) {
+    ctx.save();
+    drawRoundedRect(ctx, 72, 66, 96, 96, 24);
+    ctx.clip();
+    ctx.drawImage(aigLogo, 72, 66, 96, 96);
+    ctx.restore();
+  }
+
   ctx.fillStyle = "#f5f7ff";
   ctx.font = "700 62px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillText("AIG Token Forensics", 72, 120);
+  ctx.fillText("AIG Token Forensics", 196, 120);
 
   ctx.fillStyle = "#aab6ef";
   ctx.font = "400 28px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillText(`Powered by Kobecoin`, 74, 164);
+  ctx.fillText("Powered by Kobecoin", 198, 164);
+
+  const tokenCardX = 72;
+  const tokenCardY = 214;
+  drawRoundedRect(ctx, tokenCardX, tokenCardY, 112, 112, 28);
+  ctx.fillStyle = "rgba(16, 25, 62, 0.92)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(129, 145, 244, 0.22)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  if (tokenImage) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(tokenCardX + 56, tokenCardY + 56, 44, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(tokenImage, tokenCardX + 12, tokenCardY + 12, 88, 88);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = "rgba(98, 120, 236, 0.22)";
+    ctx.beginPath();
+    ctx.arc(tokenCardX + 56, tokenCardY + 56, 44, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#eef2ff";
+    ctx.font = "700 40px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(String(symbol || "?").slice(0, 1).toUpperCase(), tokenCardX + 42, tokenCardY + 70);
+  }
 
   ctx.fillStyle = "#ffffff";
   ctx.font = "700 54px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillText(symbol, 72, 270);
+  ctx.fillText(symbol, 210, 278);
   ctx.fillStyle = "#d6dcff";
   ctx.font = "400 26px ui-monospace, monospace";
-  ctx.fillText(mint, 72, 312);
+  ctx.fillText(mint, 210, 320);
 
   ctx.fillStyle = "#91f0c2";
   ctx.font = "700 42px ui-sans-serif, system-ui, sans-serif";
@@ -1068,7 +1221,7 @@ function buildScannerShareImage(signal) {
 }
 
 async function downloadScannerCardPng(signal) {
-  const canvas = buildScannerShareImage(signal);
+  const canvas = await buildScannerShareImage(signal);
   const token = signal?.token || {};
   const symbol = String(token.symbol || token.name || "token").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const link = document.createElement("a");
@@ -1079,7 +1232,34 @@ async function downloadScannerCardPng(signal) {
 
 async function shareScannerCardToX(signal) {
   const forensics = buildScannerForensics(signal);
-  const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(forensics.shareText)}`;
+  const token = signal?.token || {};
+  const symbol = String(token.symbol || token.name || "TOKEN").trim();
+  const mint = String(token.mint || signal?.mint || "").trim();
+  const status = String(signal?.status || "N/A").replace(/_/g, " ");
+  const bundleTone = forensics.bundleRiskVerdict === "HIGH" ? "HIGH" : forensics.bundleRiskVerdict === "CAUTION" ? "ELEVATED" : "LOW";
+  const summaryLine =
+    forensics.bundleRiskVerdict === "HIGH"
+      ? "Heavy linked-holder risk is showing in this pass."
+      : forensics.bundleRiskVerdict === "CAUTION"
+        ? "Some coordination risk is showing here, so this needs caution."
+        : "No major linked-holder bundle is showing in this pass.";
+  const activityLine = `Top 20 holders: ${formatPctCompact(forensics.top20ExLp, 1)} | Top 10: ${formatPctCompact(forensics.top10ExLp, 1)}${forensics.clusterLpIncluded ? " (LP may still be mixed in)" : " (ex-LP)"}`;
+  const riskLine = `Linked cluster: ${formatPctCompact(forensics.topClusterPct, 1)}${forensics.clusterLpIncluded ? " (LP maybe included)" : ""} | New wallets: ${formatPctCompact(forensics.newWalletPct, 1)}`;
+  const dataLine = `Data: ${String(forensics.verificationNote || "")
+    .replace("Verified concentration: ", "")
+    .replace("Wallet activity: ", "activity ")
+    .replace("Wallet labels: ", "labels ")}`;
+  const shareText = [
+    `${symbol} (${mint})`,
+    `AIG read: ${status} | Bundle risk ${formatNumber(forensics.bundleRiskScore, 0)}/100 ${bundleTone}`,
+    summaryLine,
+    activityLine,
+    riskLine,
+    `Avg bag: ${forensics.avgBagUsd > 0 ? formatUsd(forensics.avgBagUsd) : "n/a"}`,
+    dataLine,
+    "NFA. Powered by Kobecoin. @Kobecoin_X0214 @heliuslabs"
+  ].join("\n");
+  const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}`;
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
@@ -1147,6 +1327,7 @@ function hydrateAgentTargetMintsFromStorage() {
 function syncAgentTargetMintUi() {
   if (!agentTargetMintInput) return;
   agentTargetMintInput.value = agentTargetMints.join(", ");
+  renderAgentMissionConsole();
 }
 
 function resolveAgentTargetMints(options = {}) {
@@ -1194,6 +1375,28 @@ function saveAgentTargetMint(options = {}) {
   const notify = options.notify !== false;
   const mints = resolveAgentTargetMints({ notify });
   if (!mints.length) return false;
+  updateAgentTradeState({
+    preview: null,
+    decision: null,
+    position: null,
+    missionStatus: "scanning",
+    error: null,
+    executionTrace: {
+      previewState: "Ready to preview",
+      submitted: "-",
+      txHash: "-",
+      filledAmount: "-",
+      averageEntry: "-",
+      stopLoss: "-",
+      takeProfit: "-",
+      holdHorizon: "-",
+      currentPnl: "-"
+    }
+  });
+  recordAgentActivity("Mission token saved. AIG is ready to evaluate this market.", "ok", {
+    title: "Mission Armed",
+    meta: shortMint(mints[0], 8, 8)
+  });
   if (notify) {
     pushMessage(
       `Agent token set saved (${mints.length}/1): ${mints.map((mint) => shortMint(mint, 6, 6)).join(", ")}`,
@@ -1273,6 +1476,12 @@ function renderAgentPriceGraph() {
   if (!points.length) {
     agentPriceChart.innerHTML =
       `<div class="muted">Set Agent Token and wait for price ticks to render live chart.</div>`;
+    if (agentPriceStripPrice) agentPriceStripPrice.textContent = "$0.00";
+    if (agentPriceStripContext) {
+      agentPriceStripContext.textContent = agentTargetMint
+        ? "Waiting for live price ticks from the market feed."
+        : "Save one token to arm the market panel.";
+    }
     if (agentPriceMeta) {
       agentPriceMeta.innerHTML = `
         <span><b>Token</b> ${escapeHtml(shortMint(agentTargetMint || "N/A", 7, 7))}</span>
@@ -1325,6 +1534,12 @@ function renderAgentPriceGraph() {
       <path class="trend-line pattern" d="${path}" />
     </svg>
   `;
+  if (agentPriceStripPrice) {
+    agentPriceStripPrice.textContent = formatPrice(last);
+  }
+  if (agentPriceStripContext) {
+    agentPriceStripContext.textContent = `1m ${formatPct(oneMinuteChange, 2)} | ${windowLabelBySeconds(selectedWindowSec)} ${formatPct(changePct, 2)} | ${points.length} ticks tracked`;
+  }
   if (agentPriceMeta) {
     agentPriceMeta.innerHTML = `
       <span><b>Token</b> ${escapeHtml(shortMint(agentTargetMint || "N/A", 7, 7))}</span>
@@ -2259,6 +2474,331 @@ function setPaperStatus(text, mode = "idle") {
   paperTestStatus.textContent = text;
   paperTestStatus.classList.remove("ok", "busy", "error");
   if (mode !== "idle") paperTestStatus.classList.add(mode);
+
+  const nextStatus = (() => {
+    const lower = String(text || "").trim().toLowerCase();
+    if (lower.includes("halt")) return "halted";
+    if (lower.includes("exit")) return "exited";
+    if (lower.includes("run")) return "monitoring";
+    if (mode === "busy") return "executing";
+    if (mode === "error") return "halted";
+    return "scanning";
+  })();
+  updateAgentTradeState({ missionStatus: nextStatus });
+}
+
+function getMissionStatusPresentation(status) {
+  const key = String(status || "scanning").trim().toLowerCase();
+  const map = {
+    scanning: {
+      label: "Scanning",
+      note: "AIG is checking current token conditions.",
+      badgeClass: "busy"
+    },
+    evaluating: {
+      label: "Evaluating",
+      note: "Risk posture and confidence are being recalculated.",
+      badgeClass: "busy"
+    },
+    planning: {
+      label: "Planning",
+      note: "Preview plan is ready for operator review.",
+      badgeClass: "ok"
+    },
+    executing: {
+      label: "Executing",
+      note: "Paper execution is being submitted and validated.",
+      badgeClass: "busy"
+    },
+    monitoring: {
+      label: "Monitoring",
+      note: "AIG is actively managing the open mission.",
+      badgeClass: "ok"
+    },
+    exited: {
+      label: "Exited",
+      note: "Mission completed and no live paper position remains.",
+      badgeClass: "ok"
+    },
+    halted: {
+      label: "Halted",
+      note: "Operator halt is active. New actions are blocked.",
+      badgeClass: "error"
+    }
+  };
+  return map[key] || map.scanning;
+}
+
+function buildAgentThesisView(source) {
+  if (!source || typeof source !== "object") return null;
+  const tradePlan = source.tradePlan || {};
+  const market = source.market || {};
+  const regime = source.marketRegime || {};
+  const sentiment = source.sentiment || {};
+  const signalStatus = String(source.signalStatus || source.status || "SCANNING").toUpperCase();
+  const decision = String(source.decision || "").toUpperCase();
+  const confidenceRaw = Number(
+    source.confidence ??
+    source.killSwitch?.confidence ??
+    sentiment?.confidence ??
+    0
+  );
+  const confidence = Math.max(0, Math.min(1, confidenceRaw));
+  const patternScore = Number(source.patternScore || 0);
+  const reasons = Array.isArray(source.reasons) && source.reasons.length
+    ? source.reasons.filter(Boolean)
+    : [
+        String(tradePlan.recommendation || "").trim(),
+        String(source.killSwitch?.summary || "").trim(),
+        String(sentiment.summary || "").trim()
+      ].filter(Boolean);
+  const actionIntent = (() => {
+    if (decision === "BUY_CANDIDATE") return "Engage mission";
+    if (signalStatus === "FAVORABLE") return "Prepare staged entry";
+    if (signalStatus === "CAUTION") return "Wait for confirmation";
+    return "Stand down";
+  })();
+  const riskPosture = (() => {
+    if (signalStatus === "FAVORABLE") return "Constructive";
+    if (signalStatus === "CAUTION") return "Guarded";
+    if (signalStatus === "HIGH_RISK") return "Defensive";
+    return "Standby";
+  })();
+  const thesisSummary =
+    reasons[0] ||
+    String(tradePlan.recommendation || "").trim() ||
+    "AIG is waiting for enough market structure to form a plan.";
+
+  return {
+    status: signalStatus,
+    confidence,
+    patternScore,
+    reasons: reasons.slice(0, 4),
+    actionIntent,
+    riskPosture,
+    executionPosture: PAPER_ONLY_MODE ? "Paper Guarded" : "Live Guarded",
+    thesisSummary,
+    entryLow: firstPrice([tradePlan.buyZone?.low]),
+    entryHigh: firstPrice([tradePlan.buyZone?.high]),
+    target: firstPrice([Array.isArray(tradePlan.resistance) ? tradePlan.resistance[0] : tradePlan.resistance]),
+    stop: firstPrice([tradePlan.stopLoss]),
+    holdHorizon: regime.timeframe ? `${String(regime.timeframe)} horizon` : "Adaptive hold horizon",
+    price: Number(market.priceUsd || 0),
+    token: source.token || getTokenMetaForMint(String(source.mint || "")),
+    mint: String(source.mint || source.token?.mint || agentTargetMint || ""),
+    regime: String(regime.regime || ""),
+    regimeTimeframe: String(regime.timeframe || ""),
+    note:
+      signalStatus === "FAVORABLE"
+        ? "Conditions are supportive enough for paper execution if budget and policy remain aligned."
+        : signalStatus === "CAUTION"
+          ? "AIG sees a setup forming, but the mission remains guarded."
+          : "Risk pressure is elevated. AIG will prefer observation over entry."
+  };
+}
+
+function recordAgentActivity(message, tone = "info", options = {}) {
+  const event = {
+    ts: String(options.ts || new Date().toISOString()),
+    tone: String(tone || "info"),
+    title: String(options.title || ""),
+    message: String(message || "").trim(),
+    meta: String(options.meta || "").trim()
+  };
+  if (!event.message) return;
+  agentTradeState.activity = [event, ...(agentTradeState.activity || [])].slice(0, 40);
+  agentTradeState.missionModel = {
+    ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+    activity: agentTradeState.activity.slice()
+  };
+  renderAgentActivityFeed();
+}
+
+function renderAgentActivityFeed() {
+  if (!agentActivityFeed) return;
+  const activity = Array.isArray(agentTradeState.activity) ? agentTradeState.activity : [];
+  if (!activity.length) {
+    agentActivityFeed.innerHTML = `<div class="agent-activity-empty">No live mission activity yet. Preview a plan or let AIG trade to begin the operator trace.</div>`;
+    return;
+  }
+
+  agentActivityFeed.innerHTML = activity
+    .map((item) => `
+      <article class="agent-activity-item ${escapeHtml(String(item.tone || "info"))}">
+        <div class="agent-activity-topline">
+          <strong>${escapeHtml(item.title || "Agent Update")}</strong>
+          <span>${escapeHtml(new Date(item.ts).toLocaleTimeString())}</span>
+        </div>
+        <p>${escapeHtml(item.message)}</p>
+        ${item.meta ? `<small>${escapeHtml(item.meta)}</small>` : ""}
+      </article>
+    `)
+    .join("");
+}
+
+function renderAgentTokenIdentity() {
+  const mint = String(agentTargetMint || "");
+  const meta = getTokenMetaForMint(mint, null);
+  const symbol = String(meta.symbol || "").trim() || (mint ? shortMint(mint, 4, 4) : "AIG");
+
+  if (agentCurrentTokenAvatar) {
+    agentCurrentTokenAvatar.className = "token-avatar fallback large";
+    if (meta.imageUrl) {
+      agentCurrentTokenAvatar.className = "token-avatar large";
+      agentCurrentTokenAvatar.innerHTML = `<img src="${escapeHtml(meta.imageUrl)}" alt="${escapeHtml(symbol)}" loading="lazy" onerror="this.parentElement.className='token-avatar fallback large';this.parentElement.textContent='${escapeHtml(symbol.slice(0, 1) || "A")}';" /><span>${escapeHtml(symbol.slice(0, 1) || "A")}</span>`;
+    } else {
+      agentCurrentTokenAvatar.textContent = escapeHtml(symbol.slice(0, 1) || "A");
+    }
+  }
+  if (agentCurrentTokenLabel) {
+    agentCurrentTokenLabel.textContent = mint ? (meta.name || meta.symbol || shortMint(mint, 6, 6)) : "No token selected";
+  }
+  if (agentCurrentTokenMint) {
+    agentCurrentTokenMint.textContent = mint
+      ? `${meta.symbol || "TOKEN"} | ${shortMint(mint, 8, 8)}`
+      : "Set a workspace token inside Developer / Engine Details.";
+  }
+}
+
+function renderAgentMissionConsole() {
+  renderAgentTokenIdentity();
+  const statusMeta = getMissionStatusPresentation(agentTradeState.missionStatus);
+  const missionModel = agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id);
+  const view = missionModel.thesis || buildAgentThesisView(agentTradeState.decision || agentTradeState.preview);
+
+  if (paperTestStatus) {
+    paperTestStatus.textContent = statusMeta.label;
+    paperTestStatus.classList.remove("ok", "busy", "error");
+    if (statusMeta.badgeClass) paperTestStatus.classList.add(statusMeta.badgeClass);
+  }
+
+  if (agentMissionStatusLabel) agentMissionStatusLabel.textContent = statusMeta.label;
+  if (agentMissionStatusNote) {
+    agentMissionStatusNote.textContent = agentTradeState.error || statusMeta.note;
+  }
+
+  if (agentConfidenceMeter) {
+    const confidencePct = Math.round(Number(view?.confidence || 0) * 100);
+    agentConfidenceMeter.innerHTML = `<span>Confidence</span><strong>${confidencePct}%</strong>`;
+    agentConfidenceMeter.style.setProperty("--confidence-pct", `${confidencePct}%`);
+  }
+
+  if (agentRiskPosture) agentRiskPosture.textContent = view?.riskPosture || "Standby";
+  if (agentRiskPostureNote) agentRiskPostureNote.textContent = view?.note || "No plan generated yet.";
+  if (agentActionIntent) agentActionIntent.textContent = view?.actionIntent || "No action";
+  if (agentActionIntentNote) {
+    agentActionIntentNote.textContent = view?.status
+      ? `Signal status ${view.status.replaceAll("_", " ")}`
+      : "Preview a plan to see intent.";
+  }
+  if (agentExecutionPosture) {
+    agentExecutionPosture.textContent =
+      agentTradeState.emergencyStopEnabled ? "Emergency Halt" : (view?.executionPosture || "Guarded mission runtime");
+  }
+  if (agentExecutionPostureNote) {
+    agentExecutionPostureNote.textContent = agentTradeState.position
+      ? `${missionModel.providerLabel} is managing the current paper position.`
+      : `${missionModel.providerLabel} is the active mission source. Workspace artifacts stay aligned for OpenClaw runtime handoff.`;
+  }
+  if (agentThesisSummary) {
+    agentThesisSummary.textContent = view?.thesisSummary || "AIG will synthesize thesis, risk posture, and execution intent here.";
+  }
+  if (agentThesisReasons) {
+    const reasons = Array.isArray(view?.reasons) && view.reasons.length
+      ? view.reasons
+      : ["Save one token and preview the plan to generate reasoning."];
+    agentThesisReasons.innerHTML = reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("");
+  }
+
+  const trace = {
+    ...(agentTradeState.executionTrace || DEFAULT_AGENT_MISSION_STATE.executionTrace),
+    ...(missionModel.executionTrace || {})
+  };
+  if (agentExecutionMode) {
+    agentExecutionMode.textContent = agentTradeState.emergencyStopEnabled ? "Halt Engaged" : "Guarded Runtime";
+    agentExecutionMode.className = `pill ${agentTradeState.emergencyStopEnabled ? "high-risk" : "caution"}`;
+  }
+  if (agentExecutionTrace) {
+    agentExecutionTrace.innerHTML = `
+      <div><span>Preview State</span><strong>${escapeHtml(String(trace.previewState || "-"))}</strong></div>
+      <div><span>Submitted</span><strong>${escapeHtml(String(trace.submitted || "-"))}</strong></div>
+      <div><span>Tx Hash</span><strong>${escapeHtml(String(trace.txHash || "-"))}</strong></div>
+      <div><span>Filled Amount</span><strong>${escapeHtml(String(trace.filledAmount || "-"))}</strong></div>
+      <div><span>Average Entry</span><strong>${escapeHtml(String(trace.averageEntry || "-"))}</strong></div>
+      <div><span>Stop Loss</span><strong>${escapeHtml(String(trace.stopLoss || "-"))}</strong></div>
+      <div><span>Take Profit</span><strong>${escapeHtml(String(trace.takeProfit || "-"))}</strong></div>
+      <div><span>Hold Horizon</span><strong>${escapeHtml(String(trace.holdHorizon || "-"))}</strong></div>
+      <div><span>Current PnL</span><strong>${escapeHtml(String(trace.currentPnl || "-"))}</strong></div>
+    `;
+  }
+
+  if (agentModeView) agentModeView.value = PAPER_ONLY_MODE ? "Paper runtime" : "Live guarded runtime";
+  if (agentTrailingPreview) agentTrailingPreview.textContent = `${formatNumber(Number(engineTrailingInput?.value || CORE_ENGINE_PROFILE.trailingStopPct), 1)}%`;
+  if (agentOpenSlotsPreview) agentOpenSlotsPreview.textContent = String(CORE_ENGINE_PROFILE.maxOpenPositions);
+  if (agentHaltState) agentHaltState.textContent = agentTradeState.emergencyStopEnabled ? "Engaged" : "Armed";
+  if (agentProviderTag) agentProviderTag.textContent = missionModel.providerLabel || "Mission runtime";
+  if (agentProviderBadge) {
+    agentProviderBadge.textContent = missionModel.providerLabel || "Mission runtime";
+    agentProviderBadge.className = `agent-provider-badge ${missionModel.provider === "openclaw" ? "openclaw" : "legacy"}`;
+  }
+  if (agentAdvancedDrawer) agentAdvancedDrawer.open = Boolean(agentTradeState.advancedOpen);
+
+  if (agentPriceStripPrice) {
+    const openPrice = Number(agentTradeState.position?.lastPriceUsd || agentTradeState.position?.entryPriceUsd || view?.price || 0);
+    agentPriceStripPrice.textContent = openPrice > 0 ? formatPrice(openPrice) : "$0.00";
+  }
+  if (agentPriceStripContext) {
+    if (agentTradeState.position) {
+      agentPriceStripContext.textContent = `Live pulse locked on active position. Time open ${formatDurationSince(agentTradeState.position.opened_at)}.`;
+    } else if (view?.regime) {
+      agentPriceStripContext.textContent = `${view.regime}${view.regimeTimeframe ? ` (${view.regimeTimeframe})` : ""} | ${view.note}`;
+    } else {
+      agentPriceStripContext.textContent = "No active market pulse yet.";
+    }
+  }
+
+  renderAgentActivityFeed();
+}
+
+function updateAgentTradeState(patch = {}) {
+  const nextMissionModel =
+    patch.missionModel === undefined
+      ? agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)
+      : {
+          ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+          ...(patch.missionModel || {})
+        };
+  const nextActivity =
+    patch.activity !== undefined
+      ? patch.activity
+      : Array.isArray(patch.missionModel?.activity)
+        ? patch.missionModel.activity
+        : agentTradeState.activity;
+  agentTradeState = {
+    ...agentTradeState,
+    ...patch,
+    activity: nextActivity,
+    missionModel: nextMissionModel,
+    executionTrace: {
+      ...(agentTradeState.executionTrace || DEFAULT_AGENT_MISSION_STATE.executionTrace),
+      ...(patch.executionTrace || {})
+    }
+  };
+  renderAgentMissionConsole();
+}
+
+function formatDurationSince(value) {
+  const ts = Date.parse(String(value || ""));
+  if (!Number.isFinite(ts)) return "n/a";
+  const elapsed = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  const minutes = Math.floor(elapsed / 60);
+  const seconds = elapsed % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const remMinutes = minutes % 60;
+    return `${hours}h ${remMinutes}m`;
+  }
+  return `${minutes}m ${seconds}s`;
 }
 
 function renderPaperSessionTiming() {
@@ -2558,6 +3098,9 @@ function syncPaperConfigUi(config) {
   if (paperBudgetInput && Number.isFinite(Number(config.paperBudgetUsd))) {
     paperBudgetInput.value = String(config.paperBudgetUsd);
   }
+  updateAgentTradeState({
+    budgetUsd: Number(paperBudgetInput?.value || config.paperBudgetUsd || agentTradeState.budgetUsd || 100)
+  });
 }
 
 function readPaperConfigFromUi() {
@@ -2601,6 +3144,10 @@ function stopPaperLoop() {
   }
   renderPaperSessionTiming();
   setPaperStatus("Idle");
+  updateAgentTradeState({
+    missionStatus: agentTradeState.emergencyStopEnabled ? "halted" : (wasRunning ? "exited" : agentTradeState.missionStatus),
+    isExecuteLoading: false
+  });
 }
 
 function buildProjectedPnl(decision) {
@@ -2915,6 +3462,9 @@ function syncEngineConfigUi(config) {
   if (engineHoldMinutesInput) engineHoldMinutesInput.value = String(CORE_ENGINE_PROFILE.maxHoldMinutes);
   if (engineCooldownInput) engineCooldownInput.value = String(CORE_ENGINE_PROFILE.cooldownSec);
   if (enginePollInput) enginePollInput.value = String(config.pollIntervalSec ?? paperIntervalInput?.value ?? 30);
+  updateAgentTradeState({
+    budgetUsd: Number(config.paperBudgetUsd || paperBudgetInput?.value || 100)
+  });
 }
 
 function readEngineConfigFromUi() {
@@ -3042,64 +3592,80 @@ function renderEnginePositions(positions = []) {
   const rows = Array.isArray(positions) ? positions : [];
   latestEngineOpenPositions = rows.slice();
   if (!rows.length) {
-    engineOpenPositions.innerHTML = `<div class="msg">No open positions.</div>`;
+    engineOpenPositions.innerHTML = `<div class="agent-live-position-empty">No live paper position. AIG is waiting for a valid mission entry.</div>`;
+    updateAgentTradeState({
+      position: null,
+      missionStatus: agentTradeState.emergencyStopEnabled ? "halted" : (paperTradeTimer ? "monitoring" : "exited"),
+      missionModel: {
+        ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+        ...getActiveAgentProvider().normalizePositionsResponse(rows)
+      },
+      executionTrace: {
+        currentPnl: "-",
+        submitted: agentTradeState.executionTrace?.submitted || "No live fill"
+      }
+    });
     renderTradeActivityVisualization();
     return;
   }
 
+  const row = rows[0];
+  const tokenMeta = getTokenMetaForMint(String(row.mint || ""), row.token || null);
+  const targetSell = firstPrice([row.targetSellPriceUsd, Number(row.entryPriceUsd || 0) * (1 + Number(row.tpPct || 0) / 100)]);
+  const stopLoss = firstPrice([row.stopLossPriceUsd, Number(row.entryPriceUsd || 0) * (1 - Number(row.slPct || 0) / 100)]);
   engineOpenPositions.innerHTML = `
-    <table class="paper-results-table">
-      <thead>
-        <tr>
-          <th>Token</th>
-          <th>Mode</th>
-          <th>Entry</th>
-          <th>Target Sell</th>
-          <th>Stop Loss</th>
-          <th>Current</th>
-          <th>Size</th>
-          <th>PnL %</th>
-          <th>Opened</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows
-          .map((row) => {
-            const tokenMeta = getTokenMetaForMint(String(row.mint || ""), row.token || null);
-            const targetSell = firstPrice([row.targetSellPriceUsd, Number(row.entryPriceUsd || 0) * (1 + Number(row.tpPct || 0) / 100)]);
-            const stopLoss = firstPrice([row.stopLossPriceUsd, Number(row.entryPriceUsd || 0) * (1 - Number(row.slPct || 0) / 100)]);
-            return `
-          <tr>
-            <td>
-              <div class="paper-token-cell">
-                ${avatarHtml(tokenMeta, "token-avatar small")}
-                <div>
-                  <strong>${escapeHtml(tokenMeta.symbol || "N/A")}</strong>
-                  <span>${escapeHtml(shortMint(row.mint || "", 6, 6))}</span>
-                </div>
-              </div>
-            </td>
-            <td>${escapeHtml(row.mode || "paper")}</td>
-            <td>${formatPrice(row.entryPriceUsd || 0)}</td>
-            <td>${targetSell ? formatPrice(targetSell) : "N/A"}</td>
-            <td>${stopLoss ? formatPrice(stopLoss) : "N/A"}</td>
-            <td>${formatPrice(row.lastPriceUsd || 0)}</td>
-            <td>${formatUsd(row.sizeUsd || 0)}</td>
-            <td>${row.pnlPct === null || row.pnlPct === undefined ? "-" : formatPct(row.pnlPct || 0, 2)}</td>
-            <td>${escapeHtml(new Date(row.opened_at).toLocaleTimeString())}</td>
-          </tr>
-        `;
-          })
-          .join("")}
-      </tbody>
-    </table>
+    <article class="agent-live-position-card is-active">
+      <div class="agent-live-position-head">
+        <div class="paper-token-cell">
+          ${avatarHtml(tokenMeta, "token-avatar small")}
+          <div>
+            <strong>${escapeHtml(tokenMeta.symbol || "N/A")}</strong>
+            <span>${escapeHtml(shortMint(row.mint || "", 6, 6))}</span>
+          </div>
+        </div>
+        <span class="pill caution">${escapeHtml(String(row.mode || "paper").toUpperCase())}</span>
+      </div>
+      <div class="agent-live-position-grid">
+        <div><span>Entry</span><strong>${formatPrice(row.entryPriceUsd || 0)}</strong></div>
+        <div><span>Current Price</span><strong>${formatPrice(row.lastPriceUsd || 0)}</strong></div>
+        <div><span>Position Size</span><strong>${formatUsd(row.sizeUsd || 0)}</strong></div>
+        <div><span>Value</span><strong>${formatUsd((Number(row.lastPriceUsd || 0) / Math.max(Number(row.entryPriceUsd || 1), 0.000000001)) * Number(row.sizeUsd || 0))}</strong></div>
+        <div><span>Unrealized PnL</span><strong class="${Number(row.pnlPct || 0) >= 0 ? "flow-positive" : "flow-negative"}">${row.pnlPct === null || row.pnlPct === undefined ? "-" : formatPct(row.pnlPct || 0, 2)}</strong></div>
+        <div><span>Status</span><strong>${Number(row.pnlPct || 0) >= 0 ? "In profit" : "Under pressure"}</strong></div>
+        <div><span>Take Profit</span><strong>${targetSell ? formatPrice(targetSell) : "N/A"}</strong></div>
+        <div><span>Stop Loss</span><strong>${stopLoss ? formatPrice(stopLoss) : "N/A"}</strong></div>
+        <div><span>Time Open</span><strong>${formatDurationSince(row.opened_at)}</strong></div>
+      </div>
+    </article>
   `;
+  const missionModel = getActiveAgentProvider().normalizePositionsResponse(rows);
+  updateAgentTradeState({
+    position: row,
+    missionStatus: "monitoring",
+    missionModel,
+    executionTrace: {
+      submitted: "Confirmed",
+      txHash: "paper-fill",
+      filledAmount: formatUsd(row.sizeUsd || 0),
+      averageEntry: formatPrice(row.entryPriceUsd || 0),
+      stopLoss: stopLoss ? formatPrice(stopLoss) : "N/A",
+      takeProfit: targetSell ? formatPrice(targetSell) : "N/A",
+      holdHorizon: `${formatNumber(CORE_ENGINE_PROFILE.maxHoldMinutes, 0)}m max hold`,
+      currentPnl: row.pnlPct === null || row.pnlPct === undefined ? "-" : formatPct(row.pnlPct || 0, 2)
+    }
+  });
   renderTradeActivityVisualization();
 }
 
 function resetTradeActivity() {
   tradeActivityEvents = [];
   tradeActivitySystemNotes = [];
+  agentTradeState.activity = [];
+  agentTradeState.missionModel = {
+    ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+    activity: []
+  };
+  renderAgentActivityFeed();
   renderTradeActivityVisualization();
 }
 
@@ -3148,6 +3714,11 @@ function pushTradeActionEvents(actions = [], context = {}) {
         pnlPct: null,
         note
       });
+      recordAgentActivity("Paper execution confirmed. AIG opened a managed position.", "ok", {
+        title: "Position Opened",
+        ts: baseTs,
+        meta: mint ? `${shortMint(mint, 6, 6)} | ${formatUsd(Number(action?.sizeUsd || 0))}` : ""
+      });
       continue;
     }
     if (type === "CLOSE") {
@@ -3175,6 +3746,11 @@ function pushTradeActionEvents(actions = [], context = {}) {
             : Number(action?.realizedAfterCostsPct || 0),
         note
       });
+      recordAgentActivity("Position closed and archived in the execution trace.", Number(realized) >= 0 ? "ok" : "error", {
+        title: "Position Closed",
+        ts: baseTs,
+        meta: mint ? `${shortMint(mint, 6, 6)} | ${formatPct(realized, 2)}` : ""
+      });
       continue;
     }
     if (type === "INFO" || type === "ERROR") {
@@ -3184,6 +3760,11 @@ function pushTradeActionEvents(actions = [], context = {}) {
         level: type,
         mint,
         note: note || String(action?.note || action?.reason || "engine update")
+      });
+      recordAgentActivity(note || String(action?.note || action?.reason || "engine update"), type === "ERROR" ? "error" : "info", {
+        title: type === "ERROR" ? "Engine Alert" : "Engine Update",
+        ts: baseTs,
+        meta: mint ? shortMint(mint, 6, 6) : ""
       });
       continue;
     }
@@ -3411,6 +3992,11 @@ function renderAgentScannerSummary(decisions = [], context = {}) {
   if (!primary) {
     agentScannerSummary.innerHTML =
       `<div class="msg">No scanner report yet. Run Test to generate the latest AIG Core paper-trading analysis for your saved token.</div>`;
+    updateAgentTradeState({
+      preview: null,
+      decision: null,
+      missionModel: createEmptyMissionModel(getActiveAgentProvider().id)
+    });
     return;
   }
 
@@ -3426,6 +4012,39 @@ function renderAgentScannerSummary(decisions = [], context = {}) {
     appendAgentPricePoint(marketPrice, Date.parse(ts) || Date.now());
     renderAgentPriceGraph();
   }
+
+  const missionModel = getActiveAgentProvider().normalizePaperCycle({
+    runResponse: { decisions: [primary], ts },
+    engineResponse: { positions: { open: latestEngineOpenPositions }, actions: [], ts },
+    mint: preferredMint || primary.mint
+  });
+  updateAgentTradeState({
+    preview: primary,
+    decision: primary,
+    missionStatus: missionModel.missionStatus,
+    missionModel,
+    error: null,
+    executionTrace: {
+      previewState: missionModel.executionTrace.previewState || "Plan ready",
+      submitted: missionModel.executionTrace.submitted || "Awaiting Let AI Trade",
+      txHash: missionModel.executionTrace.txHash || "-",
+      filledAmount:
+        missionModel.executionTrace.filledAmount === null || missionModel.executionTrace.filledAmount === undefined
+          ? formatUsd(primary?.maxPositionUsd || paperMaxPositionInput?.value || 0)
+          : formatUsd(missionModel.executionTrace.filledAmount),
+      averageEntry:
+        missionModel.executionTrace.averageEntry
+          ? formatPrice(missionModel.executionTrace.averageEntry)
+          : `${formatPrice(tradePlan.buyZone?.low)} - ${formatPrice(tradePlan.buyZone?.high)}`,
+      stopLoss: missionModel.executionTrace.stopLoss ? formatPrice(missionModel.executionTrace.stopLoss) : formatPrice(tradePlan.stopLoss),
+      takeProfit: missionModel.executionTrace.takeProfit ? formatPrice(missionModel.executionTrace.takeProfit) : formatPrice((tradePlan.resistance || [])[0]),
+      holdHorizon: missionModel.executionTrace.holdHorizon || missionModel.thesis?.holdHorizon || "Adaptive",
+      currentPnl:
+        missionModel.executionTrace.currentPnlPct === null || missionModel.executionTrace.currentPnlPct === undefined
+          ? "-"
+          : formatPct(missionModel.executionTrace.currentPnlPct, 2)
+    }
+  });
 
   agentScannerSummary.innerHTML = `
     <div class="agent-scan-summary">
@@ -3521,6 +4140,19 @@ async function loadEnginePositions() {
   if (!authToken) return;
   const response = await api("/api/autotrade/positions?status=OPEN", null, true, "GET");
   renderEnginePositions(response.positions || []);
+  try {
+    const missionState = await getActiveAgentProvider().getMissionState({
+      workspaceId: resolveAgentTargetMint({ notify: false }) || ""
+    });
+    if (missionState?.mission) {
+      updateAgentTradeState({
+        missionModel: {
+          ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+          ...missionState.mission
+        }
+      });
+    }
+  } catch {}
 }
 
 function setRealtimeMonitorStatus(text, tone = "") {
@@ -3533,6 +4165,7 @@ async function runRealtimeMonitorTick() {
   if (!authToken || realtimeMonitorInFlight) return;
   realtimeMonitorInFlight = true;
   try {
+    updateAgentTradeState({ missionStatus: "monitoring" });
     const response = await api(
       "/api/autotrade/monitor",
       {
@@ -3548,6 +4181,19 @@ async function runRealtimeMonitorTick() {
       ts: response.ts || new Date().toISOString(),
       mode: response.mode || "paper"
     });
+    let monitorMission = getActiveAgentProvider().normalizeMonitorResponse(response);
+    try {
+      const monitorState = await getActiveAgentProvider().getActivity({
+        workspaceId: resolveAgentTargetMint({ notify: false }) || ""
+      });
+      monitorMission = monitorState?.mission || monitorMission;
+    } catch {}
+    updateAgentTradeState({
+      missionModel: {
+        ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+        ...monitorMission
+      }
+    });
     const ts = new Date(response.ts || Date.now()).toLocaleTimeString();
     setRealtimeMonitorStatus(
       `Realtime monitor ${ts}: open ${formatNumber(response.openCount || 0, 0)}, sweeps ${formatNumber(
@@ -3560,6 +4206,10 @@ async function runRealtimeMonitorTick() {
       "ok"
     );
   } catch (error) {
+    updateAgentTradeState({
+      missionStatus: "halted",
+      error: friendlyErrorMessage(error, "refresh monitor")
+    });
     setRealtimeMonitorStatus(friendlyErrorMessage(error, "refresh monitor"), "error");
   } finally {
     realtimeMonitorInFlight = false;
@@ -3595,6 +4245,147 @@ function stopEngineLoop() {
   }
   stopRealtimeMonitor();
   if (engineSummary) engineSummary.textContent = "Engine idle.";
+}
+
+async function previewAgentMission() {
+  if (!ensureWalletConnected("preview AIG mission")) return;
+  const mint = resolveAgentTargetMint({ notify: true });
+  if (!mint) return;
+  setButtonBusy(agentPreviewPlanButton, true, "Previewing...");
+  updateAgentTradeState({
+    missionStatus: "planning",
+    isPreviewLoading: true,
+    error: null
+  });
+  blockFullscreenUi("Building AI mission preview...");
+  try {
+    const { raw, mission } = await getActiveAgentProvider().previewMission({
+      workspaceId: mint,
+      mint,
+      budgetUsd: Number(paperBudgetInput?.value || agentTradeState.budgetUsd || 100)
+    });
+    cacheTokenMeta(raw?.signal?.token || null, mint);
+    const previewDecision = raw?.signal
+      ? {
+          ...raw.signal,
+          mint,
+          signalStatus: String(raw.signal.status || "CAUTION"),
+          decision: String(raw.signal.status || "").toUpperCase() === "FAVORABLE" ? "BUY_CANDIDATE" : "SKIP",
+          confidence: Number(raw.signal.confidence ?? raw.signal.killSwitch?.confidence ?? 0),
+          patternScore: Number(raw.signal.patternScore || 0),
+          token: raw.signal.token || null
+        }
+      : null;
+    if (previewDecision) {
+      renderAgentScannerSummary([previewDecision], { ts: new Date().toISOString() });
+    }
+    updateAgentTradeState({
+      preview: raw?.signal || null,
+      decision: previewDecision,
+      missionStatus: mission.missionStatus,
+      missionModel: mission,
+      isPreviewLoading: false,
+      executionTrace: {
+        previewState: mission.executionTrace.previewState || "Preview ready",
+        submitted: "Awaiting Let AI Trade",
+        txHash: "-",
+        filledAmount: formatUsd(Number(paperMaxPositionInput?.value || 0)),
+        averageEntry: mission.thesis.entryLow || mission.thesis.entryHigh ? `${formatPrice(mission.thesis.entryLow)} - ${formatPrice(mission.thesis.entryHigh)}` : "-",
+        stopLoss: mission.thesis.stopLoss ? formatPrice(mission.thesis.stopLoss) : "-",
+        takeProfit: mission.thesis.takeProfit ? formatPrice(mission.thesis.takeProfit) : "-",
+        holdHorizon: mission.thesis.holdHorizon || "Adaptive",
+        currentPnl: "-"
+      }
+    });
+  } catch (error) {
+    updateAgentTradeState({
+      missionStatus: "halted",
+      isPreviewLoading: false,
+      error: friendlyErrorMessage(error, "preview AIG mission")
+    });
+    notifyActionError(error, "preview AIG mission");
+  } finally {
+    unblockFullscreenUi();
+    setButtonBusy(agentPreviewPlanButton, false);
+  }
+}
+
+async function closeAgentPosition() {
+  if (!ensureWalletConnected("close active position")) return;
+  const currentPosition = latestEngineOpenPositions[0];
+  if (!currentPosition) {
+    pushMessage("No active paper position to close.", "info");
+    return;
+  }
+  setButtonBusy(agentClosePositionButton, true, "Closing...");
+  blockFullscreenUi("Closing active paper position...");
+  try {
+    const { mission } = await getActiveAgentProvider().closePosition({
+      workspaceId: currentPosition.mint,
+      positionId: currentPosition.id,
+      mint: currentPosition.mint
+    });
+    stopRealtimeMonitor();
+    await loadEnginePositions();
+    await loadPaperPerformance();
+    updateAgentTradeState({
+      missionStatus: "exited",
+      missionModel: {
+        ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+        ...mission
+      },
+      position: null,
+      executionTrace: {
+        submitted: "Closed by operator",
+        txHash: "manual-close",
+        currentPnl: "-"
+      }
+    });
+  } catch (error) {
+    updateAgentTradeState({
+      missionStatus: "halted",
+      error: friendlyErrorMessage(error, "close active position")
+    });
+    notifyActionError(error, "close active position");
+  } finally {
+    unblockFullscreenUi();
+    setButtonBusy(agentClosePositionButton, false);
+  }
+}
+
+async function haltAgentMission() {
+  if (!ensureWalletConnected("halt mission")) return;
+  setButtonBusy(agentEmergencyHaltButton, true, "Halting...");
+  blockFullscreenUi("Engaging emergency halt...");
+  try {
+    stopPaperLoop();
+    stopEngineLoop();
+    const { mission } = await getActiveAgentProvider().haltMission({
+      workspaceId: resolveAgentTargetMint({ notify: false }) || ""
+    });
+    updateAgentTradeState({
+      missionStatus: "halted",
+      emergencyStopEnabled: true,
+      missionModel: {
+        ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+        ...mission
+      },
+      executionTrace: {
+        submitted: "Halt engaged"
+      }
+    });
+    pushMessage("Emergency halt engaged. Agent execution is disabled until re-armed.", "error");
+  } catch (error) {
+    updateAgentTradeState({
+      missionStatus: "halted",
+      emergencyStopEnabled: true,
+      error: friendlyErrorMessage(error, "halt mission")
+    });
+    notifyActionError(error, "halt mission");
+  } finally {
+    unblockFullscreenUi();
+    setButtonBusy(agentEmergencyHaltButton, false);
+  }
 }
 
 async function runEngineTickOnce(options = {}) {
@@ -3800,6 +4591,11 @@ async function runPaperTradeOnce(options = {}) {
   }
   const initial = Boolean(options.initial);
   paperRunInFlight = true;
+  updateAgentTradeState({
+    missionStatus: initial ? "evaluating" : "executing",
+    isExecuteLoading: true,
+    error: null
+  });
   setPaperStatus("Running", "busy");
   try {
     const selectedModel = CORE_AGENT_MODEL_KEY;
@@ -3891,6 +4687,11 @@ async function runPaperTradeOnce(options = {}) {
       }
     }
     if (savedConfig) syncPaperConfigUi(savedConfig);
+    const missionModel = getActiveAgentProvider().normalizePaperCycle({
+      runResponse: mergedResponse,
+      engineResponse: engineAggregate,
+      mint: agentMints[0]
+    });
     paperRunHistory.unshift(mergedResponse);
     paperRunHistory = paperRunHistory.slice(0, 20);
     renderPaperResults(mergedResponse);
@@ -3899,6 +4700,14 @@ async function runPaperTradeOnce(options = {}) {
       mode: "paper"
     });
     renderAgentScannerSummary(mergedResponse.decisions || [], { ts: mergedResponse.ts });
+    updateAgentTradeState({
+      missionModel: {
+        ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+        ...missionModel
+      },
+      missionStatus: missionModel.livePosition ? "monitoring" : missionModel.missionStatus,
+      isExecuteLoading: false
+    });
     evaluateSignalAlerts(buildAlertItemsFromDecisions(mergedResponse.decisions || []));
     renderEnginePositions(engineAggregate.positions?.open || []);
     try {
@@ -3940,6 +4749,11 @@ async function runPaperTradeOnce(options = {}) {
     } else {
       notifyActionError(error, "run paper test");
     }
+    updateAgentTradeState({
+      missionStatus: "halted",
+      isExecuteLoading: false,
+      error: friendlyErrorMessage(error, "run paper test")
+    });
     return false;
   } finally {
     paperRunInFlight = false;
@@ -3961,6 +4775,16 @@ async function startPaperLoop() {
     renderPaperSessionTiming();
     await resetPaperPerformance({ silent: true });
     await savePaperConfig({ forceEnabled: true, silent: true });
+    updateAgentTradeState({
+      missionStatus: "planning",
+      isExecuteLoading: true,
+      emergencyStopEnabled: false,
+      error: null
+    });
+    recordAgentActivity("Budget locked. AIG is evaluating the mission and preparing the first cycle.", "info", {
+      title: "Mission Started",
+      meta: `${formatUsd(Number(paperBudgetInput?.value || 0))} budget`
+    });
     const intervalSec = Math.max(10, Number(paperIntervalInput?.value || 30));
     const ok = await runPaperTradeOnce({ initial: true, agentMints });
     if (!ok) {
@@ -3979,6 +4803,10 @@ async function startPaperLoop() {
     startRealtimeMonitor("paper");
     startAgentPriceMonitor();
     setPaperStatus("Running", "ok");
+    updateAgentTradeState({
+      missionStatus: "monitoring",
+      isExecuteLoading: false
+    });
     pushMessage(`Test mode running every ${intervalSec}s on ${agentMints.length} token(s)`, "ok");
   } catch (error) {
     if (paperSessionStartedAt && !paperSessionStoppedAt) {
@@ -3986,6 +4814,11 @@ async function startPaperLoop() {
       renderPaperSessionTiming();
     }
     setPaperStatus("Idle");
+    updateAgentTradeState({
+      missionStatus: "halted",
+      isExecuteLoading: false,
+      error: friendlyErrorMessage(error, "start paper test loop")
+    });
     notifyActionError(error, "start paper test loop");
   } finally {
     setButtonBusy(paperStartLoopButton, false);
@@ -4934,6 +5767,15 @@ agentRunTestButton?.addEventListener("click", async () => {
     setButtonBusy(agentRunTestButton, false);
   }
 });
+agentPreviewPlanButton?.addEventListener("click", async () => {
+  await previewAgentMission();
+});
+agentClosePositionButton?.addEventListener("click", async () => {
+  await closeAgentPosition();
+});
+agentEmergencyHaltButton?.addEventListener("click", async () => {
+  await haltAgentMission();
+});
 agentRunLiveButton?.addEventListener("click", async () => {
   setButtonBusy(agentRunLiveButton, true, "Running...");
   try {
@@ -4955,6 +5797,16 @@ tradeActivityClearButton?.addEventListener("click", () => {
 });
 agentSaveTargetButton?.addEventListener("click", () => {
   saveAgentTargetMint({ notify: true });
+});
+paperBudgetInput?.addEventListener("input", () => {
+  updateAgentTradeState({
+    budgetUsd: Number(paperBudgetInput.value || agentTradeState.budgetUsd || 100)
+  });
+});
+agentAdvancedDrawer?.addEventListener("toggle", () => {
+  updateAgentTradeState({
+    advancedOpen: Boolean(agentAdvancedDrawer.open)
+  });
 });
 agentTargetMintInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -5059,6 +5911,7 @@ setPaperStatus("Idle");
 if (engineSummary) engineSummary.textContent = "Engine idle.";
 syncAgentTargetMintUi();
 renderPaperSessionTiming();
+renderAgentMissionConsole();
 setAgentPriceStatus(agentTargetMint ? "Idle" : "Idle");
 applySavedOperatingPreset();
 applySavedPaperTestModel();
