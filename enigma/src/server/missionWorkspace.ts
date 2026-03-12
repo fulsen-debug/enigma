@@ -117,6 +117,30 @@ export function loadMissionWorkspaceSnapshot(userId: number, workspaceId: string
   };
 }
 
+export function loadMissionSessionSnapshot(userId: number, sessionId: string): MissionSnapshot | null {
+  const session = getMissionSessionById(userId, sessionId);
+  if (!session) return null;
+  const mission = parseJsonObject<MissionModel>(session.missionJson, null as unknown as MissionModel);
+  const workspaceArtifacts = Object.fromEntries(
+    listMissionWorkspaceFiles(userId, session.workspaceId).map((entry) => [entry.fileName, entry.content])
+  );
+  const activity = listActivityForSnapshot(userId, session.workspaceId, session.sessionId);
+  if (mission) {
+    mission.activity = activity;
+    mission.sessionId = session.sessionId;
+  }
+  return {
+    workspaceId: session.workspaceId,
+    provider: session.provider,
+    sessionId: session.sessionId,
+    budgetUsd: Number(session.budgetUsd || 0),
+    mission,
+    workspaceArtifacts,
+    activity,
+    updatedAt: session.updated_at || null
+  };
+}
+
 function broadcastMissionSnapshot(userId: number, workspaceId: string, snapshot: MissionSnapshot) {
   const channel = missionStreamSubscribers.get(missionStreamKey(userId, workspaceId));
   if (!channel?.size) return;
@@ -127,11 +151,65 @@ function broadcastMissionSnapshot(userId: number, workspaceId: string, snapshot:
   }
 }
 
+function broadcastMissionStructuredEvents(
+  userId: number,
+  workspaceId: string,
+  previousSnapshot: MissionSnapshot | null,
+  snapshot: MissionSnapshot
+) {
+  const channel = missionStreamSubscribers.get(missionStreamKey(userId, workspaceId));
+  if (!channel?.size) return;
+  const write = (event: string, payload: Record<string, unknown>) => {
+    const serialized = JSON.stringify(payload);
+    for (const subscriber of channel.values()) {
+      subscriber.res.write(`event: ${event}\n`);
+      subscriber.res.write(`data: ${serialized}\n\n`);
+    }
+  };
+
+  if ((previousSnapshot?.sessionId || null) !== (snapshot.sessionId || null) && snapshot.sessionId) {
+    write("session", {
+      type: "session",
+      workspaceId,
+      sessionId: snapshot.sessionId,
+      provider: snapshot.provider,
+      budgetUsd: snapshot.budgetUsd,
+      ts: snapshot.updatedAt
+    });
+  }
+
+  const previousStatus = String(previousSnapshot?.mission?.missionStatus || "");
+  const nextStatus = String(snapshot.mission?.missionStatus || "");
+  if (nextStatus && previousStatus !== nextStatus) {
+    write("status", {
+      type: "status",
+      workspaceId,
+      sessionId: snapshot.sessionId,
+      missionStatus: nextStatus,
+      ts: snapshot.updatedAt
+    });
+  }
+
+  const previousKeys = new Set(
+    (previousSnapshot?.activity || []).map((item) => buildEventKey(item))
+  );
+  const appended = (snapshot.activity || []).filter((item) => !previousKeys.has(buildEventKey(item)));
+  for (const item of appended) {
+    write("activity", {
+      type: "activity",
+      workspaceId,
+      sessionId: snapshot.sessionId,
+      activity: item
+    });
+  }
+}
+
 export function syncMissionWorkspace(input: MissionSyncInput): MissionSnapshot {
   const workspaceId = String(input.workspaceId || "").trim();
   if (!workspaceId) {
     throw new Error("workspaceId is required");
   }
+  const previousSnapshot = loadMissionWorkspaceSnapshot(input.userId, workspaceId);
   const mission = {
     ...(input.mission || {})
   };
@@ -188,6 +266,7 @@ export function syncMissionWorkspace(input: MissionSyncInput): MissionSnapshot {
   }
 
   const snapshot = loadMissionWorkspaceSnapshot(input.userId, workspaceId);
+  broadcastMissionStructuredEvents(input.userId, workspaceId, previousSnapshot, snapshot);
   broadcastMissionSnapshot(input.userId, workspaceId, snapshot);
   return snapshot;
 }

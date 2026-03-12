@@ -143,6 +143,7 @@ const KOBX_BUY_URL = `https://pump.fun/coin/${KOBX_MINT}`;
 const PAPER_RUN_MAX_MINUTES = 8;
 const OPENCLAW_PROVIDER_ENABLED =
   localStorage.getItem("enigma_agent_provider") !== "legacy-paper";
+const AGENT_MISSION_SESSION_KEY = "enigma_agent_session_id";
 
 let authToken = "";
 let userWallet = localStorage.getItem("enigma_wallet") || "";
@@ -303,27 +304,93 @@ function stopAgentMissionStream() {
   agentMissionStreamWorkspaceId = "";
 }
 
+function saveAgentMissionSessionId(sessionId) {
+  const normalized = String(sessionId || "").trim();
+  if (!normalized) {
+    localStorage.removeItem(AGENT_MISSION_SESSION_KEY);
+    return;
+  }
+  localStorage.setItem(AGENT_MISSION_SESSION_KEY, normalized);
+}
+
+function getStoredAgentMissionSessionId() {
+  return String(localStorage.getItem(AGENT_MISSION_SESSION_KEY) || "").trim();
+}
+
+function appendAgentMissionActivity(item) {
+  if (!item || typeof item !== "object") return;
+  const current = Array.isArray(agentTradeState.activity) ? agentTradeState.activity : [];
+  const next = [item, ...current].filter(Boolean).slice(0, 40);
+  updateAgentTradeState({
+    activity: next,
+    missionModel: {
+      ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+      activity: next
+    }
+  });
+}
+
 function applyMissionStreamSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return;
   const missionModel = snapshot.mission || null;
   if (!missionModel) return;
+  const normalizedMissionModel = {
+    ...missionModel,
+    sessionId: snapshot.sessionId || missionModel.sessionId || null
+  };
+  saveAgentMissionSessionId(normalizedMissionModel.sessionId);
   updateAgentTradeState({
-    missionStatus: missionModel.missionStatus || agentTradeState.missionStatus,
-    missionModel,
-    activity: Array.isArray(snapshot.activity) ? snapshot.activity : missionModel.activity || [],
-    position: missionModel.livePosition || null,
+    missionStatus: normalizedMissionModel.missionStatus || agentTradeState.missionStatus,
+    missionModel: normalizedMissionModel,
+    activity: Array.isArray(snapshot.activity) ? snapshot.activity : normalizedMissionModel.activity || [],
+    position: normalizedMissionModel.livePosition || null,
     executionTrace: {
-      previewState: missionModel.executionTrace?.previewState || agentTradeState.executionTrace.previewState,
-      submitted: missionModel.executionTrace?.submitted || agentTradeState.executionTrace.submitted,
-      txHash: missionModel.executionTrace?.txHash || agentTradeState.executionTrace.txHash,
-      filledAmount: missionModel.executionTrace?.filledAmount ?? agentTradeState.executionTrace.filledAmount,
-      averageEntry: missionModel.executionTrace?.averageEntry ?? agentTradeState.executionTrace.averageEntry,
-      stopLoss: missionModel.executionTrace?.stopLoss ?? agentTradeState.executionTrace.stopLoss,
-      takeProfit: missionModel.executionTrace?.takeProfit ?? agentTradeState.executionTrace.takeProfit,
-      holdHorizon: missionModel.executionTrace?.holdHorizon || agentTradeState.executionTrace.holdHorizon,
-      currentPnl: missionModel.executionTrace?.currentPnlPct ?? agentTradeState.executionTrace.currentPnl
+      previewState: normalizedMissionModel.executionTrace?.previewState || agentTradeState.executionTrace.previewState,
+      submitted: normalizedMissionModel.executionTrace?.submitted || agentTradeState.executionTrace.submitted,
+      txHash: normalizedMissionModel.executionTrace?.txHash || agentTradeState.executionTrace.txHash,
+      filledAmount: normalizedMissionModel.executionTrace?.filledAmount ?? agentTradeState.executionTrace.filledAmount,
+      averageEntry: normalizedMissionModel.executionTrace?.averageEntry ?? agentTradeState.executionTrace.averageEntry,
+      stopLoss: normalizedMissionModel.executionTrace?.stopLoss ?? agentTradeState.executionTrace.stopLoss,
+      takeProfit: normalizedMissionModel.executionTrace?.takeProfit ?? agentTradeState.executionTrace.takeProfit,
+      holdHorizon: normalizedMissionModel.executionTrace?.holdHorizon || agentTradeState.executionTrace.holdHorizon,
+      currentPnl: normalizedMissionModel.executionTrace?.currentPnlPct ?? agentTradeState.executionTrace.currentPnl
     }
   });
+}
+
+function applyMissionStreamSessionEvent(payload) {
+  if (!payload || typeof payload !== "object") return;
+  saveAgentMissionSessionId(payload.sessionId);
+  if (payload.sessionId) {
+    updateAgentTradeState({
+      missionModel: {
+        ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+        sessionId: payload.sessionId
+      }
+    });
+  }
+}
+
+function applyMissionStreamStatusEvent(payload) {
+  if (!payload || typeof payload !== "object") return;
+  const nextStatus = String(payload.missionStatus || "").trim().toLowerCase();
+  if (!nextStatus) return;
+  updateAgentTradeState({
+    missionStatus: nextStatus,
+    missionModel: {
+      ...(agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id)),
+      missionStatus: nextStatus,
+      sessionId: payload.sessionId || agentTradeState.missionModel?.sessionId || null
+    }
+  });
+}
+
+function applyMissionStreamActivityEvent(payload) {
+  if (!payload || typeof payload !== "object" || !payload.activity) return;
+  if (payload.sessionId) {
+    saveAgentMissionSessionId(payload.sessionId);
+  }
+  appendAgentMissionActivity(payload.activity);
 }
 
 function startAgentMissionStream(workspaceId) {
@@ -348,6 +415,21 @@ function startAgentMissionStream(workspaceId) {
       }
     } catch {}
   });
+  source.addEventListener("session", (event) => {
+    try {
+      applyMissionStreamSessionEvent(JSON.parse(event.data || "{}"));
+    } catch {}
+  });
+  source.addEventListener("status", (event) => {
+    try {
+      applyMissionStreamStatusEvent(JSON.parse(event.data || "{}"));
+    } catch {}
+  });
+  source.addEventListener("activity", (event) => {
+    try {
+      applyMissionStreamActivityEvent(JSON.parse(event.data || "{}"));
+    } catch {}
+  });
   source.onerror = () => {
     if (agentMissionStream) {
       agentMissionStream.close();
@@ -364,6 +446,33 @@ function startAgentMissionStream(workspaceId) {
     }, 4000);
   };
   agentMissionStream = source;
+}
+
+async function restoreAgentMissionSession(workspaceId) {
+  const sessionId = getStoredAgentMissionSessionId();
+  const normalizedWorkspaceId = String(workspaceId || "").trim();
+  if (!sessionId || !normalizedWorkspaceId || !authToken || getActiveAgentProvider().id !== "openclaw") {
+    return false;
+  }
+  try {
+    const snapshot = await api(
+      `/api/mission/sessions/${encodeURIComponent(sessionId)}`,
+      null,
+      true,
+      "GET"
+    );
+    if (!snapshot || String(snapshot.workspaceId || "") !== normalizedWorkspaceId) {
+      return false;
+    }
+    applyMissionStreamSnapshot(snapshot);
+    return true;
+  } catch (error) {
+    if (Number(error?.status || 0) === 404) {
+      saveAgentMissionSessionId("");
+      return false;
+    }
+    throw error;
+  }
 }
 
 function getPaperTestModelLabel(key) {
@@ -1484,6 +1593,7 @@ function saveAgentTargetMint(options = {}) {
   if (authToken) {
     startAgentPriceMonitor();
     startAgentMissionStream(mints[0]);
+    void restoreAgentMissionSession(mints[0]);
   }
   renderAgentScannerSummary([]);
   return true;
@@ -1819,6 +1929,7 @@ function clearLocalSessionState() {
   userWallet = "";
   userPlan = "free";
   scannerAccessStatus = null;
+  saveAgentMissionSessionId("");
   localStorage.removeItem("enigma_wallet");
   localStorage.removeItem("enigma_plan");
   setAuthState();
@@ -2864,6 +2975,9 @@ function updateAgentTradeState(patch = {}) {
       ...(patch.executionTrace || {})
     }
   };
+  if (nextMissionModel?.sessionId !== undefined) {
+    saveAgentMissionSessionId(nextMissionModel.sessionId);
+  }
   renderAgentMissionConsole();
 }
 
@@ -5753,7 +5867,11 @@ async function connectWallet() {
     await loadEngineConfig();
     applySavedOperatingPreset();
     await loadEnginePositions();
-    startAgentMissionStream(resolveAgentTargetMint({ notify: false }));
+    {
+      const workspaceId = resolveAgentTargetMint({ notify: false });
+      startAgentMissionStream(workspaceId);
+      await restoreAgentMissionSession(workspaceId);
+    }
     profileWorkspaceLoadedAt = 0;
     if (document.body.classList.contains("workspace-profile")) {
       await loadProfileWorkspaceData({ force: true, silent: true });
@@ -5827,7 +5945,11 @@ async function hydrateSession() {
     applySavedOperatingPreset();
     await loadEnginePositions();
     startAgentPriceMonitor();
-    startAgentMissionStream(resolveAgentTargetMint({ notify: false }));
+    {
+      const workspaceId = resolveAgentTargetMint({ notify: false });
+      startAgentMissionStream(workspaceId);
+      await restoreAgentMissionSession(workspaceId);
+    }
     reconnectBackoffMs = 5000;
     reconnectNoticeShown = false;
     setNetworkStatus("Connected", "ok");

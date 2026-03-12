@@ -54,19 +54,56 @@ test("openclaw provider preview persists workspace artifacts and thesis", async 
   });
   const provider = createOpenClawAgentProvider({
     request: async (url: string, body?: Record<string, unknown>, _requireAuth?: boolean, method = "GET") => {
-      if (url === "/api/signal") return createSignalPayload();
-      if (url === "/api/mission/workspaces/mint-1/sync" && method === "POST") {
+      if (url === "/api/mission/workspaces/mint-1/preview" && method === "POST") {
         syncedSnapshot = {
           workspaceId: "mint-1",
           provider: "openclaw",
-          sessionId: body?.sessionId || null,
+          sessionId: "session-preview",
           budgetUsd: Number(body?.budgetUsd || 0),
-          mission: body?.mission,
-          workspaceArtifacts: body?.workspaceArtifacts || {},
-          activity: (body?.mission as Record<string, unknown>)?.activity || [],
+          mission: {
+            ...createEmptyMissionModel("openclaw"),
+            provider: "openclaw",
+            sessionId: "session-preview",
+            missionStatus: "planning",
+            thesis: {
+              ...createEmptyMissionModel("openclaw").thesis,
+              summary: "OpenClaw prepared a thesis.",
+              confidence: 0.83
+            },
+            activity: [
+              {
+                ts: new Date().toISOString(),
+                title: "Preview Requested",
+                message: "OpenClaw prepared the mission preview.",
+                tone: "info",
+                meta: "mint-1"
+              }
+            ]
+          },
+          workspaceArtifacts: {
+            "THESIS.md": "# Current Thesis\n\nOpenClaw prepared a thesis."
+          },
+          activity: [
+            {
+              ts: new Date().toISOString(),
+              title: "Preview Requested",
+              message: "OpenClaw prepared the mission preview.",
+              tone: "info",
+              meta: "mint-1"
+            }
+          ],
           updatedAt: new Date().toISOString()
         };
-        return syncedSnapshot;
+        return {
+          workspaceId: "mint-1",
+          sessionId: "session-preview",
+          budgetUsd: Number(body?.budgetUsd || 0),
+          signalId: 12,
+          signal: createSignalPayload().signal,
+          decision: { decision: "BUY_CANDIDATE" },
+          quote: { entryMid: 0.0042, stopLoss: 0.0037, takeProfit: 0.0054, holdHorizon: "1h horizon" },
+          snapshot: syncedSnapshot
+        };
       }
       if (url === "/api/mission/workspaces/mint-1" && method === "GET") {
         return syncedSnapshot;
@@ -121,22 +158,63 @@ test("openclaw provider executes via guarded fallback and exposes monitoring sta
   ];
   const provider = createOpenClawAgentProvider({
     request: async (url: string, body?: Record<string, unknown>, _requireAuth?: boolean, method = "GET") => {
-      if (url === "/api/signal") return createSignalPayload();
-      if (url === "/api/mission/workspaces/mint-1/sync" && method === "POST") {
+      if (url === "/api/mission/workspaces/mint-1/execute" && method === "POST") {
         syncedSnapshot = {
           workspaceId: "mint-1",
           provider: "openclaw",
-          sessionId: body?.ensureSession ? "session-1" : body?.sessionId || null,
+          sessionId: "session-1",
           budgetUsd: Number(body?.budgetUsd || 0),
           mission: {
-            ...(body?.mission as Record<string, unknown>),
-            sessionId: body?.ensureSession ? "session-1" : body?.sessionId || null
+            ...createEmptyMissionModel("openclaw"),
+            provider: "openclaw",
+            sessionId: "session-1",
+            missionStatus: "monitoring",
+            livePosition: legacyMission.livePosition,
+            executionTrace: legacyMission.executionTrace,
+            activity: [
+              {
+                ts: new Date().toISOString(),
+                title: "Execution Requested",
+                message: "OpenClaw requested guarded execution.",
+                tone: "ok",
+                meta: "mint-1"
+              },
+              {
+                ts: new Date().toISOString(),
+                title: "Execution Confirmed",
+                message: "Guarded runtime confirmed the mission.",
+                tone: "ok",
+                meta: "mint-1"
+              }
+            ]
           },
-          workspaceArtifacts: body?.workspaceArtifacts || {},
-          activity: (body?.mission as Record<string, unknown>)?.activity || [],
+          workspaceArtifacts: {
+            "STATE.json": "{\"missionStatus\":\"monitoring\"}"
+          },
+          activity: [
+            {
+              ts: new Date().toISOString(),
+              title: "Execution Requested",
+              message: "OpenClaw requested guarded execution.",
+              tone: "ok",
+              meta: "mint-1"
+            },
+            {
+              ts: new Date().toISOString(),
+              title: "Execution Confirmed",
+              message: "Guarded runtime confirmed the mission.",
+              tone: "ok",
+              meta: "mint-1"
+            }
+          ],
           updatedAt: new Date().toISOString()
         };
-        return syncedSnapshot;
+        return {
+          workspaceId: "mint-1",
+          sessionId: "session-1",
+          budgetUsd: Number(body?.budgetUsd || 0),
+          snapshot: syncedSnapshot
+        };
       }
       if (url === "/api/mission/workspaces/mint-1" && method === "GET") {
         return syncedSnapshot;
@@ -192,22 +270,31 @@ test("openclaw provider halt and close preserve normalized mission contract", as
   };
   const provider = createOpenClawAgentProvider({
     request: async (url: string, body?: Record<string, unknown>, _requireAuth?: boolean, method = "GET") => {
-      if (url === "/api/signal") return createSignalPayload();
       if (url === "/api/mission/workspaces/mint-1" && method === "GET") {
         return syncedSnapshot;
       }
-      if (url === "/api/mission/workspaces/mint-1/sync" && method === "POST") {
+      if ((url === "/api/mission/workspaces/mint-1/close" || url === "/api/mission/workspaces/mint-1/halt") && method === "POST") {
+        const missionStatus = url.endsWith("/halt") ? "halted" : "exited";
         syncedSnapshot = {
           workspaceId: "mint-1",
           provider: "openclaw",
-          sessionId: body?.sessionId || "session-1",
+          sessionId: "session-1",
           budgetUsd: 250,
-          mission: body?.mission,
-          workspaceArtifacts: body?.workspaceArtifacts || {},
-          activity: (body?.mission as Record<string, unknown>)?.activity || [],
+          mission: {
+            ...createEmptyMissionModel("openclaw"),
+            provider: "openclaw",
+            sessionId: "session-1",
+            missionStatus,
+            rawSignal: createSignalPayload().signal
+          },
+          workspaceArtifacts: {},
+          activity: [],
           updatedAt: new Date().toISOString()
         };
-        return syncedSnapshot;
+        return {
+          ok: true,
+          snapshot: syncedSnapshot
+        };
       }
       throw new Error(`unexpected request ${url}`);
     },

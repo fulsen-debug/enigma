@@ -44,7 +44,7 @@ import {
   saveAutoTradeRun,
   saveSignal,
   updateWithdrawalRequestStatus,
-  updateAutoTradePositionMark
+  updateAutoTradePositionMark,
 } from "./server/db.js";
 import {
   discoverNewSolanaMints,
@@ -66,6 +66,7 @@ import {
 } from "./server/agentPolicy.js";
 import {
   loadMissionWorkspaceSnapshot,
+  loadMissionSessionSnapshot,
   subscribeMissionWorkspaceStream,
   syncMissionWorkspace
 } from "./server/missionWorkspace.js";
@@ -1455,6 +1456,475 @@ async function buildStoredSignal(userId: number, mint: string): Promise<{ signal
   return { signalId, signal };
 }
 
+const missionWorkerLoops = new Map<string, NodeJS.Timeout>();
+
+function missionWorkerKey(userId: number, workspaceId: string, sessionId: string) {
+  return `${userId}:${workspaceId}:${sessionId}`;
+}
+
+function formatMissionUsd(value: number) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "$0";
+  if (num >= 1_000_000) return `$${(num / 1_000_000).toFixed(2)}M`;
+  if (num >= 1_000) return `$${(num / 1_000).toFixed(1)}K`;
+  return `$${num.toFixed(2)}`;
+}
+
+function createServerMissionActivity(
+  title: string,
+  message: string,
+  tone: "info" | "ok" | "error" = "info",
+  meta = "",
+  ts = new Date().toISOString(),
+  eventType = "activity"
+) {
+  return { ts, title, message, tone, meta, eventType };
+}
+
+function normalizeMissionStatus(value: string) {
+  const raw = String(value || "").trim().toUpperCase();
+  return raw || "SCANNING";
+}
+
+function firstPositiveRuntimeValue(...values: unknown[]) {
+  for (const value of values) {
+    const num = Number(value || 0);
+    if (Number.isFinite(num) && num > 0) return num;
+  }
+  return null;
+}
+
+function buildMissionQuote(decision: AutoTradeDecision | null, budgetUsd: number) {
+  const tradePlan = (decision?.tradePlan || {}) as Record<string, unknown>;
+  const buyZone = (tradePlan.buyZone as Record<string, unknown>) || {};
+  const entryLow = firstPositiveRuntimeValue(buyZone.low);
+  const entryHigh = firstPositiveRuntimeValue(buyZone.high, entryLow);
+  const entryMid =
+    entryLow && entryHigh ? Number(((entryLow + entryHigh) / 2).toFixed(12)) : firstPositiveRuntimeValue(entryLow, entryHigh);
+  return {
+    budgetUsd: Number(budgetUsd || 0),
+    entryLow,
+    entryHigh,
+    entryMid,
+    takeProfit: firstPositiveRuntimeValue(
+      Array.isArray(tradePlan.resistance) ? tradePlan.resistance[0] : tradePlan.resistance
+    ),
+    stopLoss: firstPositiveRuntimeValue(tradePlan.stopLoss),
+    holdHorizon: decision?.marketRegime?.timeframe
+      ? `${String(decision.marketRegime.timeframe)} horizon`
+      : "Adaptive hold horizon"
+  };
+}
+
+function createServerOpenClawWorkspaceArtifacts(
+  workspaceId: string,
+  mission: Record<string, unknown>
+): Record<string, string> {
+  const thesis = (mission.thesis as Record<string, unknown>) || {};
+  const executionTrace = (mission.executionTrace as Record<string, unknown>) || {};
+  const livePosition = mission.livePosition || null;
+  const activity = Array.isArray(mission.activity) ? mission.activity : [];
+  return {
+    "SOUL.md": [
+      "# OpenClaw Mission Soul",
+      "",
+      `Workspace: ${workspaceId || "unassigned"}`,
+      "Mission profile: Kobecoin AI operator console",
+      "Primary workflow: allocate budget, preview thesis, execute, monitor, explain.",
+      "Execution backend: guarded paper runtime until live execution is explicitly enabled."
+    ].join("\n"),
+    "USER.md": [
+      "# Operator Intent",
+      "",
+      "- Operator supplies budget only in the primary flow.",
+      "- Advanced controls remain secondary and collapsed.",
+      "- Scanner Workspace remains isolated from mission execution."
+    ].join("\n"),
+    "THESIS.md": [
+      "# Current Thesis",
+      "",
+      `Status: ${String(thesis.status || "SCANNING")}`,
+      `Confidence: ${Math.round(Number(thesis.confidence || 0) * 100)}%`,
+      `Risk posture: ${String(thesis.riskPosture || "Standby")}`,
+      "",
+      String(thesis.summary || "No thesis recorded yet."),
+      "",
+      ...(Array.isArray(thesis.reasons) ? thesis.reasons.map((reason) => `- ${String(reason)}`) : [])
+    ].join("\n"),
+    "STATE.json": JSON.stringify(
+      {
+        workspaceId,
+        missionStatus: String(mission.missionStatus || "scanning"),
+        provider: "openclaw",
+        sessionId: String(mission.sessionId || ""),
+        executionTrace,
+        updatedAt: new Date().toISOString()
+      },
+      null,
+      2
+    ),
+    "POSITIONS.json": JSON.stringify(
+      {
+        workspaceId,
+        positions: livePosition ? [livePosition] : []
+      },
+      null,
+      2
+    ),
+    "EXECUTIONS.json": JSON.stringify(
+      {
+        workspaceId,
+        activity
+      },
+      null,
+      2
+    )
+  };
+}
+
+function createServerOpenClawThesis(input: {
+  workspaceId: string;
+  signal: Record<string, unknown> | null;
+  decision: AutoTradeDecision | null;
+  quote: ReturnType<typeof buildMissionQuote> | null;
+  position: Record<string, unknown> | null;
+}) {
+  const signal = input.signal || {};
+  const decision = input.decision;
+  const status = normalizeMissionStatus(String(signal.status || decision?.signalStatus || "SCANNING"));
+  const confidence = Math.max(
+    0,
+    Math.min(
+      1,
+      Number(signal.confidence ?? decision?.confidence ?? ((signal.killSwitch as Record<string, unknown>) || {}).confidence ?? 0)
+    )
+  );
+  const market = ((signal.market as Record<string, unknown>) || {}) as Record<string, unknown>;
+  const holderProfile = ((signal.holderProfile as Record<string, unknown>) || {}) as Record<string, unknown>;
+  const connected = Number(holderProfile.connectedPct || 0);
+  const newWallets = Number(holderProfile.newWalletPct || 0);
+  const bundleRisk = Number(signal.bundleRiskScore || 0);
+  const buys = Number((market.flow24h as Record<string, unknown>)?.buys || 0);
+  const sells = Number((market.flow24h as Record<string, unknown>)?.sells || 0);
+  const reasons = [
+    status === "FAVORABLE"
+      ? "OpenClaw sees constructive structure and can request guarded execution."
+      : status === "CAUTION"
+        ? "OpenClaw sees partial confirmation and keeps the mission selective."
+        : "OpenClaw sees elevated risk and keeps the mission in observation mode.",
+    `Order flow reads ${buys} buys vs ${sells} sells in the latest 24h sample.`,
+    `Connected holders ${connected.toFixed(1)}% | new wallets ${newWallets.toFixed(1)}% | bundle risk ${bundleRisk.toFixed(1)}.`,
+    market.priceUsd ? `Spot ${formatMissionUsd(Number(market.priceUsd || 0))} | liquidity ${formatMissionUsd(Number(market.liquidityUsd || 0))}.` : ""
+  ].filter(Boolean);
+  return {
+    token: signal.token || null,
+    mint: input.workspaceId,
+    status,
+    confidence,
+    patternScore: Number(signal.patternScore || decision?.patternScore || 0),
+    riskPosture:
+      bundleRisk >= 55 || connected >= 30
+        ? "Defensive"
+        : status === "FAVORABLE"
+          ? "Constructive"
+          : status === "CAUTION"
+            ? "Guarded"
+            : "Standby",
+    actionIntent:
+      input.position
+        ? "Manage active position"
+        : decision?.decision === "BUY_CANDIDATE"
+          ? "Request guarded execution"
+          : status === "CAUTION"
+            ? "Preview and wait for confirmation"
+            : "Stand down",
+    executionPosture: input.position ? "Monitoring guarded execution" : "OpenClaw planned / guarded execution",
+    summary: input.position ? "OpenClaw is actively supervising a live guarded position." : reasons[0] || "OpenClaw is evaluating the mission.",
+    reasons,
+    note:
+      input.position
+        ? "Position is live. OpenClaw keeps adjusting around runtime feedback and market structure."
+        : status === "FAVORABLE"
+          ? "OpenClaw sees enough structure to request guarded execution."
+          : status === "CAUTION"
+            ? "OpenClaw keeps the thesis live but execution stays selective."
+            : "OpenClaw keeps the token under review and avoids weak structure.",
+    priceUsd: Number(market.priceUsd || 0),
+    entryLow: input.quote?.entryLow || null,
+    entryHigh: input.quote?.entryHigh || null,
+    stopLoss: input.quote?.stopLoss || null,
+    takeProfit: input.quote?.takeProfit || null,
+    holdHorizon: input.quote?.holdHorizon || "Adaptive hold horizon"
+  };
+}
+
+function buildServerMissionModel(input: {
+  workspaceId: string;
+  sessionId?: string | null;
+  missionStatus: string;
+  signal: Record<string, unknown> | null;
+  decision: AutoTradeDecision | null;
+  quote: ReturnType<typeof buildMissionQuote> | null;
+  livePosition: Record<string, unknown> | null;
+  executionTrace?: Record<string, unknown>;
+  activity?: Array<Record<string, unknown>>;
+}) {
+  return {
+    provider: "openclaw",
+    providerLabel: "OpenClaw Mission Adapter",
+    workspaceFiles: ["SOUL.md", "USER.md", "THESIS.md", "STATE.json", "POSITIONS.json", "EXECUTIONS.json"],
+    workspaceArtifacts: {},
+    sessionId: input.sessionId || null,
+    missionStatus: input.missionStatus,
+    thesis: createServerOpenClawThesis({
+      workspaceId: input.workspaceId,
+      signal: input.signal,
+      decision: input.decision,
+      quote: input.quote,
+      position: input.livePosition
+    }),
+    rawSignal: input.signal,
+    livePosition: input.livePosition || null,
+    activity: Array.isArray(input.activity) ? input.activity.slice(0, 40) : [],
+    executionTrace: {
+      previewState: "Not started",
+      submitted: "-",
+      txHash: "-",
+      filledAmount: null,
+      averageEntry: input.quote?.entryMid ?? null,
+      stopLoss: input.quote?.stopLoss ?? null,
+      takeProfit: input.quote?.takeProfit ?? null,
+      holdHorizon: input.quote?.holdHorizon || null,
+      currentPnlPct: null,
+      ...(input.executionTrace || {})
+    }
+  };
+}
+
+async function syncServerMissionState(input: {
+  userId: number;
+  workspaceId: string;
+  sessionId?: string | null;
+  budgetUsd?: number;
+  mission: Record<string, unknown>;
+  ensureSession?: boolean;
+}) {
+  return syncMissionWorkspace({
+    userId: input.userId,
+    workspaceId: input.workspaceId,
+    provider: "openclaw",
+    budgetUsd: Number(input.budgetUsd || input.mission.budgetUsd || 0),
+    sessionId: input.sessionId || String(input.mission.sessionId || "").trim() || null,
+    ensureSession: Boolean(input.ensureSession),
+    mission: input.mission,
+    workspaceArtifacts: createServerOpenClawWorkspaceArtifacts(input.workspaceId, input.mission)
+  });
+}
+
+async function previewOpenClawMissionForUser(user: { id: number }, workspaceId: string, budgetUsd: number) {
+  const { signalId, signal } = await buildStoredSignal(user.id, workspaceId);
+  const config = getAutoTradeConfig(user.id);
+  const decision = buildAutoTradeDecision({
+    mint: workspaceId,
+    signalId,
+    signal,
+    config
+  });
+  const quote = buildMissionQuote(decision, budgetUsd);
+  const mission = buildServerMissionModel({
+    workspaceId,
+    missionStatus: "planning",
+    signal,
+    decision,
+    quote,
+    livePosition: null,
+    activity: [
+      createServerMissionActivity("Mission Initialized", "OpenClaw loaded workspace context and budget.", "info", `${budgetUsd.toFixed(2)} USD`, new Date().toISOString(), "mission"),
+      createServerMissionActivity("Thesis Updated", "OpenClaw synthesized a fresh token thesis from live market and risk signals.", "info", String(decision.signalStatus || "SCANNING"), new Date().toISOString(), "thesis"),
+      createServerMissionActivity("Confidence Revised", "OpenClaw recalibrated confidence after reading structure, liquidity, and holder pressure.", "info", `${Math.round(Number(decision.confidence || 0) * 100)}%`, new Date().toISOString(), "confidence"),
+      createServerMissionActivity("Preview Requested", "OpenClaw prepared a guarded execution outline and wrote mission artifacts.", "info", workspaceId, new Date().toISOString(), "preview")
+    ],
+    executionTrace: {
+      previewState: "OpenClaw mission preview ready",
+      submitted: "Awaiting Let AI Trade",
+      filledAmount: budgetUsd,
+      averageEntry: quote.entryMid,
+      stopLoss: quote.stopLoss,
+      takeProfit: quote.takeProfit,
+      holdHorizon: quote.holdHorizon
+    }
+  });
+  const snapshot = await syncServerMissionState({
+    userId: user.id,
+    workspaceId,
+    budgetUsd,
+    mission
+  });
+  return { snapshot, signal, signalId, decision, quote };
+}
+
+function stopMissionWorkerLoop(userId: number, workspaceId: string, sessionId: string) {
+  const key = missionWorkerKey(userId, workspaceId, sessionId);
+  const timer = missionWorkerLoops.get(key);
+  if (timer) {
+    clearInterval(timer);
+    missionWorkerLoops.delete(key);
+  }
+}
+
+async function monitorOpenClawMissionSession(user: { id: number }, workspaceId: string, sessionId: string) {
+  const snapshot = loadMissionWorkspaceSnapshot(user.id, workspaceId);
+  if (!snapshot.mission || snapshot.sessionId !== sessionId) {
+    stopMissionWorkerLoop(user.id, workspaceId, sessionId);
+    return;
+  }
+  const open = listAutoTradePositions(user.id, "OPEN").find((position) => position.mint === workspaceId) || null;
+  let livePosition = open;
+  if (open) {
+    const market = await fetchRealtimeMarketSnapshot(workspaceId);
+    const markPriceUsd = Number(market?.priceUsd || open.lastPriceUsd || open.entryPriceUsd || 0);
+    if (Number.isFinite(markPriceUsd) && markPriceUsd > 0) {
+      livePosition = updateAutoTradePositionMark(user.id, open.id, markPriceUsd) || open;
+    }
+  }
+  const previousMission = (snapshot.mission || {}) as Record<string, unknown>;
+  const previousExecutionTrace = ((previousMission.executionTrace as Record<string, unknown>) || {});
+  const missionStatus = livePosition ? "monitoring" : previousMission.missionStatus === "halted" ? "halted" : "exited";
+  const mission = buildServerMissionModel({
+    workspaceId,
+    sessionId,
+    missionStatus,
+    signal: (previousMission.rawSignal as Record<string, unknown>) || null,
+    decision: null,
+    quote: {
+      budgetUsd: Number(snapshot.budgetUsd || 0),
+      entryLow: Number(previousExecutionTrace.averageEntry || 0),
+      entryHigh: Number(previousExecutionTrace.averageEntry || 0),
+      entryMid: Number(previousExecutionTrace.averageEntry || 0),
+      stopLoss: Number(previousExecutionTrace.stopLoss || 0),
+      takeProfit: Number(previousExecutionTrace.takeProfit || 0),
+      holdHorizon: String(previousExecutionTrace.holdHorizon || "Adaptive hold horizon")
+    },
+    livePosition: livePosition ? ({ ...livePosition } as Record<string, unknown>) : null,
+    activity: [
+      createServerMissionActivity(
+        "Monitoring Tick",
+        livePosition
+          ? "OpenClaw refreshed the mission after a monitoring pass."
+          : "OpenClaw checked the workspace and found no active guarded position.",
+        "info",
+        workspaceId,
+        new Date().toISOString(),
+        "monitor"
+      ),
+      ...((Array.isArray(previousMission.activity) ? previousMission.activity : []) as Array<Record<string, unknown>>)
+    ].slice(0, 40),
+    executionTrace: {
+      ...previousExecutionTrace,
+      submitted: livePosition ? "Execution confirmed" : String(previousExecutionTrace.submitted || "Completed"),
+      currentPnlPct: livePosition ? Number(livePosition.pnlPct || 0) : null
+    }
+  });
+  await syncServerMissionState({
+    userId: user.id,
+    workspaceId,
+    sessionId,
+    budgetUsd: snapshot.budgetUsd,
+    mission
+  });
+  if (!livePosition || ["halted", "exited"].includes(missionStatus)) {
+    stopMissionWorkerLoop(user.id, workspaceId, sessionId);
+  }
+}
+
+function startMissionWorkerLoop(user: { id: number }, workspaceId: string, sessionId: string) {
+  const key = missionWorkerKey(user.id, workspaceId, sessionId);
+  if (missionWorkerLoops.has(key)) return;
+  const timer = setInterval(() => {
+    monitorOpenClawMissionSession(user, workspaceId, sessionId).catch(() => {});
+  }, 5000);
+  missionWorkerLoops.set(key, timer);
+}
+
+async function executeOpenClawMissionForUser(user: { id: number }, workspaceId: string, budgetUsd: number) {
+  const preview = await previewOpenClawMissionForUser(user, workspaceId, budgetUsd);
+  const sessionId = preview.snapshot.sessionId || crypto.randomUUID();
+  const execCfg = getAutoTradeExecutionConfig(user.id);
+  let livePosition = listAutoTradePositions(user.id, "OPEN").find((position) => position.mint === workspaceId) || null;
+  let executionStatus = "Execution evaluated";
+  const activities = [
+    createServerMissionActivity("Execution Requested", "OpenClaw requested guarded paper execution from the runtime backend.", "ok", `${budgetUsd.toFixed(2)} USD`, new Date().toISOString(), "execution")
+  ];
+
+  if (!livePosition && preview.decision.decision === "BUY_CANDIDATE") {
+    const signalMarket = (preview.signal.market || {}) as Record<string, unknown>;
+    const entryPriceUsd = firstPositiveRuntimeValue(preview.quote.entryMid, signalMarket.priceUsd, preview.quote.entryLow, preview.quote.entryHigh);
+    if (entryPriceUsd && entryPriceUsd > 0) {
+      const exits = resolveAdaptiveExitPercents(execCfg, preview.decision);
+      const tradeAmountUsd = Number(Math.max(1, budgetUsd).toFixed(2));
+      const qtyTokens = Number((tradeAmountUsd / entryPriceUsd).toFixed(8));
+      livePosition = createAutoTradePosition({
+        userId: user.id,
+        mint: workspaceId,
+        mode: "paper",
+        entrySignalId: preview.signalId,
+        entryPriceUsd,
+        sizeUsd: tradeAmountUsd,
+        qtyTokens,
+        tpPct: exits.tpPct,
+        slPct: exits.slPct,
+        trailingStopPct: exits.trailingStopPct,
+        maxHoldMinutes: Math.min(480, Number(execCfg.maxHoldMinutes || 120))
+      });
+      executionStatus = "Execution confirmed";
+      activities.push(
+        createServerMissionActivity("Execution Confirmed", "Guarded runtime confirmed a paper position for the mission.", "ok", workspaceId, new Date().toISOString(), "execution")
+      );
+    }
+  }
+
+  if (!livePosition && preview.decision.decision !== "BUY_CANDIDATE") {
+    activities.push(
+      createServerMissionActivity("Execution Deferred", "Guarded runtime evaluated the mission and kept execution on hold.", "info", workspaceId, new Date().toISOString(), "execution")
+    );
+  }
+
+  const mission = buildServerMissionModel({
+    workspaceId,
+    sessionId,
+    missionStatus: livePosition ? "monitoring" : "executing",
+    signal: preview.signal,
+    decision: preview.decision,
+    quote: preview.quote,
+    livePosition: livePosition ? ({ ...livePosition } as Record<string, unknown>) : null,
+    activity: [...activities, ...((preview.snapshot.mission?.activity as Array<Record<string, unknown>>) || [])].slice(0, 40),
+    executionTrace: {
+      previewState: "OpenClaw preview executed",
+      submitted: executionStatus,
+      txHash: livePosition ? "paper-fill" : "-",
+      filledAmount: livePosition ? Number(livePosition.sizeUsd || budgetUsd) : budgetUsd,
+      averageEntry: livePosition ? Number(livePosition.entryPriceUsd || preview.quote.entryMid || 0) : preview.quote.entryMid,
+      stopLoss: preview.quote.stopLoss,
+      takeProfit: preview.quote.takeProfit,
+      holdHorizon: preview.quote.holdHorizon,
+      currentPnlPct: livePosition ? Number(livePosition.pnlPct || 0) : null
+    }
+  });
+
+  const snapshot = await syncServerMissionState({
+    userId: user.id,
+    workspaceId,
+    sessionId,
+    budgetUsd,
+    ensureSession: true,
+    mission
+  });
+  if (snapshot.sessionId) {
+    startMissionWorkerLoop(user, workspaceId, snapshot.sessionId);
+  }
+  return snapshot;
+}
+
 async function buildBatchSignals(userId: number, mints: string[]) {
   const generated = await Promise.allSettled(
     mints.map(async (mint) => {
@@ -2493,6 +2963,21 @@ app.get("/api/mission/workspaces/:workspaceId", authRequired, (req: AuthedReques
   return res.json(loadMissionWorkspaceSnapshot(req.user.id, workspaceId));
 });
 
+app.get("/api/mission/sessions/:sessionId", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const sessionId = String(req.params.sessionId || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ error: "sessionId is required" });
+  }
+  const snapshot = loadMissionSessionSnapshot(req.user.id, sessionId);
+  if (!snapshot) {
+    return res.status(404).json({ error: "mission session not found" });
+  }
+  return res.json(snapshot);
+});
+
 app.get("/api/mission/workspaces/:workspaceId/activity", authRequired, (req: AuthedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "unauthorized" });
@@ -2509,6 +2994,195 @@ app.get("/api/mission/workspaces/:workspaceId/activity", authRequired, (req: Aut
     activity: snapshot.activity,
     updatedAt: snapshot.updatedAt
   });
+});
+
+app.post("/api/mission/workspaces/:workspaceId/preview", authRequired, async (req: AuthedRequest, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    const workspaceId = String(req.params.workspaceId || req.body?.mint || "").trim();
+    if (!workspaceId) {
+      return res.status(400).json({ error: "workspaceId is required" });
+    }
+    const budgetUsd = clampNumber(Number(req.body?.budgetUsd || 0), 1, 1_000_000);
+    const result = await previewOpenClawMissionForUser(req.user, workspaceId, budgetUsd);
+    return res.json({
+      workspaceId,
+      sessionId: result.snapshot.sessionId,
+      budgetUsd,
+      signalId: result.signalId,
+      signal: result.signal,
+      decision: result.decision,
+      quote: result.quote,
+      snapshot: result.snapshot
+    });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.post("/api/mission/workspaces/:workspaceId/execute", authRequired, async (req: AuthedRequest, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    const workspaceId = String(req.params.workspaceId || req.body?.mint || "").trim();
+    if (!workspaceId) {
+      return res.status(400).json({ error: "workspaceId is required" });
+    }
+    const budgetUsd = clampNumber(Number(req.body?.budgetUsd || 0), 1, 1_000_000);
+    const snapshot = await executeOpenClawMissionForUser(req.user, workspaceId, budgetUsd);
+    return res.json({
+      workspaceId,
+      sessionId: snapshot.sessionId,
+      budgetUsd,
+      snapshot
+    });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.post("/api/mission/workspaces/:workspaceId/close", authRequired, async (req: AuthedRequest, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    const workspaceId = String(req.params.workspaceId || req.body?.mint || "").trim();
+    if (!workspaceId) {
+      return res.status(400).json({ error: "workspaceId is required" });
+    }
+    const requestedPositionId = Number(req.body?.positionId || 0);
+    const openPosition =
+      listAutoTradePositions(req.user.id, "OPEN").find((position) =>
+        requestedPositionId > 0 ? position.id === requestedPositionId : position.mint === workspaceId
+      ) || null;
+    if (!openPosition) {
+      return res.status(404).json({ error: "no matching open position" });
+    }
+    const market = await fetchRealtimeMarketSnapshot(workspaceId);
+    const markPriceUsd = Number(market?.priceUsd || openPosition.lastPriceUsd || openPosition.entryPriceUsd || 0);
+    if (!Number.isFinite(markPriceUsd) || markPriceUsd <= 0) {
+      return res.status(400).json({ error: "unable to price open position" });
+    }
+    const closed = closeAutoTradePosition({
+      userId: req.user.id,
+      positionId: openPosition.id,
+      markPriceUsd,
+      closeReason: "MANUAL_CLOSE"
+    });
+    const snapshotBefore = loadMissionWorkspaceSnapshot(req.user.id, workspaceId);
+    const previousMission = (snapshotBefore.mission || {}) as Record<string, unknown>;
+    const previousExecutionTrace = ((previousMission.executionTrace as Record<string, unknown>) || {});
+    const mission = buildServerMissionModel({
+      workspaceId,
+      sessionId: snapshotBefore.sessionId,
+      missionStatus: "exited",
+      signal: (previousMission.rawSignal as Record<string, unknown>) || null,
+      decision: null,
+      quote: {
+        budgetUsd: Number(snapshotBefore.budgetUsd || 0),
+        entryLow: Number(previousExecutionTrace.averageEntry || 0),
+        entryHigh: Number(previousExecutionTrace.averageEntry || 0),
+        entryMid: Number(previousExecutionTrace.averageEntry || 0),
+        stopLoss: Number(previousExecutionTrace.stopLoss || 0),
+        takeProfit: Number(previousExecutionTrace.takeProfit || 0),
+        holdHorizon: String(previousExecutionTrace.holdHorizon || "Adaptive hold horizon")
+      },
+      livePosition: null,
+      activity: [
+        createServerMissionActivity("Position Closed", "OpenClaw acknowledged the operator close and archived the mission.", "info", workspaceId, new Date().toISOString(), "close"),
+        ...((Array.isArray(previousMission.activity) ? previousMission.activity : []) as Array<Record<string, unknown>>)
+      ].slice(0, 40),
+      executionTrace: {
+        ...previousExecutionTrace,
+        submitted: "Closed by operator",
+        currentPnlPct: null
+      }
+    });
+    const snapshot = await syncServerMissionState({
+      userId: req.user.id,
+      workspaceId,
+      sessionId: snapshotBefore.sessionId,
+      budgetUsd: snapshotBefore.budgetUsd,
+      mission
+    });
+    if (snapshot.sessionId) {
+      stopMissionWorkerLoop(req.user.id, workspaceId, snapshot.sessionId);
+    }
+    return res.json({ ok: true, position: closed, snapshot });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.post("/api/mission/workspaces/:workspaceId/halt", authRequired, async (req: AuthedRequest, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    const workspaceId = String(req.params.workspaceId || req.body?.mint || "").trim();
+    if (!workspaceId) {
+      return res.status(400).json({ error: "workspaceId is required" });
+    }
+    const currentPolicy = getAutoTradeConfig(req.user.id);
+    const currentExecution = getAutoTradeExecutionConfig(req.user.id);
+    putAutoTradeConfig(req.user.id, {
+      ...currentPolicy,
+      enabled: false,
+      mode: "paper"
+    });
+    putAutoTradeExecutionConfig(req.user.id, {
+      ...currentExecution,
+      enabled: false,
+      mode: "paper"
+    });
+    const snapshotBefore = loadMissionWorkspaceSnapshot(req.user.id, workspaceId);
+    const previousMission = (snapshotBefore.mission || {}) as Record<string, unknown>;
+    const previousExecutionTrace = ((previousMission.executionTrace as Record<string, unknown>) || {});
+    const mission = buildServerMissionModel({
+      workspaceId,
+      sessionId: snapshotBefore.sessionId,
+      missionStatus: "halted",
+      signal: (previousMission.rawSignal as Record<string, unknown>) || null,
+      decision: null,
+      quote: {
+        budgetUsd: Number(snapshotBefore.budgetUsd || 0),
+        entryLow: Number(previousExecutionTrace.averageEntry || 0),
+        entryHigh: Number(previousExecutionTrace.averageEntry || 0),
+        entryMid: Number(previousExecutionTrace.averageEntry || 0),
+        stopLoss: Number(previousExecutionTrace.stopLoss || 0),
+        takeProfit: Number(previousExecutionTrace.takeProfit || 0),
+        holdHorizon: String(previousExecutionTrace.holdHorizon || "Adaptive hold horizon")
+      },
+      livePosition:
+        previousMission.livePosition && typeof previousMission.livePosition === "object"
+          ? ({ ...(previousMission.livePosition as Record<string, unknown>) } as Record<string, unknown>)
+          : null,
+      activity: [
+        createServerMissionActivity("Halt Acknowledged", "OpenClaw marked the mission halted and blocked further actions.", "error", workspaceId, new Date().toISOString(), "halt"),
+        ...((Array.isArray(previousMission.activity) ? previousMission.activity : []) as Array<Record<string, unknown>>)
+      ].slice(0, 40),
+      executionTrace: {
+        ...previousExecutionTrace,
+        submitted: "Halt engaged"
+      }
+    });
+    const snapshot = await syncServerMissionState({
+      userId: req.user.id,
+      workspaceId,
+      sessionId: snapshotBefore.sessionId,
+      budgetUsd: snapshotBefore.budgetUsd,
+      mission
+    });
+    if (snapshot.sessionId) {
+      stopMissionWorkerLoop(req.user.id, workspaceId, snapshot.sessionId);
+    }
+    return res.json({ ok: true, halted: true, snapshot });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  }
 });
 
 app.post("/api/mission/workspaces/:workspaceId/sync", authRequired, (req: AuthedRequest, res) => {

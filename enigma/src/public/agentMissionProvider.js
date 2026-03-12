@@ -906,10 +906,130 @@ export function createOpenClawRuntime({ tools, request, now = () => new Date().t
 }
 
 export function createOpenClawAgentProvider({ request, fallbackProvider, storage }) {
-  const tools = createOpenClawMissionTools({ request, fallbackProvider });
-  const runtime = createOpenClawRuntime({ tools, request, storage });
+  async function getMissionState(workspaceIdOrOptions) {
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
+    const snapshot = await request(`/api/mission/workspaces/${encodeURIComponent(workspaceId)}`, null, true, "GET");
+    return {
+      raw: snapshot,
+      mission: withProviderMetadata(
+        snapshot?.mission || createEmptyMissionModel("openclaw"),
+        "openclaw",
+        "OpenClaw Mission Adapter",
+        snapshot?.workspaceArtifacts || {}
+      )
+    };
+  }
+
+  async function previewMission(workspaceIdOrOptions, budgetUsd) {
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
+    const effectiveBudget = resolveBudget(workspaceIdOrOptions, budgetUsd);
+    const response = await request(
+      `/api/mission/workspaces/${encodeURIComponent(workspaceId)}/preview`,
+      { mint: workspaceId, budgetUsd: effectiveBudget },
+      true,
+      "POST"
+    );
+    return {
+      raw: response,
+      mission: withProviderMetadata(
+        response?.snapshot?.mission || createEmptyMissionModel("openclaw"),
+        "openclaw",
+        "OpenClaw Mission Adapter",
+        response?.snapshot?.workspaceArtifacts || {}
+      )
+    };
+  }
+
+  async function executeMission(workspaceIdOrOptions, budgetUsd) {
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
+    const effectiveBudget = resolveBudget(workspaceIdOrOptions, budgetUsd);
+    const response = await request(
+      `/api/mission/workspaces/${encodeURIComponent(workspaceId)}/execute`,
+      { mint: workspaceId, budgetUsd: effectiveBudget },
+      true,
+      "POST"
+    );
+    return {
+      raw: response,
+      mission: withProviderMetadata(
+        response?.snapshot?.mission || createEmptyMissionModel("openclaw"),
+        "openclaw",
+        "OpenClaw Mission Adapter",
+        response?.snapshot?.workspaceArtifacts || {}
+      )
+    };
+  }
+
+  async function closePosition(workspaceIdOrOptions, positionId) {
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
+    const response = await request(
+      `/api/mission/workspaces/${encodeURIComponent(workspaceId)}/close`,
+      { mint: workspaceId, positionId },
+      true,
+      "POST"
+    );
+    return {
+      raw: response,
+      mission: withProviderMetadata(
+        response?.snapshot?.mission || createEmptyMissionModel("openclaw"),
+        "openclaw",
+        "OpenClaw Mission Adapter",
+        response?.snapshot?.workspaceArtifacts || {}
+      )
+    };
+  }
+
+  async function haltMission(workspaceIdOrOptions) {
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
+    const response = await request(
+      `/api/mission/workspaces/${encodeURIComponent(workspaceId)}/halt`,
+      { mint: workspaceId },
+      true,
+      "POST"
+    );
+    return {
+      raw: response,
+      mission: withProviderMetadata(
+        response?.snapshot?.mission || createEmptyMissionModel("openclaw"),
+        "openclaw",
+        "OpenClaw Mission Adapter",
+        response?.snapshot?.workspaceArtifacts || {}
+      )
+    };
+  }
+
+  async function getActivity(workspaceIdOrOptions) {
+    const workspaceId = resolveWorkspaceId(workspaceIdOrOptions);
+    const response = await request(
+      `/api/mission/workspaces/${encodeURIComponent(workspaceId)}/activity`,
+      null,
+      true,
+      "GET"
+    );
+    const current = await getMissionState(workspaceIdOrOptions);
+    const mission = {
+      ...current.mission,
+      activity: Array.isArray(response?.activity) ? response.activity : current.mission.activity || []
+    };
+    return {
+      raw: response,
+      mission: withProviderMetadata(mission, "openclaw", "OpenClaw Mission Adapter", current.mission.workspaceArtifacts || {})
+    };
+  }
+
   return {
-    ...runtime,
+    id: "openclaw",
+    label: "OpenClaw Mission Adapter",
+    workspaceFiles: OPENCLAW_WORKSPACE_FILES.slice(),
+    createEmptyMission() {
+      return createEmptyMissionModel("openclaw");
+    },
+    getMissionState,
+    previewMission,
+    executeMission,
+    closePosition,
+    haltMission,
+    getActivity,
     normalizePaperCycle(payload) {
       const legacyMission = fallbackProvider.normalizePaperCycle(payload);
       const workspaceId = resolveWorkspaceId(payload?.mint || payload?.workspaceId || "");
