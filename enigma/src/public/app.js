@@ -894,6 +894,14 @@ function formatPrice(value) {
   return `$${n.toFixed(10).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
+function formatPriceCompact(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "N/A";
+  if (n >= 1) return `$${n.toLocaleString(undefined, { maximumFractionDigits: 4 })}`;
+  if (n >= 0.01) return `$${n.toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
+  return `$${n.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+
 function formatPct(value, digits = 2) {
   const n = Number(value || 0);
   if (!Number.isFinite(n)) return "0%";
@@ -3063,22 +3071,34 @@ function renderAgentRuntimeHealth() {
 }
 
 function getAgentProcessingMode() {
+  const status = String(agentTradeState.missionStatus || "").toLowerCase();
+  const triggered =
+    Boolean(agentTradeState.isPreviewLoading) ||
+    Boolean(agentTradeState.isExecuteLoading) ||
+    Boolean(paperTradeTimer) ||
+    status === "monitoring" ||
+    status === "executing" ||
+    status === "planning" ||
+    status === "previewing" ||
+    status === "evaluating" ||
+    status === "halted" ||
+    status === "error";
+
+  if (!triggered) return "idle";
   if (agentTradeState.error) return "error";
-  if (agentTradeState.emergencyStopEnabled || String(agentTradeState.missionStatus || "").toLowerCase() === "halted") {
+  if (agentTradeState.emergencyStopEnabled || status === "halted") {
     return "halted";
   }
-  if (agentTradeState.isExecuteLoading || String(agentTradeState.missionStatus || "").toLowerCase() === "executing") {
+  if (agentTradeState.isExecuteLoading || status === "executing") {
     return "executing";
   }
-  if (String(agentTradeState.missionStatus || "").toLowerCase() === "monitoring") return "monitoring";
+  if (status === "monitoring") return "monitoring";
   if (agentTradeState.isPreviewLoading) return "previewing";
-  if (String(agentTradeState.missionStatus || "").toLowerCase() === "planning") return "planning";
-  if (String(agentTradeState.missionStatus || "").toLowerCase() === "evaluating") return "previewing";
-  if (String(agentTradeState.missionStatus || "").toLowerCase() === "scanning") {
-    return agentTargetMint ? "scanning" : "idle";
-  }
-  if (String(agentTradeState.missionStatus || "").toLowerCase() === "exited") return "monitoring";
-  return agentTargetMint ? "scanning" : "idle";
+  if (status === "planning") return "planning";
+  if (status === "evaluating") return "previewing";
+  if (status === "scanning") return "scanning";
+  if (status === "exited") return "monitoring";
+  return "idle";
 }
 
 function getProcessingEnergy(mode) {
@@ -3303,7 +3323,7 @@ function ensureAgentProcessingLoop() {
 
 function renderAgentActivityFeed() {
   if (!agentActivityFeed) return;
-  const activity = Array.isArray(agentTradeState.activity) ? agentTradeState.activity : [];
+  const activity = (Array.isArray(agentTradeState.activity) ? agentTradeState.activity : []).slice(0, 6);
   if (!activity.length) {
     agentActivityFeed.innerHTML = `<div class="agent-activity-empty">No live mission activity yet. Preview a plan or let AIG trade to begin the operator trace.</div>`;
     return;
@@ -3558,7 +3578,7 @@ function renderAgentTokenIdentity() {
   }
   if (agentCurrentTokenMint) {
     agentCurrentTokenMint.textContent = mint
-      ? `${meta.symbol || "TOKEN"} | ${shortMint(mint, 8, 8)}`
+      ? shortMint(mint, 8, 8)
       : "Set a workspace token inside Developer / Engine Details.";
   }
 }
@@ -4536,14 +4556,14 @@ function renderEnginePositions(positions = []) {
         <span class="pill caution">${escapeHtml(String(row.mode || "paper").toUpperCase())}</span>
       </div>
       <div class="agent-live-position-grid">
-        <div><span>Entry</span><strong>${formatPrice(row.entryPriceUsd || 0)}</strong></div>
-        <div><span>Current Price</span><strong>${formatPrice(row.lastPriceUsd || 0)}</strong></div>
+        <div><span>Entry</span><strong>${formatPriceCompact(row.entryPriceUsd || 0)}</strong></div>
+        <div><span>Current Price</span><strong>${formatPriceCompact(row.lastPriceUsd || 0)}</strong></div>
         <div><span>Position Size</span><strong>${formatUsd(row.sizeUsd || 0)}</strong></div>
         <div><span>Value</span><strong>${formatUsd((Number(row.lastPriceUsd || 0) / Math.max(Number(row.entryPriceUsd || 1), 0.000000001)) * Number(row.sizeUsd || 0))}</strong></div>
         <div><span>Unrealized PnL</span><strong class="${Number(row.pnlPct || 0) >= 0 ? "flow-positive" : "flow-negative"}">${row.pnlPct === null || row.pnlPct === undefined ? "-" : formatPct(row.pnlPct || 0, 2)}</strong></div>
         <div><span>Status</span><strong>${Number(row.pnlPct || 0) >= 0 ? "In profit" : "Under pressure"}</strong></div>
-        <div><span>Take Profit</span><strong>${targetSell ? formatPrice(targetSell) : "N/A"}</strong></div>
-        <div><span>Stop Loss</span><strong>${stopLoss ? formatPrice(stopLoss) : "N/A"}</strong></div>
+        <div><span>Take Profit</span><strong>${targetSell ? formatPriceCompact(targetSell) : "N/A"}</strong></div>
+        <div><span>Stop Loss</span><strong>${stopLoss ? formatPriceCompact(stopLoss) : "N/A"}</strong></div>
         <div><span>Time Open</span><strong>${formatDurationSince(row.opened_at)}</strong></div>
       </div>
     </article>

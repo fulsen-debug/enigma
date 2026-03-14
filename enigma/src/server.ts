@@ -1335,8 +1335,25 @@ function enrichScannerQuota(access: Awaited<ReturnType<typeof getKobxAccessStatu
 }
 
 async function buildScannerAccessStatus(userId: number, wallet: string) {
-  const access = await getKobxAccessStatus(wallet);
-  return enrichScannerQuota(access, getUsage(userId));
+  try {
+    const access = await getKobxAccessStatus(wallet);
+    return enrichScannerQuota(access, getUsage(userId));
+  } catch {
+    return enrichScannerQuota(
+      {
+        mint: KOBX_MINT,
+        requiredBalance: KOBX_REQUIRED_BALANCE,
+        actualBalance: 0,
+        eligible: false,
+        buyUrl: KOBX_BUY_URL,
+        scannerDailyLimit: 0,
+        scannerDailyUsed: 0,
+        scannerDailyRemaining: 0,
+        scannerTier: "none"
+      },
+      getUsage(userId)
+    );
+  }
 }
 
 async function enforceScannerDailyLimit(req: AuthedRequest, res: express.Response): Promise<{

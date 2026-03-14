@@ -9176,6 +9176,107 @@ body > .app-shell > .content {
   line-height: 1.15 !important;
 }
 
+/* Token Identity Polish: compact, aligned, no bulky wrap */
+.agent-token-identity {
+  display: grid !important;
+  grid-template-columns: 32px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+}
+
+.agent-token-avatar-wrap {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 999px !important;
+}
+
+.token-avatar.large {
+  width: 20px !important;
+  height: 20px !important;
+  font-size: 0.64rem !important;
+}
+
+.agent-token-copy {
+  min-width: 0 !important;
+  display: grid !important;
+  gap: 1px !important;
+}
+
+.agent-token-copy strong {
+  font-size: 0.78rem !important;
+  line-height: 1.1 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.agent-token-copy .small.muted {
+  display: none !important;
+}
+
+.agent-token-mint {
+  display: block !important;
+  font-size: 0.62rem !important;
+  line-height: 1.05 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  color: var(--terminal-muted) !important;
+}
+
+/* Right Rail Polish: compact live position + cleaner activity feed */
+.agent-position-panel {
+  padding: 5px !important;
+}
+
+.agent-live-position-card.is-active {
+  padding: 6px !important;
+  gap: 6px !important;
+  border-radius: 8px !important;
+}
+
+.agent-live-position-grid {
+  gap: 4px !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+.agent-live-position-grid > div {
+  padding: 4px 5px !important;
+  border-radius: 7px !important;
+}
+
+.agent-live-position-grid span {
+  font-size: 0.5rem !important;
+  line-height: 1.05 !important;
+}
+
+.agent-live-position-grid strong {
+  font-size: 0.6rem !important;
+  line-height: 1.1 !important;
+}
+
+.agent-activity-panel {
+  padding: 5px !important;
+}
+
+#agent-activity-feed {
+  gap: 3px !important;
+}
+
+#agent-activity-feed .agent-activity-item,
+#agent-activity-feed .msg,
+.agent-activity-empty {
+  padding: 4px 5px !important;
+  border-radius: 7px !important;
+  font-size: 0.5rem !important;
+  line-height: 1.12 !important;
+}
+
+#agent-activity-feed .agent-activity-item p {
+  margin: 2px 0 !important;
+}
+
 /* Bottom Fill Fix: eliminate dead empty strip under Agent Workspace */
 .content > .agent-workspace {
   height: 100% !important;
