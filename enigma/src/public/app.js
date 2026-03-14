@@ -167,6 +167,7 @@ const PAPER_ONLY_MODE = true;
 const LIVE_MODE_PREVIEW_DISABLED = PAPER_ONLY_MODE;
 const HOLDER_SAMPLE_LIMIT = 10;
 const HOLDER_DEEP_LIMIT = 20;
+const SCANNER_RESULTS_MAX_ITEMS = 30;
 const KOBX_MINT = "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump";
 const KOBX_REQUIRED_BALANCE = 500_000;
 const KOBX_BUY_URL = `https://pump.fun/coin/${KOBX_MINT}`;
@@ -6141,6 +6142,7 @@ function signalCard(item) {
         <div class="row between scanner-forensics-head">
           <h4>AIG Forensics</h4>
           <div class="scanner-share-actions">
+            <button class="secondary tiny-btn" data-use-agent-mint="${escapeHtml(mint)}">Use in Agent</button>
             <button class="secondary tiny-btn" data-download-card="${escapeHtml(mint)}">Download PNG</button>
             <button class="secondary tiny-btn" data-share-x="${escapeHtml(mint)}">Share on X</button>
           </div>
@@ -6323,6 +6325,21 @@ function attachCardHandlers() {
     });
   });
 
+  document.querySelectorAll("button[data-use-agent-mint]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const mint = String(button.getAttribute("data-use-agent-mint") || "").trim();
+      if (!mint) return;
+      if (!agentTargetMintInput) return;
+      agentTargetMintInput.value = mint;
+      const saved = saveAgentTargetMint({ notify: true });
+      if (!saved) return;
+      if (showAgentWorkspaceButton) {
+        showAgentWorkspaceButton.click();
+      }
+      pushMessage(`Scanner token routed to Agent Workspace: ${shortMint(mint, 6, 6)}`, "ok");
+    });
+  });
+
   document.querySelectorAll("button[data-download-card]").forEach((button) => {
     button.addEventListener("click", async () => {
       const mint = String(button.getAttribute("data-download-card") || "");
@@ -6469,6 +6486,7 @@ function renderSignalTable(items) {
         </td>
         <td>
           <div class="scanner-row-actions">
+            <button type="button" class="primary tiny-btn" data-use-agent-mint="${escapeHtml(mint)}">Use in Agent</button>
             <button type="button" class="secondary tiny-btn" data-copy-mint="${escapeHtml(mint)}">Copy</button>
             <button type="button" class="secondary tiny-btn" data-download-card="${escapeHtml(mint)}">PNG</button>
             <button type="button" class="secondary tiny-btn" data-share-x="${escapeHtml(mint)}">Share</button>
@@ -6604,12 +6622,27 @@ function normalizeSignalItems(items) {
     .filter(Boolean);
 }
 
+function mergeSignalItems(existingItems, incomingItems) {
+  const mergedByMint = new Map();
+  const incoming = Array.isArray(incomingItems) ? incomingItems : [];
+  const existing = Array.isArray(existingItems) ? existingItems : [];
+  [...incoming, ...existing].forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const mint = String(item.mint || item.signal?.token?.mint || item.signal?.mint || "").trim();
+    if (!mint) return;
+    if (mergedByMint.has(mint)) return;
+    mergedByMint.set(mint, { ...item, mint });
+  });
+  return Array.from(mergedByMint.values()).slice(0, SCANNER_RESULTS_MAX_ITEMS);
+}
+
 function processScanItems(items, successMessage) {
   const normalized = normalizeSignalItems(items);
   if (!normalized.length) {
     throw new Error("Scanner returned no token data in this pass.");
   }
-  renderSignals(normalized);
+  const merged = mergeSignalItems(lastSignalItems, normalized);
+  renderSignals(merged);
   updateSessionAnalyticsFromItems(normalized);
   evaluateSignalAlerts(normalized);
   renderAnalytics();

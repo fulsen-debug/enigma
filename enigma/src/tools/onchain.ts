@@ -16,6 +16,7 @@ interface HolderNode {
   amountUi: number;
   walletAgeDays: number | null;
   recentSignatures: string[];
+  recentSignatureBlockTimes: number[];
 }
 
 interface HeliusWalletIdentity {
@@ -352,6 +353,14 @@ function connectedGroups(holders: HolderNode[]): HolderNode[][] {
   }
 
   return groups;
+}
+
+function normalizeEpochSeconds(value: number | null | undefined): number | null {
+  if (!Number.isFinite(Number(value))) return null;
+  const numeric = Number(value);
+  if (numeric <= 0) return null;
+  // Some providers return ms, some return seconds.
+  return numeric > 1_000_000_000_000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
 }
 
 function avg(values: Array<number | null>): number | null {
@@ -832,8 +841,8 @@ export function createOnchainTool(rpcUrl?: string) {
             if (!walletAgeCache.has(owner)) {
               walletAgeCache.set(owner, walletAgeDays(rpc.call, owner, signatureSamplePerAccount));
             }
-            const [signatures, age] = await Promise.all([
-              tokenAccountRecentSignatures(rpc.call, holder.address, signatureSamplePerAccount),
+            const [signatureRows, age] = await Promise.all([
+              fetchSignaturesWithLookback(rpc.call, holder.address, signatureSamplePerAccount),
               walletAgeCache.get(owner) as Promise<number | null>
             ]);
             return {
@@ -842,7 +851,10 @@ export function createOnchainTool(rpcUrl?: string) {
               amountRaw: Number(holder.amount || 0),
               amountUi: Number(holder.uiAmountString || 0),
               walletAgeDays: age,
-              recentSignatures: signatures
+              recentSignatures: signatureRows.map((row) => row.signature).filter(Boolean),
+              recentSignatureBlockTimes: signatureRows
+                .map((row) => normalizeEpochSeconds(row.blockTime))
+                .filter((value): value is number => value !== null)
             };
           })
         );
@@ -1055,6 +1067,109 @@ export function createOnchainTool(rpcUrl?: string) {
           }
         });
 
+        // Detect synchronized cohorts that may not share explicit signature links:
+        // same-day wallets + near-equal allocation + near-time initial activity.
+        const holderNodeByOwner = new Map(holderNodes.map((holder) => [holder.owner, holder]));
+        const syncCandidates = holderProfiles.filter(
+          (holder) =>
+            !holder.isLpCandidate &&
+            holder.walletAgeDays !== null &&
+            holder.walletAgeDays <= 3 &&
+            Number(holder.buyTxCount || 0) >= 1
+        );
+        const syncRelated = (a: (typeof syncCandidates)[number], b: (typeof syncCandidates)[number]) => {
+          if (a.owner === b.owner) return false;
+          const ageA = Number(a.walletAgeDays ?? 99);
+          const ageB = Number(b.walletAgeDays ?? 99);
+          if (Math.abs(ageA - ageB) > 1.5) return false;
+
+          const pctA = Number(a.amountPct || 0);
+          const pctB = Number(b.amountPct || 0);
+          if (Math.abs(pctA - pctB) > 1.2) return false;
+
+          const nodeA = holderNodeByOwner.get(a.owner);
+          const nodeB = holderNodeByOwner.get(b.owner);
+          const firstSigA = nodeA?.recentSignatureBlockTimes?.length
+            ? Math.min(...nodeA.recentSignatureBlockTimes)
+            : null;
+          const firstSigB = nodeB?.recentSignatureBlockTimes?.length
+            ? Math.min(...nodeB.recentSignatureBlockTimes)
+            : null;
+          const fundA = normalizeEpochSeconds(fundingByOwner.get(a.owner)?.timestamp);
+          const fundB = normalizeEpochSeconds(fundingByOwner.get(b.owner)?.timestamp);
+          const anchorA = firstSigA ?? fundA;
+          const anchorB = firstSigB ?? fundB;
+          if (!anchorA || !anchorB) return false;
+
+          return Math.abs(anchorA - anchorB) <= 45 * 60;
+        };
+
+        const syncVisited = new Set<number>();
+        const syntheticSyncGroups: Array<{
+          members: (typeof syncCandidates)[number][];
+          holdPct: number;
+          owners: string[];
+        }> = [];
+        for (let i = 0; i < syncCandidates.length; i += 1) {
+          if (syncVisited.has(i)) continue;
+          const queue = [i];
+          syncVisited.add(i);
+          const group: (typeof syncCandidates)[number][] = [];
+          while (queue.length > 0) {
+            const idx = queue.shift() as number;
+            const current = syncCandidates[idx];
+            group.push(current);
+            for (let j = 0; j < syncCandidates.length; j += 1) {
+              if (syncVisited.has(j)) continue;
+              if (syncRelated(current, syncCandidates[j])) {
+                syncVisited.add(j);
+                queue.push(j);
+              }
+            }
+          }
+          if (group.length < 2) continue;
+          const holdPct = Number(
+            group.reduce((sum, holder) => sum + Number(holder.amountPct || 0), 0).toFixed(2)
+          );
+          if (holdPct < 3) continue;
+          syntheticSyncGroups.push({
+            members: group,
+            holdPct,
+            owners: group.map((holder) => holder.owner)
+          });
+        }
+
+        if (syntheticSyncGroups.length) {
+          const startGroupId = holderBehavior.connectedGroups.length + 1;
+          syntheticSyncGroups.forEach((group, index) => {
+            const groupId = startGroupId + index;
+            holderBehavior.connectedGroups.push({
+              id: groupId,
+              holderCount: group.members.length,
+              holdPct: group.holdPct,
+              owners: group.owners,
+              reason: "synchronized new-wallet cohort (similar size + near-time entries)"
+            });
+            group.members.forEach((member) => {
+              if (Number(member.connectedGroupId || 0) <= 0) {
+                member.connectedGroupId = groupId;
+              }
+              if (!member.tags.includes("sync-cluster-suspected")) {
+                member.tags.push("sync-cluster-suspected");
+              }
+            });
+          });
+        }
+
+        const connectedOwners = new Set(
+          holderBehavior.connectedGroups.flatMap((group) => group.owners || [])
+        );
+        const connectedRawFinal = holderNodesExcludingLp
+          .filter((holder) => connectedOwners.has(holder.owner))
+          .reduce((sum, holder) => sum + holder.amountRaw, 0);
+        holderBehavior.connectedGroupCount = holderBehavior.connectedGroups.length;
+        holderBehavior.connectedHolderPct = Number(pct(connectedRawFinal, totalSupply).toFixed(2));
+
         if (top10Pct >= 80) concentrationRisk = "high";
         else if (top10Pct >= 55) concentrationRisk = "medium";
         if (top10Pct >= 80) riskFlags.push("Top-10 holder concentration (excluding LP candidate) is elevated");
@@ -1091,13 +1206,23 @@ export function createOnchainTool(rpcUrl?: string) {
             Number(holder.connectedGroupId || 0) > 0 &&
             (String(holder.walletSource || "").includes("clustered") || (holder.tags || []).includes("new-wallet"))
         ).length;
+        const synchronizedOwners = new Set(syntheticSyncGroups.flatMap((group) => group.owners));
+        const synchronizedRaw = holderNodesExcludingLp
+          .filter((holder) => synchronizedOwners.has(holder.owner))
+          .reduce((sum, holder) => sum + holder.amountRaw, 0);
+        const synchronizedHolderPct = Number(pct(synchronizedRaw, totalSupply).toFixed(2));
+        const topSyncClusterPct = Number(
+          Math.max(0, ...syntheticSyncGroups.map((group) => Number(group.holdPct || 0))).toFixed(2)
+        );
         let bundleRiskScore = 0;
         bundleRiskScore += Math.min(30, top10Pct * 0.18);
         bundleRiskScore += Math.min(28, Number(holderBehavior.connectedHolderPct || 0) * 0.7);
         bundleRiskScore += Math.min(18, Number(holderBehavior.newWalletHolderPct || 0) * 0.45);
         bundleRiskScore += Math.min(16, topClusterPct * 0.45);
+        bundleRiskScore += Math.min(18, synchronizedHolderPct * 0.55);
         if (!lpCandidateTokenAccount) bundleRiskScore += 6;
         if (bundledBuyerCount >= 4) bundleRiskScore += 8;
+        if (syntheticSyncGroups.length >= 2) bundleRiskScore += 4;
         bundleRiskScore = Math.max(0, Math.min(100, Math.round(bundleRiskScore)));
         const bundleRiskVerdict =
           bundleRiskScore >= 70 ? "HIGH" : bundleRiskScore >= 45 ? "CAUTION" : "LOW";
@@ -1113,6 +1238,11 @@ export function createOnchainTool(rpcUrl?: string) {
             `${Number(holderBehavior.newWalletHolderPct || 0).toFixed(2)}% held by new wallets`
           );
         }
+        if (syntheticSyncGroups.length) {
+          bundleRiskReasons.push(
+            `synchronized wallet cohorts detected (${syntheticSyncGroups.length} group${syntheticSyncGroups.length > 1 ? "s" : ""}, top ${topSyncClusterPct.toFixed(2)}%)`
+          );
+        }
         if (!lpCandidateTokenAccount) {
           bundleRiskReasons.push("LP account not confidently separated from top holders");
         }
@@ -1122,6 +1252,9 @@ export function createOnchainTool(rpcUrl?: string) {
         }
         if (holderBehavior.connectedHolderPct >= 25) {
           riskFlags.push("Connected holder cluster controls significant supply");
+        }
+        if (synchronizedHolderPct >= 12) {
+          riskFlags.push("Synchronized new-wallet cohort accumulation detected");
         }
 
         const result = {
@@ -1153,6 +1286,9 @@ export function createOnchainTool(rpcUrl?: string) {
           bundleRiskScore,
           bundleRiskVerdict,
           bundleRiskReasons,
+          synchronizedHolderPct,
+          synchronizedGroupCount: syntheticSyncGroups.length,
+          topSynchronizedClusterPct: topSyncClusterPct,
           holderBehavior,
           holderProfiles,
           sampleTopHolders: largestAccounts.value.slice(0, 8)
