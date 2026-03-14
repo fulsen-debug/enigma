@@ -8,275 +8,244 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="app">
+    <div class="app-shell app">
       <aside class="sidebar sidebar-product">
-        <div class="sidebar-background-effects" aria-hidden="true">
-          <img id="sidebar-nebula" class="sidebar-nebula" alt="" />
-          <div class="sidebar-stars"></div>
-          <img id="sidebar-orb" class="sidebar-orb" alt="" />
-          <span class="sidebar-orb-ring"></span>
-          <div class="sidebar-hero-visual">
-            <span class="sidebar-hero-ambient"></span>
-            <img id="sidebar-hero" class="sidebar-hero" alt="" />
+        <section class="topbar workspace-shared topbar-inline">
+          <div class="topbar-title-group topbar-terminal-brand">
+            <div class="brand-shell">
+              <img
+                class="brand-logo"
+                src="/assets/icon.png"
+                alt="AI Guardian logo"
+                onerror="this.style.display='none'; this.parentElement.classList.add('brand-logo-missing');"
+              />
+              <div class="brand-copy">
+                <h2>Workspace Terminal</h2>
+                <p id="workspace-summary" class="small muted">Scanner workspace: run one-token random/manual scans and review risk cards.</p>
+              </div>
+            </div>
           </div>
-          <img id="sidebar-shape-a" class="sidebar-shape sidebar-shape-a" alt="" />
-          <img id="sidebar-shape-b" class="sidebar-shape sidebar-shape-b" alt="" />
-          <img id="sidebar-shape-c" class="sidebar-shape sidebar-shape-c" alt="" />
-        </div>
-
-        <header class="brand-header">
-          <div class="brand-shell">
-            <img
-              class="brand-logo"
-              src="/assets/icon.png"
-              alt="AI Guardian logo"
-              onerror="this.style.display='none'; this.parentElement.classList.add('brand-logo-missing');"
-            />
-            <h1>AIG</h1>
-          </div>
-          <p class="brand-tagline">
-            Scanner + Trading Agent Intelligence
-            <span>Powered by Kobecoin</span>
-          </p>
-        </header>
-
-        <section class="panel workspace-shared wallet-card">
-          <h2>1) Connect Wallet</h2>
-          <div class="row between">
-            <div id="auth-state" class="muted">Not connected</div>
+          <div class="topbar-operator-strip">
+            <span id="auth-state" class="muted">Not connected</span>
             <span id="plan-status" class="badge">FREE</span>
-          </div>
-          <button id="connect-wallet">Connect Phantom</button>
-          <div id="wallet-access-summary" class="wallet-access-summary muted small"></div>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <h2>2) Scanner Tools</h2>
-          <p class="muted small">Scanner runs one token at a time. Use random scan or manual token scan.</p>
-
-          <div class="watchlist-tools">
-            <h3 class="watchlist-tools-title">Random + Manual Tools</h3>
-            <div class="watchlist-tools-inner">
-              <button id="discover-tokens" class="secondary">Scan Random Token</button>
-              <div id="discovery-list" class="discovery-list"></div>
-
-              <label for="manual-mint">Manual token scan</label>
-              <div class="watchlist-entry">
-                <input id="manual-mint" type="text" placeholder="Paste one Solana mint or BTC/ETH" />
-                <button id="scan-manual" class="secondary">Scan</button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <h2>3) Scanner Scope</h2>
-          <p id="scanner-mode-note" class="small muted">Scanner Workspace is one-token-at-a-time in this first release. Use Random Scan or Manual token scan. Holder behavior uses rolling recent transactions, not full lifetime wallet history.</p>
-          <div id="scanner-quota-summary" class="scanner-quota-summary muted small"></div>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <h2>4) Alerts</h2>
-          <p class="muted">Get immediate warnings when signal status or risk posture changes during scanner and agent activity.</p>
-          <label class="checkbox-row"><input id="alert-favorable" type="checkbox" checked /> Favorable alerts</label>
-          <label class="checkbox-row"><input id="alert-high-risk" type="checkbox" checked /> High-risk alerts</label>
-          <label class="checkbox-row"><input id="alert-sound" type="checkbox" checked /> Sound buzz</label>
-          <button id="enable-browser-alerts" class="secondary">Enable Browser Popups</button>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <h2>5) Advanced Risk Controls (Optional)</h2>
-          <p class="muted">Optional tuning for expert users.</p>
-          <details class="sidebar-advanced">
-            <summary>Open Advanced Controls</summary>
-
-            <div class="advanced-block">
-              <h3>Risk Presets</h3>
-              <label for="risk-preset">Risk Preset</label>
-              <select id="risk-preset">
-                <option value="balanced">Balanced</option>
-                <option value="conservative">Conservative</option>
-                <option value="aggressive">Aggressive</option>
-              </select>
-              <div class="threshold-grid">
-                <label for="threshold-favorable-pattern">Favorable Pattern Min</label>
-                <input id="threshold-favorable-pattern" type="number" min="40" max="95" value="72" />
-                <label for="threshold-risk-kill">Risk Kill-Switch Max</label>
-                <input id="threshold-risk-kill" type="number" min="10" max="90" value="50" />
-                <label for="threshold-connected-max">Connected Holder Max %</label>
-                <input id="threshold-connected-max" type="number" min="5" max="60" value="25" />
-              </div>
-              <button id="apply-pro-preset" class="secondary">Apply Preset</button>
-            </div>
-          </details>
-        </section>
-      </aside>
-
-      <main class="main">
-        <div class="main-visual-depth" aria-hidden="true">
-          <img id="main-hero-visual" class="main-hero-visual" alt="" />
-          <img id="main-shapes-visual" class="main-shapes-visual" alt="" />
-        </div>
-        <section class="panel workspace-shared">
-          <div class="row between">
-            <h2>Workspace</h2>
-            <div class="workspace-head-actions">
-              <a href="/developers.html" class="secondary theme-shortcut-link">Developer Guide</a>
-              <span id="network-status" class="badge ok">Connected</span>
-            </div>
+            <span id="sidebar-network-copy" class="muted">Terminal Online</span>
+            <button id="connect-wallet" class="secondary">Connect Phantom</button>
           </div>
           <div class="workspace-switch">
             <button id="show-scanner-workspace" class="secondary workspace-toggle-btn active">Scanner Workspace</button>
             <button id="show-agent-workspace" class="secondary workspace-toggle-btn">Agent Workspace</button>
             <button id="show-profile-workspace" class="secondary workspace-toggle-btn">Profile & History</button>
           </div>
-          <p id="workspace-summary" class="small muted">Scanner workspace: run one-token random/manual scans and review risk cards.</p>
-        </section>
-
-        <section class="panel workspace-profile">
-          <div class="row between">
-            <h2>Profile & History</h2>
-            <button id="refresh-profile-workspace" class="secondary">Refresh Profile Data</button>
+          <div class="workspace-head-actions">
+            <span id="network-status" class="badge ok">Connected</span>
           </div>
-          <p class="muted small">Connected wallet summary, recent activity timeline, and account history in one workspace.</p>
-          <div id="dashboard-profile-overview" class="paper-performance-grid"></div>
+        </section>
+        <div class="topbar-hidden-controls" aria-hidden="true" hidden>
+          <div id="wallet-access-summary"></div>
+          <div id="scanner-mode-note"></div>
+          <div id="scanner-quota-summary"></div>
+          <div id="discovery-list"></div>
+          <label><input id="alert-favorable" type="checkbox" checked /> Favorable</label>
+          <label><input id="alert-high-risk" type="checkbox" checked /> High Risk</label>
+          <label><input id="alert-sound" type="checkbox" checked /> Sound</label>
+          <button id="enable-browser-alerts" type="button">Enable Browser Popups</button>
+          <select id="risk-preset">
+            <option value="balanced">Balanced</option>
+            <option value="conservative">Conservative</option>
+            <option value="aggressive">Aggressive</option>
+          </select>
+          <input id="threshold-favorable-pattern" type="number" min="40" max="95" value="72" />
+          <input id="threshold-risk-kill" type="number" min="10" max="90" value="50" />
+          <input id="threshold-connected-max" type="number" min="5" max="60" value="25" />
+          <button id="apply-pro-preset" type="button">Apply Preset</button>
+        </div>
+      </aside>
+
+      <main class="content main">
+        <section class="workspace-scanner scanner-workspace">
+          <section class="panel scanner-kpis-panel">
+            <div class="row between scanner-strip-head">
+              <h2>Mission & Wallet Performance</h2>
+              <span id="scan-status" class="badge">Stopped</span>
+            </div>
+            <div id="stats-grid" class="stats-grid terminal-kpi-grid">
+              <div class="stat"><span>Session Batches</span><strong>0</strong></div>
+              <div class="stat"><span>Tokens Scanned</span><strong>0</strong></div>
+              <div class="stat"><span>Favorable Hits</span><strong>0</strong></div>
+              <div class="stat"><span>Caution Hits</span><strong>0</strong></div>
+              <div class="stat"><span>High-Risk Hits</span><strong>0</strong></div>
+              <div class="stat"><span>Avg Pattern</span><strong>0</strong></div>
+              <div class="stat"><span>Avg Confidence</span><strong>0%</strong></div>
+              <div class="stat"><span>Avg Connected</span><strong>0.00%</strong></div>
+              <div class="stat"><span>Scans Stored</span><strong>0</strong></div>
+              <div class="stat"><span>Forecasts Stored</span><strong>0</strong></div>
+            </div>
+            <p id="stats-meta" class="muted small">Mission and wallet performance will update as scans and forecasts resolve.</p>
+          </section>
+
+          <section class="panel scanner-toolbar-panel">
+            <div class="scanner-toolbar-copy">
+              <h2>Live Scanner Results</h2>
+            </div>
+            <div class="scanner-toolbar-actions">
+              <button id="discover-tokens" class="secondary">Scan Random Token</button>
+              <div class="scanner-toolbar-entry">
+                <input id="manual-mint" type="text" placeholder="Paste one Solana mint or BTC/ETH" />
+                <button id="scan-manual" class="secondary">Scan</button>
+              </div>
+            </div>
+            <div class="result-controls">
+              <label for="result-filter">Filter</label>
+              <select id="result-filter">
+                <option value="all">All</option>
+                <option value="favorable">Favorable</option>
+                <option value="caution">Caution</option>
+                <option value="high_risk">High Risk</option>
+              </select>
+              <label for="result-sort">Sort</label>
+              <select id="result-sort">
+                <option value="pattern_desc">Pattern Score (High-Low)</option>
+                <option value="confidence_desc">Confidence (High-Low)</option>
+                <option value="liquidity_desc">Liquidity (High-Low)</option>
+                <option value="risk_desc">Connected Risk (High-Low)</option>
+              </select>
+            </div>
+          </section>
+
+          <section class="panel scanner-results-panel scanner-results">
+            <div id="signal-feed" class="signal-feed"></div>
+          </section>
+
+          <aside class="scanner-rail">
+            <section class="panel scanner-rail-panel">
+              <h2>Alert Feed</h2>
+              <div id="alert-feed" class="alert-feed"></div>
+            </section>
+
+            <section class="panel scanner-rail-panel">
+              <h2>Heatmap</h2>
+              <div id="heatmap-strip" class="heatmap-strip"></div>
+            </section>
+
+            <section class="panel scanner-rail-panel">
+              <h2>Session Trend</h2>
+              <div id="session-trend" class="session-trend"></div>
+            </section>
+          </aside>
         </section>
 
-        <section class="panel workspace-profile">
-          <h2>Connected Wallet Activity Timeline</h2>
-          <div id="dashboard-signal-timeline" class="table-wrap"></div>
-        </section>
-
-        <section class="panel workspace-profile">
-          <h2>Account History</h2>
-          <h3 class="profile-subtitle">Premium Payments</h3>
-          <div id="dashboard-payment-history" class="table-wrap"></div>
-          <h3 class="profile-subtitle">Autopilot Positions</h3>
-          <div id="dashboard-position-history" class="table-wrap"></div>
-          <h3 class="profile-subtitle">Withdrawal Requests</h3>
-          <div id="dashboard-withdraw-history" class="table-wrap"></div>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <div class="row between">
-            <h2>Scanner Analytics</h2>
-            <span id="scan-status" class="badge">Stopped</span>
-          </div>
-          <div id="stats-grid" class="stats-grid">
-            <div class="stat"><span>Session Batches</span><strong>0</strong></div>
-            <div class="stat"><span>Tokens Scanned (Session)</span><strong>0</strong></div>
-            <div class="stat"><span>Favorable Hits</span><strong>0</strong></div>
-            <div class="stat"><span>Caution Hits</span><strong>0</strong></div>
-            <div class="stat"><span>High-Risk Hits</span><strong>0</strong></div>
-            <div class="stat"><span>Avg Pattern (Session)</span><strong>0</strong></div>
-            <div class="stat"><span>Avg Confidence</span><strong>0%</strong></div>
-            <div class="stat"><span>Avg Connected</span><strong>0.00%</strong></div>
-            <div class="stat"><span>Scans Stored</span><strong>0</strong></div>
-            <div class="stat"><span>Forecasts Stored</span><strong>0</strong></div>
-          </div>
-          <p id="stats-meta" class="muted small">
-            Session analytics update after each completed scan batch.
-          </p>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <h2>Scan Heatmap</h2>
-          <div id="heatmap-strip" class="heatmap-strip"></div>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <h2>Session Trend</h2>
-          <div id="session-trend" class="session-trend"></div>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <h2>Live Scanner Results</h2>
-          <div class="result-controls">
-            <label for="result-filter">Filter</label>
-            <select id="result-filter">
-              <option value="all">All</option>
-              <option value="favorable">Favorable</option>
-              <option value="caution">Caution</option>
-              <option value="high_risk">High Risk</option>
-            </select>
-            <label for="result-sort">Sort</label>
-            <select id="result-sort">
-              <option value="pattern_desc">Pattern Score (High-Low)</option>
-              <option value="confidence_desc">Confidence (High-Low)</option>
-              <option value="liquidity_desc">Liquidity (High-Low)</option>
-              <option value="risk_desc">Connected Risk (High-Low)</option>
-            </select>
-          </div>
-          <div id="signal-feed" class="signal-feed"></div>
-        </section>
-
-        <section class="panel workspace-scanner">
-          <h2>Alert Feed</h2>
-          <div id="alert-feed" class="alert-feed"></div>
-        </section>
-
-        <section class="panel trade-lab workspace-agent agent-console">
-          <div class="agent-console-shell">
-            <section class="agent-hero-strip">
-              <div class="agent-hero-copy">
-                <div class="agent-console-kicker">AI Guardian Trading Console</div>
-                <div class="row between agent-hero-head">
-                  <div>
-                    <h2>Let AIG run the mission</h2>
-                    <p class="small muted">Enter budget, review the AI thesis, and let the system evaluate, plan, execute, monitor, and explain the trade lifecycle.</p>
-                  </div>
-                  <span id="paper-test-status" class="badge mission-status-badge">Idle</span>
+        <section class="trade-lab workspace-agent agent-workspace agent-console">
+          <section class="agent-command-header agent-mission-header">
+              <div class="agent-command-main">
+                <div class="agent-command-title">
+                  <h2>Agent Workspace</h2>
                 </div>
-                <div class="agent-provider-inline">
-                  <span class="small muted">Active Provider</span>
-                  <span id="agent-provider-badge" class="agent-provider-badge">OpenClaw Mission Adapter</span>
-                </div>
-                <div id="agent-runtime-health" class="agent-runtime-health" aria-live="polite"></div>
+                <span id="paper-test-status" class="badge mission-status-badge">Idle</span>
+              </div>
+
+              <div class="agent-command-metrics">
                 <div class="agent-token-identity">
                   <div class="agent-token-avatar-wrap">
                     <div id="agent-current-token-avatar" class="token-avatar fallback large">A</div>
                   </div>
                   <div class="agent-token-copy">
-                    <span class="small muted">Current Token</span>
+                    <span class="small muted">Token</span>
                     <strong id="agent-current-token-label">No token selected</strong>
                     <span id="agent-current-token-mint" class="agent-token-mint muted">Save one token to arm the console.</span>
                   </div>
                 </div>
-              </div>
-              <div class="agent-hero-controls">
-                <div class="agent-budget-card">
-                  <label for="paper-budget">Allocate Budget</label>
+                <div class="agent-command-stat">
+                  <span>Mission State</span>
+                  <strong id="agent-mission-status-label">Idle</strong>
+                </div>
+                <div id="agent-confidence-meter" class="agent-command-stat agent-confidence-meter">
+                  <span>Confidence</span>
+                  <strong>0%</strong>
+                </div>
+                <div class="agent-command-stat agent-budget-stat">
+                  <span>Budget</span>
                   <div class="agent-budget-input-wrap">
                     <span>$</span>
                     <input id="paper-budget" type="number" min="10" max="1000000" value="100" />
                   </div>
-                  <p class="small muted">AIG sizes entries, risk posture, and monitoring cadence from this budget. Paper runs auto-stop after 8 minutes.</p>
                 </div>
-                <div class="agent-hero-actions">
-                  <button id="agent-run-test" class="agent-primary-cta">Let AI Trade</button>
-                  <button id="agent-preview-plan" class="secondary">Preview Plan</button>
-                  <button id="agent-close-position" class="secondary">Close Position</button>
-                  <button id="agent-emergency-halt" class="secondary danger">Emergency Halt</button>
+                <div class="agent-command-stat">
+                  <span>Provider</span>
+                  <strong id="agent-provider-badge" class="agent-provider-badge">OpenClaw Mission Adapter</strong>
+                </div>
+                <div class="agent-command-stat">
+                  <span>Session Status</span>
+                  <div id="agent-runtime-health" class="agent-runtime-health" aria-live="polite"></div>
                 </div>
               </div>
-            </section>
 
-            <div class="agent-console-grid">
-              <section class="agent-mission-panel">
-                <div class="row between">
-                  <div>
-                    <h3>AI Thesis</h3>
-                    <p class="small muted">How the model reads the token right now.</p>
-                  </div>
-                  <div id="agent-confidence-meter" class="agent-confidence-meter">
-                    <span>Confidence</span>
-                    <strong>0%</strong>
-                  </div>
+              <div class="agent-hero-actions agent-command-actions">
+                <button id="agent-run-test" class="agent-primary-cta">Start / Resume</button>
+                <button id="agent-preview-plan" class="secondary">Preview Plan</button>
+                <button id="agent-emergency-halt" class="secondary danger">Emergency Halt</button>
+                <button id="agent-close-position" class="secondary">Close Position</button>
+              </div>
+          </section>
+
+          <div class="processing-main main-column">
+            <section class="panel processing-metrics-left">
+              <div class="processing-panel-head">
+                <h3>Runtime Metrics</h3>
+                <span id="agent-runtime-heartbeat" class="agent-runtime-heartbeat">Heartbeat Stable</span>
+              </div>
+              <div class="capital-snapshot-card">
+                <div class="capital-snapshot-head">
+                  <span>Capital Snapshot</span>
+                </div>
+                <div class="capital-snapshot-grid">
+                  <div><span>Cap</span><strong id="agent-capital-current">$100</strong></div>
+                  <div><span>Profit</span><strong id="agent-capital-profit" class="flow-positive">$0</strong></div>
+                  <div><span>Loss</span><strong id="agent-capital-loss" class="flow-negative">$0</strong></div>
+                  <div><span>Total</span><strong id="agent-capital-total">$0</strong></div>
+                </div>
+              </div>
+              <div class="processing-metric-grid">
+                <div class="processing-metric-card">
+                  <span>Network Status</span>
+                  <strong id="agent-processing-network">Online</strong>
+                </div>
+                <div class="processing-metric-card">
+                  <span>Runtime Cadence</span>
+                  <strong id="agent-processing-cadence">24 hz</strong>
+                </div>
+                <div class="processing-metric-card">
+                  <span>Budget Remaining</span>
+                  <strong id="agent-processing-budget">$100</strong>
+                </div>
+                <div class="processing-metric-card">
+                  <span>Mission PnL</span>
+                  <strong id="agent-processing-pnl">$0.00</strong>
+                </div>
+                <div class="processing-metric-card">
+                  <span>Compute Load</span>
+                  <strong id="agent-processing-load">18%</strong>
+                </div>
+                <div class="processing-metric-card">
+                  <span>Session Uptime</span>
+                  <strong id="agent-processing-uptime">00:00:00</strong>
+                </div>
+              </div>
+              <div class="processing-architecture">
+                <div class="processing-subhead">
+                  <span>Active Modules</span>
+                  <strong id="agent-processing-state-chip">Idle</strong>
+                </div>
+                <div id="agent-processing-modules" class="processing-module-list"></div>
+              </div>
+              <div class="processing-thesis-shell">
+                <div class="processing-panel-head">
+                  <h3>AI Thesis</h3>
+                  <span id="agent-execution-mode" class="pill caution">Paper Guarded</span>
                 </div>
                 <div class="agent-mission-grid">
                   <div class="agent-mission-card">
                     <span>Mission Status</span>
-                    <strong id="agent-mission-status-label">Idle</strong>
+                    <strong id="agent-mission-status-secondary">Idle</strong>
                     <small id="agent-mission-status-note">Waiting for a token and budget.</small>
                   </div>
                   <div class="agent-mission-card">
@@ -301,88 +270,138 @@
                     <li>Save one token and preview the plan to generate reasoning.</li>
                   </ul>
                 </div>
-              </section>
+              </div>
+            </section>
 
-              <section class="agent-execution-panel">
-                <div class="row between">
-                  <div>
-                    <h3>Execution Trace</h3>
-                    <p class="small muted">Lifecycle from preview to paper execution.</p>
-                  </div>
-                  <span id="agent-execution-mode" class="pill caution">Paper Guarded</span>
-                </div>
-                <div id="agent-execution-trace" class="agent-trace-grid">
-                  <div><span>Preview State</span><strong>Not started</strong></div>
-                  <div><span>Submitted</span><strong>-</strong></div>
-                  <div><span>Tx Hash</span><strong>-</strong></div>
-                  <div><span>Filled Amount</span><strong>-</strong></div>
-                  <div><span>Average Entry</span><strong>-</strong></div>
-                  <div><span>Stop Loss</span><strong>-</strong></div>
-                  <div><span>Take Profit</span><strong>-</strong></div>
-                  <div><span>Hold Horizon</span><strong>-</strong></div>
-                  <div><span>Current PnL</span><strong>-</strong></div>
-                </div>
-                <div id="engine-summary" class="msg agent-engine-summary">Mission runtime idle.</div>
-              </section>
+            <section class="panel neural-core-panel">
+              <div class="processing-panel-head">
+                <h3>Neural Core</h3>
+                <span id="agent-processing-core-state" class="agent-processing-core-state">Idle</span>
+              </div>
+              <div class="neural-core-shell">
+                <div class="neural-core-scanline"></div>
+                <div id="agent-neural-core" class="neural-core-grid" aria-hidden="true"></div>
+              </div>
+            </section>
 
-              <section class="agent-chart-panel">
-                <div class="row between">
-                  <div>
-                    <h3>Market Panel</h3>
-                    <p class="small muted">Live price strip, chart window, and future execution markers.</p>
-                  </div>
-                  <span id="agent-price-status" class="badge">Idle</span>
+            <section class="panel processing-metrics-right">
+              <div class="processing-subpanel">
+                <div class="processing-panel-head">
+                  <h3>Confidence Distribution</h3>
+                  <span id="agent-processing-distribution-label">Dormant</span>
                 </div>
-                <div class="agent-price-layout">
-                  <div class="agent-price-chart-col">
-                    <div class="agent-price-strip">
-                      <strong id="agent-price-strip-price">$0.00</strong>
-                      <span id="agent-price-strip-context" class="small muted">No active market pulse yet.</span>
-                    </div>
-                    <div id="agent-price-chart" class="session-trend agent-chart-surface"></div>
-                    <div id="agent-price-meta" class="trend-legend"></div>
+                <div id="agent-distribution-histogram" class="processing-histogram" aria-hidden="true"></div>
+              </div>
+              <div class="processing-subpanel">
+                <div class="processing-panel-head">
+                  <h3>Inference Bars</h3>
+                  <span id="agent-processing-inference-label">Staged</span>
+                </div>
+                <div id="agent-inference-bars" class="processing-inference-bars"></div>
+              </div>
+              <div class="processing-subpanel">
+                <div class="processing-panel-head">
+                  <h3>Signal Wave</h3>
+                  <span id="agent-processing-wave-label">Low Energy</span>
+                </div>
+                <div id="agent-signal-wave" class="processing-signal-wave"></div>
+              </div>
+            </section>
+
+            <section class="panel processing-bottom-chart agent-chart-panel">
+              <div class="row between">
+                <div>
+                  <h3>Mission Processing Curve</h3>
+                  <p class="small muted">Confidence, readiness, and market pulse converge here.</p>
+                </div>
+                <span id="agent-price-status" class="badge">Idle</span>
+              </div>
+              <div class="agent-price-layout">
+                <div class="agent-price-chart-col">
+                  <div class="agent-price-strip">
+                    <strong id="agent-price-strip-price">$0.00</strong>
+                    <span id="agent-price-strip-context" class="small muted">No active market pulse yet.</span>
                   </div>
-                  <div class="agent-price-side">
-                    <span class="small muted">Chart Window</span>
-                    <div class="quick-amount-buttons agent-window-buttons">
-                      <button type="button" class="secondary quick-amount-btn" data-agent-price-window="60">1m</button>
-                      <button type="button" class="secondary quick-amount-btn" data-agent-price-window="300">5m</button>
-                      <button type="button" class="secondary quick-amount-btn" data-agent-price-window="900">15m</button>
-                    </div>
-                    <div class="agent-marker-legend">
-                      <span><i class="marker entry"></i>Entry</span>
-                      <span><i class="marker stop"></i>Stop</span>
-                      <span><i class="marker target"></i>Target</span>
-                      <span><i class="marker pulse"></i>Live Pulse</span>
-                    </div>
+                  <div class="market-pulse-strip" aria-hidden="true">
+                    <div class="market-pulse-bars"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                    <div class="market-pulse-matrix"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  </div>
+                  <div id="agent-processing-curve" class="processing-curve-surface"></div>
+                  <div id="agent-price-chart" class="session-trend agent-chart-surface"></div>
+                  <div id="agent-price-meta" class="trend-legend"></div>
+                </div>
+                <div class="agent-price-side">
+                  <span class="small muted">Timeframe</span>
+                  <div class="quick-amount-buttons agent-window-buttons">
+                    <button type="button" class="secondary quick-amount-btn" data-agent-price-window="60">1m</button>
+                    <button type="button" class="secondary quick-amount-btn" data-agent-price-window="300">5m</button>
+                    <button type="button" class="secondary quick-amount-btn" data-agent-price-window="900">15m</button>
+                  </div>
+                  <div class="agent-marker-legend">
+                    <span><i class="marker entry"></i>Entry</span>
+                    <span><i class="marker stop"></i>Stop</span>
+                    <span><i class="marker target"></i>Target</span>
+                    <span><i class="marker pulse"></i>Live Pulse</span>
                   </div>
                 </div>
-              </section>
+              </div>
+              <div id="engine-summary" class="msg agent-engine-summary">Mission runtime idle.</div>
+            </section>
 
-              <aside class="agent-side-stack">
-                <section class="agent-position-panel">
-                  <div class="row between">
-                    <div>
-                      <h3>Live Position</h3>
-                      <p class="small muted">Current managed paper position.</p>
-                    </div>
-                  </div>
-                  <div id="engine-open-positions" class="agent-live-position-card table-wrap"></div>
-                </section>
+            <section class="panel processing-runtime-log">
+              <div class="processing-panel-head">
+                <h3>Runtime Stream</h3>
+                <span id="agent-runtime-stream-label">Awaiting Input</span>
+              </div>
+              <div id="agent-runtime-log-stream" class="processing-runtime-stream"></div>
+            </section>
+          </div>
 
-                <section class="agent-activity-panel premium-feed-panel">
-                  <div class="row between">
-                    <div>
-                      <h3>Agent Activity</h3>
-                      <p class="small muted">Streaming operator feed from preview, execution, and monitoring.</p>
-                    </div>
-                    <button id="trade-activity-clear" class="secondary tiny-btn">Clear</button>
-                  </div>
-                  <div id="agent-activity-feed" class="agent-activity-feed"></div>
-                  <div id="live-monitor-status" class="msg">Realtime monitor idle.</div>
-                </section>
-              </aside>
-            </div>
+          <aside class="right-rail agent-side-stack">
+            <section class="agent-position-panel panel">
+              <div class="row between">
+                <div>
+                  <h3>Live Position</h3>
+                  <p class="small muted">Managed paper position with compact metric grid.</p>
+                </div>
+              </div>
+              <div id="engine-open-positions" class="agent-live-position-card table-wrap"></div>
+            </section>
+
+            <section class="agent-activity-panel premium-feed-panel panel">
+              <div class="row between">
+                <div>
+                  <h3>Agent Activity</h3>
+                  <p class="small muted">Streaming operator log with internal scrolling.</p>
+                </div>
+                <button id="trade-activity-clear" class="secondary tiny-btn">Clear</button>
+              </div>
+              <div id="agent-activity-feed" class="agent-activity-feed activity-log"></div>
+              <div id="live-monitor-status" class="msg">Realtime monitor idle.</div>
+            </section>
+
+            <section class="agent-trace-panel panel">
+              <div class="row between">
+                <div>
+                  <h3>Execution Trace</h3>
+                  <p class="small muted">Lifecycle, fills, and runtime checkpoints.</p>
+                </div>
+              </div>
+              <div id="agent-execution-trace" class="agent-trace-grid execution-trace">
+                <div><span>Preview State</span><strong>Not started</strong></div>
+                <div><span>Submitted</span><strong>-</strong></div>
+                <div><span>Tx Hash</span><strong>-</strong></div>
+                <div><span>Filled Amount</span><strong>-</strong></div>
+                <div><span>Average Entry</span><strong>-</strong></div>
+                <div><span>Stop Loss</span><strong>-</strong></div>
+                <div><span>Take Profit</span><strong>-</strong></div>
+                <div><span>Hold Horizon</span><strong>-</strong></div>
+                <div><span>Current PnL</span><strong>-</strong></div>
+              </div>
+            </section>
+          </aside>
+
+          <section class="bottom-drawers">
 
             <details id="agent-advanced-drawer" class="trade-advanced agent-advanced-drawer">
               <summary>Advanced Controls</summary>
@@ -510,6 +529,7 @@
                 </section>
               </div>
             </details>
+          </section>
 
           <div class="agent-hidden-rule-inputs" aria-hidden="true" hidden>
             <input id="paper-min-pattern" type="number" min="0" max="95" value="68" />
@@ -530,8 +550,47 @@
             <button id="engine-start-loop" type="button">Live Agent (Disabled)</button>
             <button id="engine-stop-loop" type="button">Stop Live Agent</button>
           </div>
+        </section>
 
-          </div>
+        <section class="workspace-profile profile-workspace">
+          <section class="panel profile-summary-panel">
+            <div class="row between">
+              <h2>Profile Summary</h2>
+              <span class="badge">Wallet</span>
+            </div>
+            <div id="dashboard-profile-overview" class="paper-performance-grid"></div>
+          </section>
+
+          <section class="panel profile-history-toolbar">
+            <div class="row between">
+              <div>
+                <h2>Profile & History</h2>
+                <p class="small muted">Wallet snapshot, activity timeline, and account history.</p>
+              </div>
+              <button id="refresh-profile-workspace" class="secondary">Refresh Profile Data</button>
+            </div>
+          </section>
+
+          <section class="panel profile-history-table">
+            <div class="profile-history-scroll">
+              <div class="profile-history-block">
+                <h3>Connected Wallet Activity Timeline</h3>
+                <div id="dashboard-signal-timeline" class="table-wrap"></div>
+              </div>
+              <div class="profile-history-block">
+                <h3 class="profile-subtitle">Premium Payments</h3>
+                <div id="dashboard-payment-history" class="table-wrap"></div>
+              </div>
+              <div class="profile-history-block">
+                <h3 class="profile-subtitle">Autopilot Positions</h3>
+                <div id="dashboard-position-history" class="table-wrap"></div>
+              </div>
+              <div class="profile-history-block">
+                <h3 class="profile-subtitle">Withdrawal Requests</h3>
+                <div id="dashboard-withdraw-history" class="table-wrap"></div>
+              </div>
+            </div>
+          </section>
         </section>
       </main>
     </div>

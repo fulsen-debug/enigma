@@ -62,6 +62,7 @@ const agentCurrentTokenLabel = document.querySelector("#agent-current-token-labe
 const agentCurrentTokenMint = document.querySelector("#agent-current-token-mint");
 const agentProviderBadge = document.querySelector("#agent-provider-badge");
 const agentMissionStatusLabel = document.querySelector("#agent-mission-status-label");
+const agentMissionStatusSecondary = document.querySelector("#agent-mission-status-secondary");
 const agentMissionStatusNote = document.querySelector("#agent-mission-status-note");
 const agentRiskPosture = document.querySelector("#agent-risk-posture");
 const agentRiskPostureNote = document.querySelector("#agent-risk-posture-note");
@@ -76,6 +77,31 @@ const agentExecutionMode = document.querySelector("#agent-execution-mode");
 const agentExecutionTrace = document.querySelector("#agent-execution-trace");
 const agentPriceStripPrice = document.querySelector("#agent-price-strip-price");
 const agentPriceStripContext = document.querySelector("#agent-price-strip-context");
+const agentWorkspaceShell = document.querySelector(".agent-workspace");
+const agentProcessingNetwork = document.querySelector("#agent-processing-network");
+const agentProcessingCadence = document.querySelector("#agent-processing-cadence");
+const agentProcessingBudget = document.querySelector("#agent-processing-budget");
+const agentProcessingPnl = document.querySelector("#agent-processing-pnl");
+const agentCapitalCurrent = document.querySelector("#agent-capital-current");
+const agentCapitalProfit = document.querySelector("#agent-capital-profit");
+const agentCapitalLoss = document.querySelector("#agent-capital-loss");
+const agentCapitalTotal = document.querySelector("#agent-capital-total");
+const agentProcessingLoad = document.querySelector("#agent-processing-load");
+const agentProcessingUptime = document.querySelector("#agent-processing-uptime");
+const agentProcessingModules = document.querySelector("#agent-processing-modules");
+const agentProcessingStateChip = document.querySelector("#agent-processing-state-chip");
+const agentRuntimeHeartbeat = document.querySelector("#agent-runtime-heartbeat");
+const agentProcessingCoreState = document.querySelector("#agent-processing-core-state");
+const agentDistributionHistogram = document.querySelector("#agent-distribution-histogram");
+const agentProcessingDistributionLabel = document.querySelector("#agent-processing-distribution-label");
+const agentInferenceBars = document.querySelector("#agent-inference-bars");
+const agentProcessingInferenceLabel = document.querySelector("#agent-processing-inference-label");
+const agentSignalWave = document.querySelector("#agent-signal-wave");
+const agentProcessingWaveLabel = document.querySelector("#agent-processing-wave-label");
+const agentProcessingCurve = document.querySelector("#agent-processing-curve");
+const agentRuntimeLogStream = document.querySelector("#agent-runtime-log-stream");
+const agentRuntimeStreamLabel = document.querySelector("#agent-runtime-stream-label");
+const agentNeuralCore = document.querySelector("#agent-neural-core");
 const agentActivityFeed = document.querySelector("#agent-activity-feed");
 const agentAdvancedDrawer = document.querySelector("#agent-advanced-drawer");
 const agentDiagnosticsDrawer = document.querySelector("#agent-diagnostics-drawer");
@@ -186,6 +212,17 @@ let reconnectBackoffMs = 5000;
 let reconnectNoticeShown = false;
 let agentPriceLastErrorNoticeTs = 0;
 let fullscreenBlockDepth = 0;
+let agentProcessingLoop = null;
+let agentProcessingStartedAt = Date.now();
+let agentProcessingTick = 0;
+let agentProcessingTelemetry = {
+  mode: "idle",
+  histogram: Array.from({ length: 16 }, () => 0.2),
+  inference: Array.from({ length: 6 }, () => 0.2),
+  wave: Array.from({ length: 28 }, (_, index) => 0.35 + Math.sin(index / 3) * 0.08),
+  curve: Array.from({ length: 24 }, (_, index) => 0.28 + Math.sin(index / 4) * 0.12),
+  logs: []
+};
 const recentErrorNoticeByKey = new Map();
 const sessionAnalytics = {
   batches: 0,
@@ -235,6 +272,24 @@ const engineExitPresets = {
     cooldownSec: 45,
     pollIntervalSec: 20
   }
+};
+const AGENT_PROCESSING_MODULES = [
+  "feature pass",
+  "risk mesh",
+  "confidence model",
+  "regime lens",
+  "order intent",
+  "runtime guard"
+];
+const AGENT_PROCESSING_LOG_LIBRARY = {
+  idle: ["[SCAN_INIT]", "[MODEL_SYNC]", "[FEATURE_PASS]", "[RISK_CHECK]", "[PREVIEW_WAIT]"],
+  scanning: ["[SCAN_INIT]", "[FEATURE_PASS]", "[MARKET_PULSE]", "[RISK_CHECK]", "[SIGNAL_SCORE]"],
+  previewing: ["[MODEL_SYNC]", "[FEATURE_PASS]", "[THESIS_BUILD]", "[PREVIEW_WAIT]", "[RISK_MATRIX]"],
+  planning: ["[THESIS_BUILD]", "[PLAN_SHAPE]", "[EXECUTION_MAP]", "[RISK_MATRIX]", "[CONFIDENCE_SHIFT]"],
+  monitoring: ["[POSITION_SYNC]", "[HEARTBEAT_OK]", "[MARKET_WATCH]", "[RUNTIME_GUARD]", "[PNL_TRACE]"],
+  executing: ["[EXECUTION_ARM]", "[ROUTE_CHECK]", "[FILL_TRACK]", "[SL_TP_SYNC]", "[CONFIRM_WAIT]"],
+  halted: ["[HALT_ENGAGED]", "[EXECUTION_LOCK]", "[RUNTIME_IDLE]", "[WATCH_PASSIVE]", "[MANUAL_REVIEW]"],
+  error: ["[STREAM_ERROR]", "[RECOVERY_WAIT]", "[ENGINE_ALERT]", "[SAFE_MODE]", "[OPERATOR_REVIEW]"]
 };
 const CORE_AGENT_MODEL_KEY = "guardian_core";
 const paperTestModels = {
@@ -865,6 +920,11 @@ function renderProfileWorkspacePlaceholder(text, tone = "") {
   if (dashboardPaymentHistory) dashboardPaymentHistory.innerHTML = content;
   if (dashboardPositionHistory) dashboardPositionHistory.innerHTML = content;
   if (dashboardWithdrawHistory) dashboardWithdrawHistory.innerHTML = content;
+}
+
+function syncUiStateClasses() {
+  document.body.classList.toggle("wallet-connected", Boolean(authToken));
+  document.body.classList.toggle("wallet-disconnected", !authToken);
 }
 
 function renderDashboardProfileOverview(data) {
@@ -2673,6 +2733,8 @@ function setAuthState() {
     ? `Connected: ${userWallet.slice(0, 6)}...${userWallet.slice(-6)}`
     : "Not connected";
 
+  syncUiStateClasses();
+
   if (!planStatus) return;
   if (!authToken) {
     if (reconnectTimer) {
@@ -3000,6 +3062,245 @@ function renderAgentRuntimeHealth() {
   `;
 }
 
+function getAgentProcessingMode() {
+  if (agentTradeState.error) return "error";
+  if (agentTradeState.emergencyStopEnabled || String(agentTradeState.missionStatus || "").toLowerCase() === "halted") {
+    return "halted";
+  }
+  if (agentTradeState.isExecuteLoading || String(agentTradeState.missionStatus || "").toLowerCase() === "executing") {
+    return "executing";
+  }
+  if (String(agentTradeState.missionStatus || "").toLowerCase() === "monitoring") return "monitoring";
+  if (agentTradeState.isPreviewLoading) return "previewing";
+  if (String(agentTradeState.missionStatus || "").toLowerCase() === "planning") return "planning";
+  if (String(agentTradeState.missionStatus || "").toLowerCase() === "evaluating") return "previewing";
+  if (String(agentTradeState.missionStatus || "").toLowerCase() === "scanning") {
+    return agentTargetMint ? "scanning" : "idle";
+  }
+  if (String(agentTradeState.missionStatus || "").toLowerCase() === "exited") return "monitoring";
+  return agentTargetMint ? "scanning" : "idle";
+}
+
+function getProcessingEnergy(mode) {
+  const map = {
+    idle: 0.18,
+    scanning: 0.42,
+    previewing: 0.58,
+    planning: 0.72,
+    monitoring: 0.5,
+    executing: 0.9,
+    halted: 0.08,
+    error: 0.04
+  };
+  return map[mode] ?? 0.25;
+}
+
+function formatProcessingUptime() {
+  const elapsed = Math.max(0, Math.floor((Date.now() - agentProcessingStartedAt) / 1000));
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = elapsed % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+}
+
+function buildProcessingLineSvg(points = [], tone = "cyan") {
+  const values = Array.isArray(points) && points.length ? points : [0.4, 0.45, 0.42, 0.48];
+  const width = 100;
+  const height = 100;
+  const polyline = values
+    .map((value, index) => {
+      const x = (index / Math.max(values.length - 1, 1)) * width;
+      const normalized = Math.max(0.05, Math.min(0.95, Number(value || 0.2)));
+      const y = height - normalized * height;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+  return `
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="processing-${tone}" x1="0%" x2="100%" y1="0%" y2="0%">
+          <stop offset="0%" stop-color="rgba(79, 197, 255, 0.08)"></stop>
+          <stop offset="100%" stop-color="rgba(79, 197, 255, 0.96)"></stop>
+        </linearGradient>
+      </defs>
+      <polyline points="${polyline}" fill="none" stroke="url(#processing-${tone})" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline>
+    </svg>
+  `;
+}
+
+function appendProcessingLog(mode) {
+  const library = AGENT_PROCESSING_LOG_LIBRARY[mode] || AGENT_PROCESSING_LOG_LIBRARY.idle;
+  const pattern = library[agentProcessingTick % library.length];
+  const suffixMap = {
+    idle: "awaiting operator signal",
+    scanning: "market inputs normalized",
+    previewing: "reasoning fabric warming",
+    planning: "execution lattice converging",
+    monitoring: "position telemetry stable",
+    executing: "fill path locked",
+    halted: "runtime held at operator boundary",
+    error: "recovery queue staged"
+  };
+  agentProcessingTelemetry.logs = [
+    {
+      ts: new Date().toLocaleTimeString(),
+      tag: pattern,
+      detail: suffixMap[mode] || "pipeline active",
+      mode
+    },
+    ...agentProcessingTelemetry.logs
+  ].slice(0, 18);
+}
+
+function stepAgentProcessingTelemetry() {
+  const mode = getAgentProcessingMode();
+  const energy = getProcessingEnergy(mode);
+  agentProcessingTick += 1;
+  agentProcessingTelemetry.mode = mode;
+  agentProcessingTelemetry.histogram = agentProcessingTelemetry.histogram.map((value, index) => {
+    const phase = agentProcessingTick / 3.4 + index * 0.52;
+    const target = Math.max(0.08, Math.min(0.96, energy * (0.65 + Math.sin(phase) * 0.24) + 0.18));
+    return value * 0.6 + target * 0.4;
+  });
+  agentProcessingTelemetry.inference = agentProcessingTelemetry.inference.map((value, index) => {
+    const phase = agentProcessingTick / 4.6 + index * 0.88;
+    const target = Math.max(0.1, Math.min(0.98, energy * (0.72 + Math.cos(phase) * 0.18) + 0.14));
+    return value * 0.55 + target * 0.45;
+  });
+  agentProcessingTelemetry.wave = [
+    ...agentProcessingTelemetry.wave.slice(1),
+    Math.max(0.08, Math.min(0.95, 0.26 + energy * 0.56 + Math.sin(agentProcessingTick / 3.2) * 0.12))
+  ];
+  agentProcessingTelemetry.curve = [
+    ...agentProcessingTelemetry.curve.slice(1),
+    Math.max(0.08, Math.min(0.95, 0.22 + energy * 0.62 + Math.cos(agentProcessingTick / 4.1) * 0.1))
+  ];
+  if (agentProcessingTick % (mode === "idle" ? 4 : mode === "monitoring" ? 2 : 1) === 0) {
+    appendProcessingLog(mode);
+  }
+}
+
+function renderAgentProcessingTelemetry() {
+  const mode = agentProcessingTelemetry.mode || getAgentProcessingMode();
+  const energy = getProcessingEnergy(mode);
+  if (agentWorkspaceShell) {
+    agentWorkspaceShell.dataset.processingState = mode;
+  }
+  if (agentRuntimeHeartbeat) {
+    agentRuntimeHeartbeat.textContent = mode === "halted"
+      ? "Heartbeat Held"
+      : mode === "error"
+        ? "Heartbeat Fault"
+        : energy > 0.7
+          ? "Heartbeat Elevated"
+          : "Heartbeat Stable";
+  }
+  if (agentProcessingCoreState) {
+    agentProcessingCoreState.textContent = mode.toUpperCase();
+  }
+  if (agentProcessingStateChip) {
+    agentProcessingStateChip.textContent = mode.toUpperCase();
+  }
+  if (agentProcessingNetwork) {
+    agentProcessingNetwork.textContent = agentTradeState.error ? "Recovery Pending" : "Terminal Online";
+  }
+  if (agentProcessingCadence) {
+    agentProcessingCadence.textContent = `${Math.round(12 + energy * 32)} hz`;
+  }
+  if (agentProcessingBudget) {
+    const budget = Number(paperBudgetInput?.value || agentTradeState.budgetUsd || 0);
+    agentProcessingBudget.textContent = formatUsd(Math.max(0, budget));
+  }
+  if (agentProcessingPnl) {
+    const pnl = Number(agentTradeState.position?.pnlUsd || 0);
+    agentProcessingPnl.textContent = formatUsd(pnl);
+  }
+  if (agentProcessingLoad) {
+    agentProcessingLoad.textContent = `${Math.round(10 + energy * 76)}%`;
+  }
+  if (agentProcessingUptime) {
+    agentProcessingUptime.textContent = formatProcessingUptime();
+  }
+  if (agentProcessingModules) {
+    agentProcessingModules.innerHTML = AGENT_PROCESSING_MODULES
+      .map((label, index) => {
+        const isActive = ((agentProcessingTick + index) % 3 === 0) || (energy > 0.65 && index % 2 === 0);
+        return `<span class="processing-module-chip ${isActive ? "active" : ""}">${escapeHtml(label)}</span>`;
+      })
+      .join("");
+  }
+  if (agentNeuralCore) {
+    agentNeuralCore.innerHTML = Array.from({ length: 7 }, (_, column) => `
+      <div class="neural-core-column">
+        ${Array.from({ length: 8 }, (_, row) => {
+          const signal = Math.sin(agentProcessingTick / 2.6 + column * 0.7 + row * 0.45);
+          const intensity = Math.max(0.08, Math.min(1, energy * 0.9 + signal * 0.22));
+          const burst = (agentProcessingTick + column + row) % 9 === 0 ? " burst" : "";
+          return `<i class="neural-node${burst}" style="--node-intensity:${intensity.toFixed(3)}"></i>`;
+        }).join("")}
+      </div>
+    `).join("");
+  }
+  if (agentDistributionHistogram) {
+    agentDistributionHistogram.innerHTML = agentProcessingTelemetry.histogram
+      .map((value, index) => `<i style="--bar-height:${Math.round(value * 100)}%;--bar-delay:${(index * 0.06).toFixed(2)}s"></i>`)
+      .join("");
+  }
+  if (agentProcessingDistributionLabel) {
+    agentProcessingDistributionLabel.textContent = mode === "idle" ? "Dormant" : `${Math.round(energy * 100)}% active`;
+  }
+  if (agentInferenceBars) {
+    const labels = ["features", "risk", "regime", "intent", "guard", "route"];
+    agentInferenceBars.innerHTML = agentProcessingTelemetry.inference
+      .map((value, index) => `
+        <div class="processing-inference-row">
+          <span>${escapeHtml(labels[index] || `lane ${index + 1}`)}</span>
+          <div class="processing-inference-track"><i style="width:${Math.round(value * 100)}%"></i></div>
+        </div>
+      `)
+      .join("");
+  }
+  if (agentProcessingInferenceLabel) {
+    agentProcessingInferenceLabel.textContent = mode === "executing" ? "Priority Route" : mode === "monitoring" ? "Guarded Flow" : "Adaptive";
+  }
+  if (agentSignalWave) {
+    agentSignalWave.innerHTML = buildProcessingLineSvg(agentProcessingTelemetry.wave, "cyan");
+  }
+  if (agentProcessingWaveLabel) {
+    agentProcessingWaveLabel.textContent = mode === "halted" ? "Frozen" : mode === "error" ? "Warning" : "Streaming";
+  }
+  if (agentProcessingCurve) {
+    agentProcessingCurve.innerHTML = buildProcessingLineSvg(agentProcessingTelemetry.curve, "cyan");
+  }
+  if (agentRuntimeLogStream) {
+    const fallbackLogs = agentProcessingTelemetry.logs.length
+      ? agentProcessingTelemetry.logs
+      : [{ ts: new Date().toLocaleTimeString(), tag: "[PREVIEW_WAIT]", detail: "pipeline ready", mode }];
+    agentRuntimeLogStream.innerHTML = fallbackLogs
+      .map((item) => `
+        <div class="processing-runtime-row tone-${escapeHtml(item.mode || mode)}">
+          <span>${escapeHtml(item.ts)}</span>
+          <strong>${escapeHtml(item.tag)}</strong>
+          <p>${escapeHtml(item.detail)}</p>
+        </div>
+      `)
+      .join("");
+  }
+  if (agentRuntimeStreamLabel) {
+    agentRuntimeStreamLabel.textContent = mode === "idle" ? "Awaiting Input" : `${mode.toUpperCase()} STREAM`;
+  }
+}
+
+function ensureAgentProcessingLoop() {
+  if (agentProcessingLoop || !agentWorkspaceShell) return;
+  stepAgentProcessingTelemetry();
+  renderAgentProcessingTelemetry();
+  agentProcessingLoop = window.setInterval(() => {
+    stepAgentProcessingTelemetry();
+    renderAgentProcessingTelemetry();
+  }, 700);
+}
+
 function renderAgentActivityFeed() {
   if (!agentActivityFeed) return;
   const activity = Array.isArray(agentTradeState.activity) ? agentTradeState.activity : [];
@@ -3263,6 +3564,7 @@ function renderAgentTokenIdentity() {
 }
 
 function renderAgentMissionConsole() {
+  ensureAgentProcessingLoop();
   renderAgentTokenIdentity();
   const statusMeta = getMissionStatusPresentation(agentTradeState.missionStatus);
   const missionModel = agentTradeState.missionModel || createEmptyMissionModel(getActiveAgentProvider().id);
@@ -3275,6 +3577,7 @@ function renderAgentMissionConsole() {
   }
 
   if (agentMissionStatusLabel) agentMissionStatusLabel.textContent = statusMeta.label;
+  if (agentMissionStatusSecondary) agentMissionStatusSecondary.textContent = statusMeta.label;
   if (agentMissionStatusNote) {
     agentMissionStatusNote.textContent = agentTradeState.error || statusMeta.note;
   }
@@ -3361,6 +3664,7 @@ function renderAgentMissionConsole() {
 
   renderAgentActivityFeed();
   renderAgentDiagnostics();
+  renderAgentProcessingTelemetry();
 }
 
 function updateAgentTradeState(patch = {}) {
@@ -4587,6 +4891,25 @@ function renderTradeActivityVisualization() {
       </table>
     `;
   }
+
+  renderCapitalSnapshot(snapshot);
+}
+
+function renderCapitalSnapshot(snapshot = null) {
+  if (!agentCapitalCurrent || !agentCapitalProfit || !agentCapitalLoss || !agentCapitalTotal) return;
+  const data = snapshot || getPaperTradeSnapshot();
+  const budget = Number(data?.budgetCapUsd || 0);
+  const net = Number(data?.netPnlUsd || 0);
+  const profit = Math.max(0, net);
+  const loss = Math.max(0, -net);
+  const current = budget + net;
+
+  agentCapitalCurrent.textContent = formatUsd(current);
+  agentCapitalProfit.textContent = formatUsd(profit);
+  agentCapitalLoss.textContent = formatUsd(loss);
+  agentCapitalTotal.textContent = formatSignedUsd(net);
+  agentCapitalTotal.classList.toggle("flow-positive", net >= 0);
+  agentCapitalTotal.classList.toggle("flow-negative", net < 0);
 }
 
 function renderAgentScannerSummary(decisions = [], context = {}) {
@@ -5527,35 +5850,38 @@ function updateStats(stats) {
 function renderAnalytics() {
   if (!statsGrid) return;
   const totals = historicalStats?.totals || {};
-  const sessionSamples = Math.max(1, sessionAnalytics.tokensSeen);
-  const avgPattern = sessionAnalytics.tokensSeen
-    ? sessionAnalytics.patternTotal / sessionSamples
-    : 0;
-  const avgConfidence = sessionAnalytics.tokensSeen
-    ? (sessionAnalytics.confidenceTotal / sessionSamples) * 100
-    : Number(historicalStats?.quality?.avgSignalConfidence || 0);
-  const avgConnected = sessionAnalytics.tokensSeen
-    ? sessionAnalytics.connectedTotal / sessionSamples
+  const walletForecasts = Number(totals.forecasts || 0);
+  const walletWins = Number(totals.wins || 0);
+  const walletLosses = Number(totals.losses || 0);
+  const walletWinRate = Number(totals.winRatePct || 0);
+  const walletAvgPnl = Number(totals.avgPnlPct || 0);
+  const missionRuns = Number(sessionAnalytics.batches || 0);
+  const sessionScans = Number(sessionAnalytics.tokensSeen || 0);
+  const sessionFavorable = Number(sessionAnalytics.favorable || 0);
+  const sessionCaution = Number(sessionAnalytics.caution || 0);
+  const sessionHighRisk = Number(sessionAnalytics.highRisk || 0);
+  const overallPositiveRate = walletForecasts
+    ? (walletWins / Math.max(1, walletWins + walletLosses)) * 100
     : 0;
 
   statsGrid.innerHTML = `
-    <div class="stat"><span>Session Batches</span><strong>${sessionAnalytics.batches}</strong></div>
-    <div class="stat"><span>Tokens Scanned (Session)</span><strong>${sessionAnalytics.tokensSeen}</strong></div>
-    <div class="stat"><span>Favorable Hits</span><strong>${sessionAnalytics.favorable}</strong></div>
-    <div class="stat"><span>Caution Hits</span><strong>${sessionAnalytics.caution}</strong></div>
-    <div class="stat"><span>High-Risk Hits</span><strong>${sessionAnalytics.highRisk}</strong></div>
-    <div class="stat"><span>Avg Pattern (Session)</span><strong>${formatNumber(avgPattern, 2)}</strong></div>
-    <div class="stat"><span>Avg Confidence</span><strong>${formatNumber(avgConfidence, 2)}%</strong></div>
-    <div class="stat"><span>Avg Connected</span><strong>${formatPct(avgConnected, 2)}</strong></div>
-    <div class="stat"><span>Scans Stored</span><strong>${escapeHtml(totals.signals ?? 0)}</strong></div>
-    <div class="stat"><span>Forecasts Stored</span><strong>${escapeHtml(totals.forecasts ?? 0)}</strong></div>
+    <div class="stat"><span>Mission Runs (Session)</span><strong>${formatNumber(missionRuns, 0)}</strong></div>
+    <div class="stat"><span>Wallet Forecasts</span><strong>${formatNumber(walletForecasts, 0)}</strong></div>
+    <div class="stat"><span>Wallet Wins</span><strong class="flow-positive">${formatNumber(walletWins, 0)}</strong></div>
+    <div class="stat"><span>Wallet Losses</span><strong class="flow-negative">${formatNumber(walletLosses, 0)}</strong></div>
+    <div class="stat"><span>Wallet Win Rate</span><strong>${formatPct(walletWinRate, 2)}</strong></div>
+    <div class="stat"><span>Wallet Avg PnL</span><strong class="${walletAvgPnl >= 0 ? "flow-positive" : "flow-negative"}">${formatPct(walletAvgPnl, 2)}</strong></div>
+    <div class="stat"><span>Session Scans</span><strong>${formatNumber(sessionScans, 0)}</strong></div>
+    <div class="stat"><span>Session Favorable</span><strong>${formatNumber(sessionFavorable, 0)}</strong></div>
+    <div class="stat"><span>Session Caution</span><strong>${formatNumber(sessionCaution, 0)}</strong></div>
+    <div class="stat"><span>Overall Success Rate</span><strong>${formatPct(overallPositiveRate, 2)}</strong></div>
   `;
 
   if (statsMeta) {
     const stamp = sessionAnalytics.lastBatchAt
       ? new Date(sessionAnalytics.lastBatchAt).toLocaleTimeString()
-      : "No live batch yet";
-    statsMeta.textContent = `Live session metrics last updated: ${stamp}. Historical totals remain separate.`;
+      : "No mission run yet";
+    statsMeta.textContent = `Mission refresh: ${stamp}. Wallet metrics aggregate all stored forecasts and outcomes.`;
   }
 }
 
@@ -6059,11 +6385,102 @@ function renderSignals(items) {
     pushMessage("Scanner filter reset to All so token reports stay visible.", "info");
   }
   if (!viewItems.length) {
-    signalFeed.innerHTML = `<article class="card empty-state"><p>No results match current filters yet.</p></article>`;
+    signalFeed.innerHTML = `<div class="terminal-empty-state">No results match current filters yet.</div>`;
     return;
   }
-  signalFeed.innerHTML = viewItems.map((item) => signalCard(item)).join("");
+  signalFeed.innerHTML = renderSignalTable(viewItems);
   attachCardHandlers();
+}
+
+function renderSignalTable(items) {
+  const rows = items.map((item) => {
+    if (!item?.ok || !item.signal) {
+      return `
+        <tr>
+          <td colspan="9" class="scanner-row-error">${escapeHtml(shortMint(String(item?.mint || ""), 6, 6))}</td>
+        </tr>
+      `;
+    }
+
+    const signal = item.signal || {};
+    const token = signal.token || {};
+    const market = signal.market || {};
+    const kill = signal.killSwitch || {};
+    const risk = kill.risk || {};
+    const holderBehavior = risk.holderBehavior || {};
+    const sentiment = signal.sentiment || {};
+    const mint = String(item.mint || token.mint || signal.mint || "");
+    const connectedPct = Number(
+      holderBehavior.connectedHolderPct ??
+      holderBehavior.connectedPct ??
+      risk.connectedHolderPct ??
+      signal.holderProfile?.connectedPct ??
+      0
+    );
+    const confidence = Number(signal.confidence || kill.confidence || sentiment.confidence || 0);
+    const price = Number(market.priceUsd || 0);
+    const liquidity = Number(market.liquidityUsd || 0);
+    const status = String(signal.status || "SCANNING").trim() || "SCANNING";
+    const statusClass = status.toLowerCase();
+    const actionText =
+      String(signal.tradePlan?.recommendation || "").trim() ||
+      String(signal.verdict || "").trim() ||
+      "Review";
+
+    return `
+      <tr class="scanner-result-row ${escapeHtml(statusClass)}">
+        <td>
+          <div class="scanner-token-cell">
+            ${avatarHtml(token, "token-avatar small")}
+            <div class="scanner-token-copy">
+              <strong>${escapeHtml(token.symbol || shortMint(mint, 4, 4))}</strong>
+              <span>${escapeHtml(shortMint(mint, 6, 6))}</span>
+            </div>
+          </div>
+        </td>
+        <td><span class="pill ${escapeHtml(statusClass)}">${escapeHtml(status)}</span></td>
+        <td>${escapeHtml(formatNumber(signal.patternScore || 0, 1))}</td>
+        <td>${escapeHtml(`${Math.round(confidence * 100)}%`)}</td>
+        <td>${escapeHtml(formatPrice(price))}</td>
+        <td>${escapeHtml(formatUsd(liquidity))}</td>
+        <td>${escapeHtml(formatPctCompact(connectedPct, 1))}</td>
+        <td class="${escapeHtml(flowClass(market.flow24h?.buys, market.flow24h?.sells))}">
+          ${escapeHtml(actionText.length > 34 ? `${actionText.slice(0, 34)}...` : actionText)}
+        </td>
+        <td>
+          <div class="scanner-row-actions">
+            <button type="button" class="secondary tiny-btn" data-copy-mint="${escapeHtml(mint)}">Copy</button>
+            <button type="button" class="secondary tiny-btn" data-download-card="${escapeHtml(mint)}">PNG</button>
+            <button type="button" class="secondary tiny-btn" data-share-x="${escapeHtml(mint)}">Share</button>
+            <button type="button" class="secondary tiny-btn" data-expand-holders="${escapeHtml(mint)}">
+              ${expandedHolders.has(mint) ? "Hide" : "Holders"}
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  return `
+    <div class="scanner-results-table-wrap table-wrap">
+      <table class="scanner-results-table">
+        <thead>
+          <tr>
+            <th>Token</th>
+            <th>Status</th>
+            <th>Pattern</th>
+            <th>Conf</th>
+            <th>Price</th>
+            <th>Liquidity</th>
+            <th>Connected</th>
+            <th>Execution Intent</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 function syncThresholdUi() {
