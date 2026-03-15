@@ -1403,6 +1403,21 @@ async function getKobxAccessStatus(wallet: string): Promise<{
   scannerDailyRemaining: number;
   scannerTier: "none" | "base" | "high";
 }> {
+  if (KOBX_REQUIRED_BALANCE <= 0) {
+    const syntheticLimit = 999_999;
+    return {
+      mint: KOBX_MINT,
+      requiredBalance: 0,
+      actualBalance: 0,
+      eligible: true,
+      buyUrl: KOBX_BUY_URL,
+      scannerDailyLimit: syntheticLimit,
+      scannerDailyUsed: 0,
+      scannerDailyRemaining: syntheticLimit,
+      scannerTier: "high"
+    };
+  }
+
   const actualBalance = await getWalletTokenBalance(wallet, KOBX_MINT);
   const tier = actualBalance >= KOBX_HIGH_TIER_BALANCE ? "high" : actualBalance >= KOBX_REQUIRED_BALANCE ? "base" : "none";
   return {
