@@ -133,6 +133,14 @@ const PREMIUM_TIER_LAMPORTS: Record<string, number> = {
   pro4: Number(process.env.ENIGMA_PRO4_LAMPORTS || 25000000000)
 };
 const PAPER_ONLY_MODE = String(process.env.ENIGMA_PAPER_ONLY_MODE || "1").trim() !== "0";
+const INTERNAL_LIVE_WALLETS = new Set(
+  String(process.env.ENIGMA_INTERNAL_LIVE_WALLETS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+);
+const REQUIRE_INTERNAL_LIVE_WALLET =
+  String(process.env.ENIGMA_REQUIRE_INTERNAL_LIVE_WALLET || "1").trim() !== "0";
 const app = express();
 app.set("trust proxy", 1);
 const startPort = Number(process.env.PORT || 3000);
@@ -499,11 +507,35 @@ function premiumRequiredResponse() {
   };
 }
 
+function internalWalletRequiredResponse() {
+  return {
+    error: "live execution is currently enabled for internal wallets only",
+    internalWalletRequired: true,
+    note: "This rollout stage is restricted to approved internal wallets."
+  };
+}
+
 function hasLiveExecutionAccess(userPlan: string): boolean {
   if (String(process.env.ENIGMA_ALLOW_FREE_LIVE || "").trim() === "1") {
     return true;
   }
   return userPlan === "pro";
+}
+
+function hasInternalLiveWalletAccess(wallet: string): boolean {
+  if (!REQUIRE_INTERNAL_LIVE_WALLET) return true;
+  if (INTERNAL_LIVE_WALLETS.size === 0) return false;
+  return INTERNAL_LIVE_WALLETS.has(String(wallet || "").trim());
+}
+
+function getLiveEligibility(userPlan: string, wallet: string): { allowed: boolean; reason?: string } {
+  if (!hasLiveExecutionAccess(userPlan)) {
+    return { allowed: false, reason: "premium_required" };
+  }
+  if (!hasInternalLiveWalletAccess(wallet)) {
+    return { allowed: false, reason: "internal_wallet_required" };
+  }
+  return { allowed: true };
 }
 
 function requireAdminToken(req: express.Request, res: express.Response): boolean {
@@ -1060,18 +1092,24 @@ function getEffectiveTradeAmountUsd(
 function getEffectiveMode(
   policy: ReturnType<typeof getAutoTradeConfig>,
   execCfg: ReturnType<typeof getAutoTradeExecutionConfig>,
-  userPlan: string
+  userPlan: string,
+  wallet: string
 ): { mode: "paper" | "live"; warnings: string[] } {
   const warnings: string[] = [];
   if (policy.mode !== execCfg.mode) {
     warnings.push(`mode mismatch: policy=${policy.mode}, execution=${execCfg.mode}; using execution mode`);
   }
 
-  if (execCfg.mode === "live" && !hasLiveExecutionAccess(userPlan)) {
-    warnings.push("live mode requires premium plan");
+  const liveEligibility = getLiveEligibility(userPlan, wallet);
+  if (execCfg.mode === "live" && !liveEligibility.allowed) {
+    warnings.push(
+      liveEligibility.reason === "internal_wallet_required"
+        ? "live mode is currently restricted to approved internal wallets"
+        : "live mode requires premium plan"
+    );
   }
 
-  if (execCfg.mode === "live" && hasLiveExecutionAccess(userPlan)) {
+  if (execCfg.mode === "live" && liveEligibility.allowed) {
     return { mode: "live", warnings };
   }
 
@@ -2733,8 +2771,15 @@ app.put("/api/autotrade/config", authRequired, (req: AuthedRequest, res) => {
   const requestedMode: "paper" | "live" = modeInput === "live" ? "live" : "paper";
   const mode: "paper" | "live" = PAPER_ONLY_MODE ? "paper" : requestedMode;
   const forcedPaper = PAPER_ONLY_MODE && requestedMode === "live";
-  if (mode === "live" && !hasLiveExecutionAccess(req.user.plan)) {
-    return res.status(403).json(premiumRequiredResponse());
+  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+  if (mode === "live" && !liveEligibility.allowed) {
+    return res
+      .status(403)
+      .json(
+        liveEligibility.reason === "internal_wallet_required"
+          ? internalWalletRequiredResponse()
+          : premiumRequiredResponse()
+      );
   }
 
   const next = putAutoTradeConfig(req.user.id, {
@@ -2822,7 +2867,7 @@ app.post(
         Math.max(effectiveTradeAmountUsd, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)
       );
       const paperAvailableUsd = Number(Math.max(0, paperBudgetUsd - openExposureUsd).toFixed(2));
-      const baseModeState = getEffectiveMode(config, execCfg, req.user.plan);
+      const baseModeState = getEffectiveMode(config, execCfg, req.user.plan, req.user.wallet);
       const modeState = PAPER_ONLY_MODE
         ? {
             mode: "paper" as const,
@@ -2946,8 +2991,15 @@ app.put("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, re
   const requestedMode: "paper" | "live" = modeInput === "live" ? "live" : "paper";
   const mode: "paper" | "live" = PAPER_ONLY_MODE ? "paper" : requestedMode;
   const forcedPaper = PAPER_ONLY_MODE && requestedMode === "live";
-  if (mode === "live" && !hasLiveExecutionAccess(req.user.plan)) {
-    return res.status(403).json(premiumRequiredResponse());
+  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+  if (mode === "live" && !liveEligibility.allowed) {
+    return res
+      .status(403)
+      .json(
+        liveEligibility.reason === "internal_wallet_required"
+          ? internalWalletRequiredResponse()
+          : premiumRequiredResponse()
+      );
   }
 
   const next = putAutoTradeExecutionConfig(req.user.id, {
@@ -3391,10 +3443,16 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
 
     const execCfg = getAutoTradeExecutionConfig(req.user.id);
     const openPositions = listAutoTradePositions(req.user.id, "OPEN");
+    const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+    const liveAllowed = liveEligibility.allowed;
     const monitorMode: "paper" | "live" =
-      openPositions.some((position) => position.mode === "live") && process.env.ENIGMA_EXECUTION_ENABLED === "1"
+      openPositions.some((position) => position.mode === "live") &&
+      process.env.ENIGMA_EXECUTION_ENABLED === "1" &&
+      liveAllowed
         ? "live"
-        : execCfg.mode === "live" && process.env.ENIGMA_EXECUTION_ENABLED === "1"
+        : execCfg.mode === "live" &&
+            process.env.ENIGMA_EXECUTION_ENABLED === "1" &&
+            liveAllowed
           ? "live"
           : "paper";
     if (!openPositions.length) {
@@ -3496,7 +3554,10 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
 
             if (marked.mode === "live" && liveEnabled) {
               try {
-                const sellResponse = await executeUltraSell({ mint: marked.mint });
+                const sellResponse = await executeUltraSell({
+                  mint: marked.mint,
+                  traderWallet: req.user!.wallet
+                });
                 actions.push({
                   type: "LIVE_SELL",
                   positionId: marked.id,
@@ -3660,10 +3721,17 @@ app.post(
       }
 
       const liveEnabled = process.env.ENIGMA_EXECUTION_ENABLED === "1";
-      if ((execCfg.mode === "live" || policy.mode === "live") && !hasLiveExecutionAccess(req.user.plan)) {
-        return res.status(403).json(premiumRequiredResponse());
+      const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+      if ((execCfg.mode === "live" || policy.mode === "live") && !liveEligibility.allowed) {
+        return res
+          .status(403)
+          .json(
+            liveEligibility.reason === "internal_wallet_required"
+              ? internalWalletRequiredResponse()
+              : premiumRequiredResponse()
+          );
       }
-      const baseModeState = getEffectiveMode(policy, execCfg, req.user.plan);
+      const baseModeState = getEffectiveMode(policy, execCfg, req.user.plan, req.user.wallet);
       const modeState = PAPER_ONLY_MODE
         ? {
             mode: "paper" as const,
@@ -3757,7 +3825,10 @@ app.post(
 
           if (executionMode === "live") {
             try {
-              const sellResponse = await executeUltraSell({ mint: marked.mint });
+              const sellResponse = await executeUltraSell({
+                mint: marked.mint,
+                traderWallet: req.user.wallet
+              });
               actions.push({
                 type: "LIVE_SELL",
                 positionId: marked.id,
@@ -4048,7 +4119,8 @@ app.post(
               try {
                 const buyResponse = await executeUltraBuy({
                   outputMint: candidate.mint,
-                  amountUsd: requestedAmountUsd
+                  amountUsd: requestedAmountUsd,
+                  traderWallet: req.user.wallet
                 });
                 actions.push({
                   type: "LIVE_BUY",

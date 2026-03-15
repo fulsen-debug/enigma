@@ -14,13 +14,38 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const BUY_INPUT_MINT = String(process.env.ENIGMA_BUY_INPUT_MINT || SOL_MINT).trim();
 let solPriceCache: { value: number; expiresAt: number } | null = null;
 
+type WalletSecretRegistry = Record<string, string>;
+
 function optionalApiKeyHeader(): Record<string, string> {
   const apiKey = String(process.env.JUPITER_API_KEY || "").trim();
   if (!apiKey) return {};
   return { "x-api-key": apiKey };
 }
 
-function parseSecretKey(): Uint8Array {
+function parseWalletSecretRegistry(): WalletSecretRegistry {
+  const raw = String(process.env.ENIGMA_TRADER_WALLET_KEYS_JSON || "").trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: WalletSecretRegistry = {};
+    Object.entries(parsed || {}).forEach(([wallet, value]) => {
+      const key = String(wallet || "").trim();
+      const secret = String(value || "").trim();
+      if (!key || !secret) return;
+      out[key] = secret;
+    });
+    return out;
+  } catch {
+    throw new Error("ENIGMA_TRADER_WALLET_KEYS_JSON must be valid JSON object of {wallet: base58Secret}");
+  }
+}
+
+function parseSecretKey(inputSecretBase58?: string): Uint8Array {
+  const fromRegistry = String(inputSecretBase58 || "").trim();
+  if (fromRegistry) {
+    return bs58.decode(fromRegistry);
+  }
+
   const base58 = String(process.env.ENIGMA_TRADER_PRIVATE_KEY || "").trim();
   if (base58) {
     return bs58.decode(base58);
@@ -47,8 +72,11 @@ function parseSecretKey(): Uint8Array {
   return new Uint8Array(parsed);
 }
 
-function traderWallet(): Keypair {
-  return Keypair.fromSecretKey(parseSecretKey());
+function traderWallet(ownerWallet?: string): Keypair {
+  const wallet = String(ownerWallet || "").trim();
+  const registry = parseWalletSecretRegistry();
+  const registrySecret = wallet ? String(registry[wallet] || "").trim() : "";
+  return Keypair.fromSecretKey(parseSecretKey(registrySecret));
 }
 
 function rpcConnection(): Connection {
@@ -128,8 +156,9 @@ async function fetchSolUsdPrice(): Promise<number> {
 export async function executeUltraBuy(input: {
   outputMint: string;
   amountUsd: number;
+  traderWallet?: string;
 }): Promise<Record<string, unknown>> {
-  const wallet = traderWallet();
+  const wallet = traderWallet(input.traderWallet);
   let amountNative = "0";
   if (BUY_INPUT_MINT === USDC_MINT) {
     amountNative = String(Math.max(1, Math.floor(input.amountUsd * 1_000_000)));
@@ -166,8 +195,8 @@ export async function executeUltraBuy(input: {
   };
 }
 
-export async function executeUltraSell(input: { mint: string }): Promise<Record<string, unknown>> {
-  const wallet = traderWallet();
+export async function executeUltraSell(input: { mint: string; traderWallet?: string }): Promise<Record<string, unknown>> {
+  const wallet = traderWallet(input.traderWallet);
   const holdings = await fetchJson(`${JUP_API_BASE}/holdings/${wallet.publicKey.toBase58()}`, {
     headers: {
       Accept: "application/json",
