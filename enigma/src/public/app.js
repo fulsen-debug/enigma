@@ -182,6 +182,7 @@ let userPlan = localStorage.getItem("enigma_plan") || "free";
 let agentTargetMints = [];
 let agentTargetMint = "";
 let lastSignalItems = [];
+let scannerReportMint = "";
 let historicalStats = null;
 let alertEvents = [];
 let sessionTrendPoints = [];
@@ -225,6 +226,7 @@ let agentProcessingTelemetry = {
   logs: []
 };
 const recentErrorNoticeByKey = new Map();
+const tokenMetaInflight = new Map();
 const sessionAnalytics = {
   batches: 0,
   tokensSeen: 0,
@@ -1728,6 +1730,7 @@ function saveAgentTargetMint(options = {}) {
   const notify = options.notify !== false;
   const mints = resolveAgentTargetMints({ notify });
   if (!mints.length) return false;
+  void hydrateTokenMetaFromLiveMarket(mints[0], { refreshScanner: true });
   updateAgentTradeState({
     preview: null,
     decision: null,
@@ -2586,6 +2589,52 @@ function getTokenMetaForMint(mint, directToken = null) {
     cacheTokenMeta(direct, mint);
   }
   return mintDisplayCache.get(mint) || sanitizeTokenMeta(directToken, mint);
+}
+
+async function hydrateTokenMetaFromLiveMarket(mint, options = {}) {
+  const cleanMint = String(mint || "").trim();
+  if (!cleanMint || !authToken) return null;
+  const current = getTokenMetaForMint(cleanMint, null);
+  if ((current.symbol && current.symbol !== "N/A") || (current.name && current.name !== "Unknown Token")) {
+    return current;
+  }
+  if (tokenMetaInflight.has(cleanMint)) {
+    return tokenMetaInflight.get(cleanMint);
+  }
+
+  const job = (async () => {
+    try {
+      const response = await api(
+        `/api/token/market/live?mint=${encodeURIComponent(cleanMint)}&windowSec=90`,
+        null,
+        true,
+        "GET",
+        { timeoutMs: 15000, maxAttempts: 1 }
+      );
+      const market = response?.market || {};
+      cacheTokenMeta(
+        {
+          mint: cleanMint,
+          symbol: String(market.tokenSymbol || market.symbol || "").trim(),
+          name: String(market.tokenName || market.name || "").trim(),
+          imageUrl: String(market.imageUrl || market.iconUrl || "").trim()
+        },
+        cleanMint
+      );
+      renderAgentTokenIdentity();
+      if (options.refreshScanner === true) {
+        renderSignals(lastSignalItems);
+      }
+      return getTokenMetaForMint(cleanMint, null);
+    } catch {
+      return null;
+    } finally {
+      tokenMetaInflight.delete(cleanMint);
+    }
+  })();
+
+  tokenMetaInflight.set(cleanMint, job);
+  return job;
 }
 
 function firstPrice(values = []) {
@@ -5871,11 +5920,14 @@ function updateStats(stats) {
 function renderAnalytics() {
   if (!statsGrid) return;
   const totals = historicalStats?.totals || {};
+  const usageToday = historicalStats?.usageToday || {};
   const walletForecasts = Number(totals.forecasts || 0);
   const walletWins = Number(totals.wins || 0);
   const walletLosses = Number(totals.losses || 0);
   const walletWinRate = Number(totals.winRatePct || 0);
   const walletAvgPnl = Number(totals.avgPnlPct || 0);
+  const storedSignals = Number(totals.signals || 0);
+  const scannerCallsToday = Number(usageToday.scanner_calls || 0);
   const missionRuns = Number(sessionAnalytics.batches || 0);
   const sessionScans = Number(sessionAnalytics.tokensSeen || 0);
   const sessionFavorable = Number(sessionAnalytics.favorable || 0);
@@ -5887,6 +5939,8 @@ function renderAnalytics() {
 
   statsGrid.innerHTML = `
     <div class="stat"><span>Mission Runs (Session)</span><strong>${formatNumber(missionRuns, 0)}</strong></div>
+    <div class="stat"><span>Scans Today (Wallet)</span><strong>${formatNumber(scannerCallsToday, 0)}</strong></div>
+    <div class="stat"><span>Scanner Reports Stored</span><strong>${formatNumber(storedSignals, 0)}</strong></div>
     <div class="stat"><span>Wallet Forecasts</span><strong>${formatNumber(walletForecasts, 0)}</strong></div>
     <div class="stat"><span>Wallet Wins</span><strong class="flow-positive">${formatNumber(walletWins, 0)}</strong></div>
     <div class="stat"><span>Wallet Losses</span><strong class="flow-negative">${formatNumber(walletLosses, 0)}</strong></div>
@@ -5902,7 +5956,7 @@ function renderAnalytics() {
     const stamp = sessionAnalytics.lastBatchAt
       ? new Date(sessionAnalytics.lastBatchAt).toLocaleTimeString()
       : "No mission run yet";
-    statsMeta.textContent = `Mission refresh: ${stamp}. Wallet metrics aggregate all stored forecasts and outcomes.`;
+    statsMeta.textContent = `Mission refresh: ${stamp}. Metrics are scoped to the currently connected wallet account.`;
   }
 }
 
@@ -6325,6 +6379,22 @@ function attachCardHandlers() {
     });
   });
 
+  document.querySelectorAll("button[data-open-report]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const mint = String(button.getAttribute("data-open-report") || "").trim();
+      if (!mint) return;
+      scannerReportMint = mint;
+      renderSignals(lastSignalItems);
+    });
+  });
+
+  document.querySelectorAll("button[data-close-report]").forEach((button) => {
+    button.addEventListener("click", () => {
+      scannerReportMint = "";
+      renderSignals(lastSignalItems);
+    });
+  });
+
   document.querySelectorAll("button[data-use-agent-mint]").forEach((button) => {
     button.addEventListener("click", () => {
       const mint = String(button.getAttribute("data-use-agent-mint") || "").trim();
@@ -6415,6 +6485,29 @@ function renderSignals(items) {
     cacheTokenMeta(item.signal?.token || null, String(item.mint || item.signal?.mint || ""));
   });
   renderHeatmap(lastSignalItems);
+  if (scannerReportMint) {
+    const reportItem = lastSignalItems.find(
+      (item) => item?.ok && item?.signal && String(item?.mint || item?.signal?.mint || "") === scannerReportMint
+    );
+    if (reportItem?.ok && reportItem?.signal) {
+      const mint = String(reportItem.mint || reportItem.signal?.mint || "");
+      signalFeed.innerHTML = `
+        <div class="scanner-report-view">
+          <div class="scanner-report-toolbar">
+            <button type="button" class="secondary tiny-btn" data-close-report="1">Back to Table</button>
+            <button type="button" class="primary tiny-btn" data-use-agent-mint="${escapeHtml(mint)}">Use in Agent</button>
+            <button type="button" class="secondary tiny-btn" data-copy-mint="${escapeHtml(mint)}">Copy Mint</button>
+            <button type="button" class="secondary tiny-btn" data-download-card="${escapeHtml(mint)}">Download PNG</button>
+            <button type="button" class="secondary tiny-btn" data-share-x="${escapeHtml(mint)}">Share on X</button>
+          </div>
+          ${signalCard(reportItem)}
+        </div>
+      `;
+      attachCardHandlers();
+      return;
+    }
+    scannerReportMint = "";
+  }
   let viewItems = filteredAndSortedItems(lastSignalItems);
   if (!viewItems.length && lastSignalItems.length && String(resultFilterSelect?.value || "all") !== "all") {
     if (resultFilterSelect) resultFilterSelect.value = "all";
@@ -6486,6 +6579,7 @@ function renderSignalTable(items) {
         </td>
         <td>
           <div class="scanner-row-actions">
+            <button type="button" class="secondary tiny-btn" data-open-report="${escapeHtml(mint)}">Report</button>
             <button type="button" class="primary tiny-btn" data-use-agent-mint="${escapeHtml(mint)}">Use in Agent</button>
             <button type="button" class="secondary tiny-btn" data-copy-mint="${escapeHtml(mint)}">Copy</button>
             <button type="button" class="secondary tiny-btn" data-download-card="${escapeHtml(mint)}">PNG</button>
