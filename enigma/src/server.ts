@@ -133,6 +133,7 @@ const PREMIUM_TIER_LAMPORTS: Record<string, number> = {
   pro4: Number(process.env.ENIGMA_PRO4_LAMPORTS || 25000000000)
 };
 const PAPER_ONLY_MODE = String(process.env.ENIGMA_PAPER_ONLY_MODE || "1").trim() !== "0";
+const LIVE_EXECUTION_ENABLED = String(process.env.ENIGMA_EXECUTION_ENABLED || "").trim() === "1";
 const INTERNAL_LIVE_WALLETS = new Set(
   String(process.env.ENIGMA_INTERNAL_LIVE_WALLETS || "")
     .split(",")
@@ -141,6 +142,62 @@ const INTERNAL_LIVE_WALLETS = new Set(
 );
 const REQUIRE_INTERNAL_LIVE_WALLET =
   String(process.env.ENIGMA_REQUIRE_INTERNAL_LIVE_WALLET || "1").trim() !== "0";
+const REQUIRE_PER_WALLET_SIGNER =
+  String(process.env.ENIGMA_REQUIRE_PER_WALLET_SIGNER || "1").trim() !== "0";
+
+function parseTraderWalletRegistry(): Record<string, string> {
+  const raw = String(process.env.ENIGMA_TRADER_WALLET_KEYS_JSON || "").trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    Object.entries(parsed || {}).forEach(([wallet, key]) => {
+      const w = String(wallet || "").trim();
+      const v = String(key || "").trim();
+      if (!w || !v) return;
+      out[w] = v;
+    });
+    return out;
+  } catch {
+    throw new Error("ENIGMA_TRADER_WALLET_KEYS_JSON must be valid JSON object {wallet: base58Secret}");
+  }
+}
+
+const TRADER_WALLET_KEYS_REGISTRY = parseTraderWalletRegistry();
+
+function hasAnyFallbackSigner(): boolean {
+  return Boolean(String(process.env.ENIGMA_TRADER_PRIVATE_KEY || "").trim()) ||
+    Boolean(String(process.env.ENIGMA_TRADER_PRIVATE_KEY_JSON || "").trim());
+}
+
+function hasSignerForWallet(wallet: string): boolean {
+  const clean = String(wallet || "").trim();
+  if (!clean) return false;
+  if (String(TRADER_WALLET_KEYS_REGISTRY[clean] || "").trim()) return true;
+  if (!REQUIRE_PER_WALLET_SIGNER && hasAnyFallbackSigner()) return true;
+  return false;
+}
+
+const liveRuntimeErrors: string[] = [];
+if (LIVE_EXECUTION_ENABLED && !PAPER_ONLY_MODE) {
+  if (REQUIRE_INTERNAL_LIVE_WALLET && INTERNAL_LIVE_WALLETS.size === 0) {
+    liveRuntimeErrors.push("ENIGMA_INTERNAL_LIVE_WALLETS is empty while internal-live gate is enabled.");
+  }
+  if (REQUIRE_PER_WALLET_SIGNER) {
+    const missingSignerWallets = Array.from(INTERNAL_LIVE_WALLETS).filter((wallet) => !hasSignerForWallet(wallet));
+    if (missingSignerWallets.length > 0) {
+      liveRuntimeErrors.push(
+        `Missing signer key mapping for internal wallets: ${missingSignerWallets.join(", ")}`
+      );
+    }
+  } else if (!hasAnyFallbackSigner()) {
+    liveRuntimeErrors.push("No trader signer configured. Set ENIGMA_TRADER_PRIVATE_KEY or *_JSON.");
+  }
+}
+
+if (liveRuntimeErrors.length > 0) {
+  throw new Error(`Live runtime config invalid: ${liveRuntimeErrors.join(" | ")}`);
+}
 const app = express();
 app.set("trust proxy", 1);
 const startPort = Number(process.env.PORT || 3000);
@@ -2314,7 +2371,7 @@ app.post("/api/admin/withdrawals/:id/approve", async (req, res) => {
   if (request.status !== "pending") {
     return res.status(400).json({ error: `request already ${request.status}` });
   }
-  if (process.env.ENIGMA_EXECUTION_ENABLED !== "1") {
+  if (!LIVE_EXECUTION_ENABLED) {
     return res.status(400).json({
       error: "withdrawal transfers require ENIGMA_EXECUTION_ENABLED=1",
       hint: "set execution enabled and trader key before approving payouts"
@@ -2455,7 +2512,27 @@ app.get("/api/auth/me", authRequired, async (req: AuthedRequest, res) => {
 
   const stats = getDashboardStats(req.user.id);
   const access = await buildScannerAccessStatus(req.user.id, req.user.wallet);
-  return res.json({ user: req.user, stats, access, usage: getUsage(req.user.id) });
+  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+  return res.json({
+    user: req.user,
+    stats,
+    access,
+    usage: getUsage(req.user.id),
+    live: {
+      paperOnlyMode: PAPER_ONLY_MODE,
+      executionEnabled: LIVE_EXECUTION_ENABLED,
+      internalGateEnabled: REQUIRE_INTERNAL_LIVE_WALLET,
+      eligible: liveEligibility.allowed && LIVE_EXECUTION_ENABLED && !PAPER_ONLY_MODE,
+      reason: liveEligibility.allowed
+        ? LIVE_EXECUTION_ENABLED
+          ? PAPER_ONLY_MODE
+            ? "paper_only_mode"
+            : "ready"
+          : "execution_disabled"
+        : liveEligibility.reason || "blocked",
+      signerConfigured: hasSignerForWallet(req.user.wallet)
+    }
+  });
 });
 
 app.get("/api/health", async (_req, res) => {
@@ -2471,6 +2548,14 @@ app.get("/api/health", async (_req, res) => {
       "Probabilistic signals",
       ...(PAPER_ONLY_MODE ? ["Paper-only mode enabled (live execution disabled)"] : [])
     ],
+    live: {
+      executionEnabled: LIVE_EXECUTION_ENABLED,
+      paperOnlyMode: PAPER_ONLY_MODE,
+      internalWalletGate: REQUIRE_INTERNAL_LIVE_WALLET,
+      internalWalletCount: INTERNAL_LIVE_WALLETS.size,
+      requirePerWalletSigner: REQUIRE_PER_WALLET_SIGNER,
+      runtimeErrors: liveRuntimeErrors
+    },
     helius
   });
 });
@@ -3447,11 +3532,11 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
     const liveAllowed = liveEligibility.allowed;
     const monitorMode: "paper" | "live" =
       openPositions.some((position) => position.mode === "live") &&
-      process.env.ENIGMA_EXECUTION_ENABLED === "1" &&
+      LIVE_EXECUTION_ENABLED &&
       liveAllowed
         ? "live"
         : execCfg.mode === "live" &&
-            process.env.ENIGMA_EXECUTION_ENABLED === "1" &&
+            LIVE_EXECUTION_ENABLED &&
             liveAllowed
           ? "live"
           : "paper";
@@ -3494,7 +3579,7 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
       4
     );
     const sweepIntervalMs = clampNumber(Number(req.body?.intervalMs || 250), 100, 2000);
-    const liveEnabled = process.env.ENIGMA_EXECUTION_ENABLED === "1";
+    const liveEnabled = LIVE_EXECUTION_ENABLED;
     const actions: Array<Record<string, unknown>> = [];
     const ticksByPosition = new Map<
       number,
@@ -3720,7 +3805,7 @@ app.post(
         return res.status(400).json({ error: "execution engine is disabled", config: execCfg });
       }
 
-      const liveEnabled = process.env.ENIGMA_EXECUTION_ENABLED === "1";
+      const liveEnabled = LIVE_EXECUTION_ENABLED;
       const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
       if ((execCfg.mode === "live" || policy.mode === "live") && !liveEligibility.allowed) {
         return res

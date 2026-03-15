@@ -12,6 +12,8 @@ const JUP_API_BASE = "https://api.jup.ag/ultra/v1";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const BUY_INPUT_MINT = String(process.env.ENIGMA_BUY_INPUT_MINT || SOL_MINT).trim();
+const REQUIRE_TRADER_WALLET_MAPPING =
+  String(process.env.ENIGMA_REQUIRE_PER_WALLET_SIGNER || "1").trim() !== "0";
 let solPriceCache: { value: number; expiresAt: number } | null = null;
 
 type WalletSecretRegistry = Record<string, string>;
@@ -76,6 +78,9 @@ function traderWallet(ownerWallet?: string): Keypair {
   const wallet = String(ownerWallet || "").trim();
   const registry = parseWalletSecretRegistry();
   const registrySecret = wallet ? String(registry[wallet] || "").trim() : "";
+  if (wallet && !registrySecret && REQUIRE_TRADER_WALLET_MAPPING) {
+    throw new Error(`no signer key mapping found for wallet ${wallet}`);
+  }
   return Keypair.fromSecretKey(parseSecretKey(registrySecret));
 }
 
