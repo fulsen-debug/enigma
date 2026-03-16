@@ -314,6 +314,17 @@ const SAFETY_PAUSE_SEC = Math.max(
   10,
   Number(process.env.ENIGMA_SAFETY_PAUSE_SEC || 300)
 );
+const SAFETY_MAX_DRAWDOWN_PCT = Math.max(
+  1,
+  Math.min(95, Number(process.env.ENIGMA_SAFETY_MAX_DRAWDOWN_PCT || 20))
+);
+const SAFETY_DRAWDOWN_PAUSE_SEC = Math.max(
+  60,
+  Number(process.env.ENIGMA_SAFETY_DRAWDOWN_PAUSE_SEC || 3600)
+);
+const GLOBAL_EMERGENCY_HALT = String(
+  process.env.ENIGMA_GLOBAL_EMERGENCY_HALT || "0"
+).trim() === "1";
 const ENTRY_TIMEOUT_SEC = Math.max(
   10,
   Number(process.env.ENIGMA_ENTRY_TIMEOUT_SEC || 90)
@@ -365,7 +376,13 @@ const BREAKEVEN_LOCK_PCT = Math.max(
 const autotradeRunLocks = new Map<number, number>();
 const autotradeTickLocks = new Map<number, number>();
 const autotradeMonitorLocks = new Map<number, number>();
-const userExecutionSafetyState = new Map<number, { errorTimestamps: number[]; pausedUntil: number }>();
+type ExecutionSafetyState = {
+  errorTimestamps: number[];
+  pausedUntil: number;
+  peakEquityUsd: number;
+};
+
+const userExecutionSafetyState = new Map<number, ExecutionSafetyState>();
 const entryFallbackState = new Map<string, { startedAt: number; lastSeenAt: number; cycles: number }>();
 const positionExecutionMeta = new Map<
   number,
@@ -470,17 +487,74 @@ function getConsecutiveLossStreak(userId: number, limit = 25): number {
   return streak;
 }
 
-function getExecutionSafetyState(userId: number): { errorTimestamps: number[]; pausedUntil: number } {
+function getExecutionSafetyState(userId: number): ExecutionSafetyState {
   const current = userExecutionSafetyState.get(userId);
   if (current) return current;
-  const initial = { errorTimestamps: [], pausedUntil: 0 };
+  const initial: ExecutionSafetyState = { errorTimestamps: [], pausedUntil: 0, peakEquityUsd: 0 };
   userExecutionSafetyState.set(userId, initial);
   return initial;
 }
 
-function pruneSafetyErrors(state: { errorTimestamps: number[]; pausedUntil: number }, nowMs = Date.now()): void {
+function pruneSafetyErrors(state: ExecutionSafetyState, nowMs = Date.now()): void {
   const cutoff = nowMs - SAFETY_ERROR_WINDOW_SEC * 1000;
   state.errorTimestamps = state.errorTimestamps.filter((ts) => ts >= cutoff);
+}
+
+function getRealizedPnlUsd(userId: number): number {
+  const closedPositions = listAutoTradePositions(userId, "CLOSED");
+  let realized = 0;
+  for (const position of closedPositions) {
+    const pnlPct = Number(position.pnlPct || 0);
+    const sizeUsd = Number(position.sizeUsd || 0);
+    if (!Number.isFinite(pnlPct) || !Number.isFinite(sizeUsd) || sizeUsd <= 0) continue;
+    realized += sizeUsd * (pnlPct / 100);
+  }
+  return Number(realized.toFixed(2));
+}
+
+function getUnrealizedPnlUsd(userId: number): number {
+  const openPositions = listAutoTradePositions(userId, "OPEN");
+  let unrealized = 0;
+  for (const position of openPositions) {
+    const pnlPct = Number(position.pnlPct || 0);
+    const sizeUsd = Number(position.sizeUsd || 0);
+    if (!Number.isFinite(pnlPct) || !Number.isFinite(sizeUsd) || sizeUsd <= 0) continue;
+    unrealized += sizeUsd * (pnlPct / 100);
+  }
+  return Number(unrealized.toFixed(2));
+}
+
+function getStrategyEquitySnapshot(
+  userId: number,
+  baselineUsd: number,
+  safetyState: ExecutionSafetyState
+): {
+  baselineUsd: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  currentEquityUsd: number;
+  peakEquityUsd: number;
+  drawdownPct: number;
+} {
+  const baseline = Number(Math.max(1, baselineUsd).toFixed(2));
+  const realizedPnlUsd = getRealizedPnlUsd(userId);
+  const unrealizedPnlUsd = getUnrealizedPnlUsd(userId);
+  const currentEquityUsd = Number((baseline + realizedPnlUsd + unrealizedPnlUsd).toFixed(2));
+  const previousPeak = Number(safetyState.peakEquityUsd || 0);
+  const peakEquityUsd = Number(Math.max(baseline, previousPeak, currentEquityUsd).toFixed(2));
+  safetyState.peakEquityUsd = peakEquityUsd;
+  const drawdownPct = peakEquityUsd > 0
+    ? Number((Math.max(0, (peakEquityUsd - currentEquityUsd) / peakEquityUsd) * 100).toFixed(2))
+    : 0;
+
+  return {
+    baselineUsd: baseline,
+    realizedPnlUsd,
+    unrealizedPnlUsd,
+    currentEquityUsd,
+    peakEquityUsd,
+    drawdownPct
+  };
 }
 
 function recordExecutionError(userId: number): void {
@@ -2536,6 +2610,7 @@ app.get("/api/auth/me", authRequired, async (req: AuthedRequest, res) => {
     live: {
       paperOnlyMode: PAPER_ONLY_MODE,
       executionEnabled: LIVE_EXECUTION_ENABLED,
+      emergencyHalt: GLOBAL_EMERGENCY_HALT,
       internalGateEnabled: REQUIRE_INTERNAL_LIVE_WALLET,
       eligible: liveEligibility.allowed && LIVE_EXECUTION_ENABLED && !PAPER_ONLY_MODE,
       reason: liveEligibility.allowed
@@ -2566,9 +2641,12 @@ app.get("/api/health", async (_req, res) => {
     live: {
       executionEnabled: LIVE_EXECUTION_ENABLED,
       paperOnlyMode: PAPER_ONLY_MODE,
+      emergencyHalt: GLOBAL_EMERGENCY_HALT,
       internalWalletGate: REQUIRE_INTERNAL_LIVE_WALLET,
       internalWalletCount: INTERNAL_LIVE_WALLETS.size,
       requirePerWalletSigner: REQUIRE_PER_WALLET_SIGNER,
+      safetyMaxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
+      safetyDrawdownPauseSec: SAFETY_DRAWDOWN_PAUSE_SEC,
       runtimeErrors: liveRuntimeErrors
     },
     helius
@@ -3542,6 +3620,8 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
     }
 
     const execCfg = getAutoTradeExecutionConfig(req.user.id);
+    const strategyBudgetUsd = Number(Math.max(1, Number(execCfg.paperBudgetUsd || 100)).toFixed(2));
+    const startupEquity = getStrategyEquitySnapshot(req.user.id, strategyBudgetUsd, safetyState);
     const openPositions = listAutoTradePositions(req.user.id, "OPEN");
     const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
     const liveAllowed = liveEligibility.allowed;
@@ -3571,11 +3651,18 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
           maxTokenDailyLossUsd: SAFETY_MAX_TOKEN_DAILY_LOSS_USD,
           maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
           maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
+          maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
+          emergencyHalt: GLOBAL_EMERGENCY_HALT,
           paperBudgetUsd: Number(Math.max(1, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
           paperAvailableUsd: Number(Math.max(0, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
           openExposureUsd: 0,
           dailyRealizedLossUsd: getDailyRealizedLossUsd(req.user.id, nowMs),
           hourlyRealizedLossUsd: getWindowRealizedLossUsd(req.user.id, 60 * 60 * 1000, nowMs),
+          realizedPnlUsd: startupEquity.realizedPnlUsd,
+          unrealizedPnlUsd: 0,
+          currentEquityUsd: startupEquity.currentEquityUsd,
+          peakEquityUsd: startupEquity.peakEquityUsd,
+          drawdownPct: startupEquity.drawdownPct,
           lossStreak: getConsecutiveLossStreak(req.user.id),
           pausedUntil: safetyState.pausedUntil ? new Date(safetyState.pausedUntil).toISOString() : null,
           errorCountWindow: safetyState.errorTimestamps.length
@@ -3759,9 +3846,10 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
     const paperAvailableUsd = Number(Math.max(0, paperBudgetUsd - openExposureUsd).toFixed(2));
     const dailyRealizedLossUsd = getDailyRealizedLossUsd(req.user.id);
     const hourlyRealizedLossUsd = getWindowRealizedLossUsd(req.user.id, 60 * 60 * 1000);
-    const lossStreak = getConsecutiveLossStreak(req.user.id);
     const latestSafetyState = getExecutionSafetyState(req.user.id);
     pruneSafetyErrors(latestSafetyState);
+    const equity = getStrategyEquitySnapshot(req.user.id, paperBudgetUsd, latestSafetyState);
+    const lossStreak = getConsecutiveLossStreak(req.user.id);
     return res.json({
       ts: new Date().toISOString(),
       mode: monitorMode,
@@ -3778,11 +3866,18 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
         maxTokenDailyLossUsd: SAFETY_MAX_TOKEN_DAILY_LOSS_USD,
         maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
         maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
+        maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
+        emergencyHalt: GLOBAL_EMERGENCY_HALT,
         paperBudgetUsd,
         paperAvailableUsd,
         openExposureUsd,
         dailyRealizedLossUsd,
         hourlyRealizedLossUsd,
+        realizedPnlUsd: equity.realizedPnlUsd,
+        unrealizedPnlUsd: equity.unrealizedPnlUsd,
+        currentEquityUsd: equity.currentEquityUsd,
+        peakEquityUsd: equity.peakEquityUsd,
+        drawdownPct: equity.drawdownPct,
         lossStreak,
         pausedUntil: latestSafetyState.pausedUntil
           ? new Date(latestSafetyState.pausedUntil).toISOString()
@@ -3840,6 +3935,17 @@ app.post(
         : baseModeState;
       const executionMode: "paper" | "live" =
         modeState.mode === "live" && liveEnabled && !PAPER_ONLY_MODE ? "live" : "paper";
+      if (executionMode === "live" && GLOBAL_EMERGENCY_HALT) {
+        return res.status(423).json({
+          error: "global emergency halt is active; live execution ticks are blocked",
+          code: "GLOBAL_EMERGENCY_HALT",
+          live: {
+            executionEnabled: LIVE_EXECUTION_ENABLED,
+            paperOnlyMode: PAPER_ONLY_MODE,
+            emergencyHalt: GLOBAL_EMERGENCY_HALT
+          }
+        });
+      }
       const nowMs = Date.now();
       const safetyState = getExecutionSafetyState(req.user.id);
       pruneSafetyErrors(safetyState, nowMs);
@@ -4006,6 +4112,15 @@ app.post(
       );
       const paperAvailableUsd = Number(Math.max(0, paperBudgetUsd - openExposureUsd).toFixed(2));
       const dailyRealizedLossUsd = getDailyRealizedLossUsd(req.user.id, nowMs);
+      const equity = getStrategyEquitySnapshot(req.user.id, paperBudgetUsd, safetyState);
+      const drawdownLimitReached =
+        executionMode === "live" && equity.drawdownPct >= SAFETY_MAX_DRAWDOWN_PCT;
+      if (drawdownLimitReached) {
+        safetyState.pausedUntil = Math.max(
+          safetyState.pausedUntil,
+          nowMs + SAFETY_DRAWDOWN_PAUSE_SEC * 1000
+        );
+      }
       const safetyPaused =
         executionMode === "live" && safetyState.pausedUntil > nowMs;
       const lossLimitReached =
@@ -4082,6 +4197,11 @@ app.post(
           actions.push({
             type: "INFO",
             note: `daily loss cap reached (${SAFETY_MAX_DAILY_LOSS_USD} USD), no new positions opened`
+          });
+        } else if (drawdownLimitReached) {
+          actions.push({
+            type: "INFO",
+            note: `drawdown kill-switch active (${equity.drawdownPct}% >= ${SAFETY_MAX_DRAWDOWN_PCT}%), no new positions opened`
           });
         } else if (SAFETY_EXIT_ON_HOSTILE_REGIME && primaryRegimeHostile) {
           actions.push({
@@ -4358,6 +4478,8 @@ app.post(
           maxTokenDailyLossUsd: SAFETY_MAX_TOKEN_DAILY_LOSS_USD,
           maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
           maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
+          maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
+          emergencyHalt: GLOBAL_EMERGENCY_HALT,
           paperBudgetUsd: Number(Math.max(effectiveTradeAmountUsd, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
           paperAvailableUsd: paperAvailableAfterUsd,
           openExposureUsd: openExposureAfterUsd,
@@ -4365,6 +4487,11 @@ app.post(
           hourlyRealizedLossUsd: hourlyRealizedLossAfterUsd,
           tokenDailyRealizedLossUsd: tokenDailyRealizedLossAfterUsd,
           tokenHourlyRealizedLossUsd: tokenHourlyRealizedLossAfterUsd,
+          realizedPnlUsd: equity.realizedPnlUsd,
+          unrealizedPnlUsd: equity.unrealizedPnlUsd,
+          currentEquityUsd: equity.currentEquityUsd,
+          peakEquityUsd: equity.peakEquityUsd,
+          drawdownPct: equity.drawdownPct,
           lossStreak: lossStreakAfter,
           pausedUntil: latestSafetyState.pausedUntil
             ? new Date(latestSafetyState.pausedUntil).toISOString()
