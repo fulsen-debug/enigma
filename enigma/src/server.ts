@@ -2644,6 +2644,72 @@ app.get("/api/auth/me", authRequired, async (req: AuthedRequest, res) => {
   });
 });
 
+app.get("/api/live/readiness", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+  const executionConfig = getAutoTradeExecutionConfig(req.user.id);
+  const policyConfig = getAutoTradeConfig(req.user.id);
+  const signerConfigured = hasSignerForWallet(req.user.wallet);
+  const liveModeRequested = executionConfig.mode === "live" || policyConfig.mode === "live";
+  const liveModeEnabled = executionConfig.enabled && executionConfig.mode === "live";
+  const ready =
+    LIVE_EXECUTION_ENABLED &&
+    !PAPER_ONLY_MODE &&
+    !GLOBAL_EMERGENCY_HALT &&
+    liveEligibility.allowed &&
+    signerConfigured &&
+    liveModeEnabled;
+
+  const reasons: string[] = [];
+  if (!LIVE_EXECUTION_ENABLED) reasons.push("execution_disabled");
+  if (PAPER_ONLY_MODE) reasons.push("paper_only_mode");
+  if (GLOBAL_EMERGENCY_HALT) reasons.push("global_emergency_halt");
+  if (!liveEligibility.allowed) reasons.push(String(liveEligibility.reason || "live_not_allowed"));
+  if (!signerConfigured) reasons.push("missing_wallet_signer_mapping");
+  if (!executionConfig.enabled) reasons.push("execution_engine_disabled");
+  if (executionConfig.mode !== "live") reasons.push("execution_mode_not_live");
+  if (liveRuntimeErrors.length > 0) reasons.push("runtime_config_errors_present");
+
+  return res.json({
+    ts: new Date().toISOString(),
+    user: {
+      wallet: req.user.wallet,
+      plan: req.user.plan
+    },
+    live: {
+      ready,
+      reasons,
+      executionEnabled: LIVE_EXECUTION_ENABLED,
+      paperOnlyMode: PAPER_ONLY_MODE,
+      globalEmergencyHalt: GLOBAL_EMERGENCY_HALT,
+      internalWalletGate: REQUIRE_INTERNAL_LIVE_WALLET,
+      eligibleWallet: liveEligibility.allowed,
+      eligibleReason: liveEligibility.allowed ? "ok" : String(liveEligibility.reason || "blocked"),
+      signerConfigured,
+      runtimeErrors: liveRuntimeErrors
+    },
+    config: {
+      policyEnabled: policyConfig.enabled,
+      policyMode: policyConfig.mode,
+      executionEnabled: executionConfig.enabled,
+      executionMode: executionConfig.mode,
+      liveModeRequested
+    },
+    safety: {
+      maxTotalExposureUsd: SAFETY_MAX_TOTAL_EXPOSURE_USD,
+      maxDailyLossUsd: SAFETY_MAX_DAILY_LOSS_USD,
+      maxHourlyLossUsd: SAFETY_MAX_HOURLY_LOSS_USD,
+      maxTokenDailyLossUsd: SAFETY_MAX_TOKEN_DAILY_LOSS_USD,
+      maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
+      maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
+      maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT
+    }
+  });
+});
+
 app.get("/api/health", async (_req, res) => {
   const context = await createEnigmaContext();
   const helius = await context.tools.onchain.rpcHealth();
