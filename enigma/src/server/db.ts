@@ -67,6 +67,22 @@ export interface AutoTradePositionRecord {
   pnlPct: number | null;
 }
 
+export interface AutoTradeEventRecord {
+  id: number;
+  userId: number;
+  mode: "paper" | "live";
+  eventType: string;
+  mint: string | null;
+  positionId: number | null;
+  decisionId: string | null;
+  orderRequestId: string | null;
+  txSignature: string | null;
+  closeReason: string | null;
+  realizedPnlPct: number | null;
+  payloadJson: string;
+  created_at: string;
+}
+
 export interface PremiumPaymentRecord {
   id: number;
   userId: number;
@@ -145,6 +161,10 @@ const db = new DatabaseSync(dbPath);
 const AUTOTRADE_RUN_RETENTION = Math.max(
   100,
   Number(process.env.ENIGMA_AUTOTRADE_RUN_RETENTION || 1200)
+);
+const AUTOTRADE_EVENT_RETENTION = Math.max(
+  200,
+  Number(process.env.ENIGMA_AUTOTRADE_EVENT_RETENTION || 5000)
 );
 const WATCHLIST_STORAGE_MAX = Math.max(25, Number(process.env.ENIGMA_WATCHLIST_MAX_TOKENS || 200));
 
@@ -268,6 +288,22 @@ CREATE TABLE IF NOT EXISTS autotrade_positions (
   closed_at TEXT,
   close_reason TEXT,
   pnl_pct REAL
+);
+
+CREATE TABLE IF NOT EXISTS autotrade_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  mode TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  mint TEXT,
+  position_id INTEGER,
+  decision_id TEXT,
+  order_request_id TEXT,
+  tx_signature TEXT,
+  close_reason TEXT,
+  realized_pnl_pct REAL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS premium_payments (
@@ -1040,6 +1076,102 @@ export function resetAutoTradeRuns(userId: number, scope: "paper" | "live" | "al
   }
 
   return Number(result?.changes || 0);
+}
+
+export function saveAutoTradeEvent(input: {
+  userId: number;
+  mode: "paper" | "live";
+  eventType: string;
+  mint?: string | null;
+  positionId?: number | null;
+  decisionId?: string | null;
+  orderRequestId?: string | null;
+  txSignature?: string | null;
+  closeReason?: string | null;
+  realizedPnlPct?: number | null;
+  payload?: Record<string, unknown>;
+}): number {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO autotrade_events (
+        user_id, mode, event_type, mint, position_id, decision_id, order_request_id,
+        tx_signature, close_reason, realized_pnl_pct, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      input.userId,
+      input.mode,
+      String(input.eventType || "INFO"),
+      input.mint ? String(input.mint) : null,
+      Number.isFinite(Number(input.positionId)) ? Number(input.positionId) : null,
+      input.decisionId ? String(input.decisionId) : null,
+      input.orderRequestId ? String(input.orderRequestId) : null,
+      input.txSignature ? String(input.txSignature) : null,
+      input.closeReason ? String(input.closeReason) : null,
+      Number.isFinite(Number(input.realizedPnlPct)) ? Number(input.realizedPnlPct) : null,
+      JSON.stringify(input.payload || {}),
+      now
+    );
+
+  db.prepare(
+    `DELETE FROM autotrade_events
+     WHERE user_id = ?
+       AND id NOT IN (
+         SELECT id
+         FROM autotrade_events
+         WHERE user_id = ?
+         ORDER BY id DESC
+         LIMIT ?
+       )`
+  ).run(input.userId, input.userId, AUTOTRADE_EVENT_RETENTION);
+
+  return Number(result.lastInsertRowid);
+}
+
+export function listAutoTradeEvents(userId: number, limit = 120): AutoTradeEventRecord[] {
+  const safeLimit = Math.max(10, Math.min(500, Number(limit || 120)));
+  const rows = db
+    .prepare(
+      `SELECT
+         id, user_id, mode, event_type, mint, position_id, decision_id, order_request_id,
+         tx_signature, close_reason, realized_pnl_pct, payload_json, created_at
+       FROM autotrade_events
+       WHERE user_id = ?
+       ORDER BY id DESC
+       LIMIT ?`
+    )
+    .all(userId, safeLimit) as Array<{
+    id: number;
+    user_id: number;
+    mode: string;
+    event_type: string;
+    mint: string | null;
+    position_id: number | null;
+    decision_id: string | null;
+    order_request_id: string | null;
+    tx_signature: string | null;
+    close_reason: string | null;
+    realized_pnl_pct: number | null;
+    payload_json: string;
+    created_at: string;
+  }>;
+
+  return rows.map((row) => ({
+    id: Number(row.id),
+    userId: Number(row.user_id),
+    mode: String(row.mode || "paper") === "live" ? "live" : "paper",
+    eventType: String(row.event_type || "INFO"),
+    mint: row.mint ? String(row.mint) : null,
+    positionId: row.position_id === null ? null : Number(row.position_id),
+    decisionId: row.decision_id ? String(row.decision_id) : null,
+    orderRequestId: row.order_request_id ? String(row.order_request_id) : null,
+    txSignature: row.tx_signature ? String(row.tx_signature) : null,
+    closeReason: row.close_reason ? String(row.close_reason) : null,
+    realizedPnlPct: row.realized_pnl_pct === null ? null : Number(row.realized_pnl_pct),
+    payloadJson: String(row.payload_json || "{}"),
+    created_at: String(row.created_at || "")
+  }));
 }
 
 export function getAutoTradePerformance(userId: number, limit = 30): Record<string, unknown> {

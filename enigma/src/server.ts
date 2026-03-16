@@ -31,6 +31,7 @@ import {
   getWithdrawalRequestById,
   incrementUsage,
   listPremiumPaymentsByUser,
+  listAutoTradeEvents,
   listAutoTradePositions,
   listWithdrawalRequests,
   putAutoTradeConfig,
@@ -42,6 +43,7 @@ import {
   setUserManagedBalance,
   setUserPlanByWallet,
   saveAutoTradeRun,
+  saveAutoTradeEvent,
   saveSignal,
   updateWithdrawalRequestStatus,
   updateAutoTradePositionMark,
@@ -576,6 +578,46 @@ function recordExecutionSuccess(userId: number): void {
     state.pausedUntil = 0;
   }
   state.errorTimestamps = [];
+}
+
+function persistAutoTradeActions(
+  userId: number,
+  mode: "paper" | "live",
+  actions: Array<Record<string, unknown>>,
+  baseMeta: Record<string, unknown> = {}
+): void {
+  if (!Array.isArray(actions) || !actions.length) return;
+  actions.forEach((action) => {
+    const eventType = String(action.type || "INFO").trim() || "INFO";
+    const mintRaw = String(action.mint || "").trim();
+    const txSignatureRaw = String(action.signature || action.txHash || "").trim();
+    const closeReasonRaw = String(action.reason || "").trim();
+    const positionIdRaw = Number(action.positionId || 0);
+    const expectedPnlPct = Number(action.expectedPnlPct);
+    const realizedAfterCostsPct = Number(action.realizedAfterCostsPct);
+    const decisionId = `${eventType}:${mintRaw || "na"}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+
+    saveAutoTradeEvent({
+      userId,
+      mode,
+      eventType,
+      mint: mintRaw || null,
+      positionId: Number.isFinite(positionIdRaw) && positionIdRaw > 0 ? positionIdRaw : null,
+      decisionId,
+      orderRequestId: null,
+      txSignature: txSignatureRaw || null,
+      closeReason: closeReasonRaw || null,
+      realizedPnlPct: Number.isFinite(realizedAfterCostsPct)
+        ? realizedAfterCostsPct
+        : Number.isFinite(expectedPnlPct)
+          ? expectedPnlPct
+          : null,
+      payload: {
+        ...baseMeta,
+        action
+      }
+    });
+  });
 }
 
 function normalizeTsMs(value: number): number {
@@ -3307,6 +3349,25 @@ app.get("/api/autotrade/positions", authRequired, (req: AuthedRequest, res) => {
   return res.json({ positions, usage });
 });
 
+app.get("/api/autotrade/events", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const limit = Math.max(10, Math.min(500, Number(req.query.limit || 120)));
+  const usage = getUsage(req.user.id);
+  const events = listAutoTradeEvents(req.user.id, limit).map((item) => ({
+    ...item,
+    payload: (() => {
+      try {
+        return JSON.parse(String(item.payloadJson || "{}"));
+      } catch {
+        return {};
+      }
+    })()
+  }));
+  return res.json({ events, usage });
+});
+
 app.get("/api/mission/workspaces/:workspaceId", authRequired, (req: AuthedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "unauthorized" });
@@ -3650,6 +3711,20 @@ app.post("/api/autotrade/positions/close", authRequired, async (req: AuthedReque
     if (!closed) {
       return res.status(500).json({ error: "manual close failed" });
     }
+    saveAutoTradeEvent({
+      userId: req.user.id,
+      mode: closed.mode,
+      eventType: "MANUAL_CLOSE",
+      mint: closed.mint,
+      positionId: closed.id,
+      closeReason: "MANUAL_CLOSE",
+      realizedPnlPct: Number(closed.pnlPct || 0),
+      payload: {
+        sizeUsd: Number(closed.sizeUsd || 0),
+        entryPriceUsd: Number(closed.entryPriceUsd || 0),
+        markPriceUsd
+      }
+    });
 
     return res.json({
       ok: true,
@@ -3684,6 +3759,17 @@ app.post("/api/autotrade/halt", authRequired, (req: AuthedRequest, res) => {
     ...currentExecution,
     enabled: false,
     mode: "paper"
+  });
+  saveAutoTradeEvent({
+    userId: req.user.id,
+    mode: "live",
+    eventType: "HALT",
+    payload: {
+      halted: true,
+      source: "operator",
+      policyMode: currentPolicy.mode,
+      executionMode: currentExecution.mode
+    }
   });
 
   return res.json({
@@ -3940,6 +4026,9 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
     pruneSafetyErrors(latestSafetyState);
     const equity = getStrategyEquitySnapshot(req.user.id, paperBudgetUsd, latestSafetyState);
     const lossStreak = getConsecutiveLossStreak(req.user.id);
+    persistAutoTradeActions(req.user.id, monitorMode, actions, {
+      endpoint: "/api/autotrade/monitor"
+    });
     return res.json({
       ts: new Date().toISOString(),
       mode: monitorMode,
@@ -4545,6 +4634,9 @@ app.post(
       const lossStreakAfter = getConsecutiveLossStreak(req.user.id);
       const latestSafetyState = getExecutionSafetyState(req.user.id);
       pruneSafetyErrors(latestSafetyState);
+      persistAutoTradeActions(req.user.id, executionMode, actions, {
+        endpoint: "/api/autotrade/engine/tick"
+      });
 
       return res.json({
         ts: new Date().toISOString(),

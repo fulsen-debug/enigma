@@ -367,6 +367,7 @@ let agentMissionStreamStatus = "idle";
 let agentMissionLastEventAt = "";
 let agentMissionLastHeartbeatAt = "";
 let agentMissionDiagnostics = null;
+let agentLiveReadiness = null;
 let agentMissionSessions = [];
 let agentMissionSessionDetail = null;
 const legacyPaperAgentProvider = createLegacyPaperAgentProvider({ request: api });
@@ -3086,7 +3087,26 @@ function missionEventLabel(eventType) {
   return labels[String(eventType || "").trim()] || "Agent Update";
 }
 
+function formatLiveReadinessReason(reason) {
+  const key = String(reason || "").trim().toLowerCase();
+  const labels = {
+    execution_disabled: "execution disabled",
+    paper_only_mode: "paper-only mode",
+    global_emergency_halt: "global emergency halt",
+    internal_wallet_required: "wallet not allowlisted",
+    live_not_allowed: "live not allowed",
+    missing_wallet_signer_mapping: "wallet signer mapping missing",
+    execution_engine_disabled: "execution engine disabled",
+    execution_mode_not_live: "execution mode not live",
+    runtime_config_errors_present: "runtime config errors present"
+  };
+  return labels[key] || key.replaceAll("_", " ");
+}
+
 function classifyRuntimeHealth() {
+  const readiness = agentLiveReadiness || {};
+  const live = readiness.live || {};
+  const config = readiness.config || {};
   const workerStatus = String(agentMissionDiagnostics?.workerStatus || "").trim();
   const fallbackState = String(agentMissionDiagnostics?.fallbackState || "").trim();
   if (agentMissionStreamStatus === "reconnecting") {
@@ -3122,6 +3142,30 @@ function classifyRuntimeHealth() {
       tone: "warn",
       label: "Degraded",
       note: `Worker reported ${workerStatus.replaceAll("_", " ")}.`
+    };
+  }
+  if (live.globalEmergencyHalt) {
+    return {
+      tone: "bad",
+      label: "Emergency Halt",
+      note: "Global emergency halt is active. Live execution is blocked."
+    };
+  }
+  if (config.liveModeRequested) {
+    if (live.ready) {
+      return {
+        tone: "ok",
+        label: "Live Armed",
+        note: "Live execution gates are satisfied for this wallet."
+      };
+    }
+    const reasons = Array.isArray(live.reasons) ? live.reasons.map(formatLiveReadinessReason).filter(Boolean) : [];
+    return {
+      tone: "warn",
+      label: "Live Blocked",
+      note: reasons.length
+        ? `Live not armed: ${reasons.join(", ")}.`
+        : "Live mode requested but readiness checks are not satisfied."
     };
   }
   return {
@@ -6018,6 +6062,18 @@ async function refreshUserProfile() {
   }
 }
 
+async function refreshLiveReadiness() {
+  if (!authToken) return;
+  try {
+    const response = await api("/api/live/readiness", null, true, "GET");
+    agentLiveReadiness = response || null;
+  } catch {
+    agentLiveReadiness = null;
+  } finally {
+    renderAgentDiagnostics();
+  }
+}
+
 function signalCard(item) {
   if (!item.ok) {
     return `
@@ -6882,6 +6938,7 @@ async function connectWallet() {
 
     await refreshStats();
     await refreshUserProfile();
+    await refreshLiveReadiness();
     await loadPaperConfig();
     await loadPaperPerformance();
     await loadEngineConfig();
@@ -6961,6 +7018,7 @@ async function hydrateSession() {
   try {
     await refreshUserProfile();
     await refreshStats();
+    await refreshLiveReadiness();
     await loadPaperConfig();
     await loadPaperPerformance();
     await loadEngineConfig();
@@ -6993,7 +7051,9 @@ async function hydrateSession() {
       authToken = "";
       userWallet = "";
       userPlan = "free";
+      agentLiveReadiness = null;
       setAuthState();
+      renderAgentDiagnostics();
       setNetworkStatus(navigator.onLine ? "Connected" : "Offline", navigator.onLine ? "ok" : "error");
       return;
     }
@@ -7003,9 +7063,11 @@ async function hydrateSession() {
     authToken = "";
     userWallet = "";
     userPlan = "free";
+    agentLiveReadiness = null;
     localStorage.removeItem("enigma_wallet");
     localStorage.removeItem("enigma_plan");
     setAuthState();
+    renderAgentDiagnostics();
     setNetworkStatus("Auth expired", "error");
     renderProfileWorkspacePlaceholder("Connect wallet to load profile and history.");
   }
