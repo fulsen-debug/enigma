@@ -166,7 +166,13 @@
                   <span>Budget</span>
                   <div class="agent-budget-input-wrap">
                     <span>$</span>
-                    <input id="paper-budget" type="number" min="10" max="1000000" value="100" />
+                    <select id="paper-budget" aria-label="Agent budget">
+                      <option value="50">$50</option>
+                      <option value="100" selected>$100</option>
+                      <option value="200">$200</option>
+                      <option value="500">$500</option>
+                      <option value="1000">$1000</option>
+                    </select>
                   </div>
                 </div>
                 <div class="agent-command-stat">

@@ -6279,6 +6279,17 @@ body.theme-light .agent-budget-input-wrap {
   font-family: var(--terminal-mono);
 }
 
+.agent-budget-input-wrap select {
+  font-size: 1rem !important;
+  font-family: var(--terminal-mono);
+  color: var(--terminal-fg);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  width: 100%;
+}
+
 .agent-provider-badge,
 body.theme-dark .agent-provider-badge,
 body.theme-light .agent-provider-badge {

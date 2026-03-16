@@ -314,6 +314,26 @@ const CORE_ENGINE_PROFILE = {
   maxHoldMinutes: 120,
   cooldownSec: 30
 };
+const SELECTABLE_BUDGET_OPTIONS = [50, 100, 200, 500, 1000];
+
+function normalizeSelectableBudget(value, fallback = 100) {
+  const numeric = Number(value || 0);
+  if (SELECTABLE_BUDGET_OPTIONS.includes(numeric)) {
+    return numeric;
+  }
+  const safeFallback = SELECTABLE_BUDGET_OPTIONS.includes(Number(fallback || 0))
+    ? Number(fallback)
+    : 100;
+  return safeFallback;
+}
+
+function getSelectedBudgetUsd(fallback = 100) {
+  return normalizeSelectableBudget(
+    Number(paperBudgetInput?.value || 0),
+    fallback
+  );
+}
+
 const DEFAULT_AGENT_MISSION_STATE = {
   missionStatus: "scanning",
   budgetUsd: 100,
@@ -4076,10 +4096,12 @@ function syncPaperConfigUi(config) {
   if (paperMaxPositionInput) paperMaxPositionInput.value = String(config.maxPositionUsd ?? 25);
   if (paperIntervalInput) paperIntervalInput.value = String(config.scanIntervalSec ?? 10);
   if (paperBudgetInput && Number.isFinite(Number(config.paperBudgetUsd))) {
-    paperBudgetInput.value = String(config.paperBudgetUsd);
+    paperBudgetInput.value = String(
+      normalizeSelectableBudget(Number(config.paperBudgetUsd), agentTradeState.budgetUsd || 100)
+    );
   }
   updateAgentTradeState({
-    budgetUsd: Number(paperBudgetInput?.value || config.paperBudgetUsd || agentTradeState.budgetUsd || 100)
+    budgetUsd: getSelectedBudgetUsd(config.paperBudgetUsd || agentTradeState.budgetUsd || 100)
   });
 }
 
@@ -4431,7 +4453,13 @@ function renderPaperEquityChart(runs) {
 
 function syncEngineConfigUi(config) {
   if (!config) return;
-  if (paperBudgetInput) paperBudgetInput.value = String(config.paperBudgetUsd ?? 100);
+  if (paperBudgetInput) {
+    const normalizedBudget = normalizeSelectableBudget(
+      Number(config.paperBudgetUsd ?? 100),
+      agentTradeState.budgetUsd || 100
+    );
+    paperBudgetInput.value = String(normalizedBudget);
+  }
   if (paperMaxPositionInput) paperMaxPositionInput.value = String(config.tradeAmountUsd ?? 25);
   if (paperIntervalInput) paperIntervalInput.value = String(config.pollIntervalSec ?? 30);
   if (engineAmountInput) engineAmountInput.value = String(config.tradeAmountUsd ?? paperMaxPositionInput?.value ?? 25);
@@ -4443,17 +4471,18 @@ function syncEngineConfigUi(config) {
   if (engineCooldownInput) engineCooldownInput.value = String(CORE_ENGINE_PROFILE.cooldownSec);
   if (enginePollInput) enginePollInput.value = String(config.pollIntervalSec ?? paperIntervalInput?.value ?? 30);
   updateAgentTradeState({
-    budgetUsd: Number(config.paperBudgetUsd || paperBudgetInput?.value || 100)
+    budgetUsd: getSelectedBudgetUsd(config.paperBudgetUsd || 100)
   });
 }
 
 function readEngineConfigFromUi() {
   const pollIntervalSec = Math.max(5, Math.min(3600, Number(paperIntervalInput?.value || enginePollInput?.value || 30)));
   const tradeAmountUsd = Math.max(1, Math.min(50000, Number(paperMaxPositionInput?.value || engineAmountInput?.value || 25)));
+  const budgetUsd = getSelectedBudgetUsd(100);
   return {
     enabled: true,
     mode: PAPER_ONLY_MODE ? "paper" : "live",
-    paperBudgetUsd: Math.max(10, Math.min(1_000_000, Number(paperBudgetInput?.value || 100))),
+    paperBudgetUsd: budgetUsd,
     tradeAmountUsd,
     maxOpenPositions: CORE_ENGINE_PROFILE.maxOpenPositions,
     tpPct: CORE_ENGINE_PROFILE.tpPct,
@@ -4555,7 +4584,11 @@ function applySavedTempoPreset() {
 
 function applyOperatingPreset(name, { quiet = false } = {}) {
   applyPaperTestModel(CORE_AGENT_MODEL_KEY, { quiet: true, persist: true });
-  if (!paperBudgetInput?.value) paperBudgetInput.value = "100";
+  if (paperBudgetInput) {
+    paperBudgetInput.value = String(
+      normalizeSelectableBudget(Number(paperBudgetInput.value || 100), 100)
+    );
+  }
   if (!paperMaxPositionInput?.value) paperMaxPositionInput.value = "25";
   if (!paperIntervalInput?.value) paperIntervalInput.value = "30";
   if (!quiet) {
@@ -7056,9 +7089,9 @@ tradeActivityClearButton?.addEventListener("click", () => {
 agentSaveTargetButton?.addEventListener("click", () => {
   saveAgentTargetMint({ notify: true });
 });
-paperBudgetInput?.addEventListener("input", () => {
+paperBudgetInput?.addEventListener("change", () => {
   updateAgentTradeState({
-    budgetUsd: Number(paperBudgetInput.value || agentTradeState.budgetUsd || 100)
+    budgetUsd: getSelectedBudgetUsd(agentTradeState.budgetUsd || 100)
   });
 });
 agentAdvancedDrawer?.addEventListener("toggle", () => {

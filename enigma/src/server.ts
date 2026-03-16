@@ -325,6 +325,7 @@ const SAFETY_DRAWDOWN_PAUSE_SEC = Math.max(
 const GLOBAL_EMERGENCY_HALT = String(
   process.env.ENIGMA_GLOBAL_EMERGENCY_HALT || "0"
 ).trim() === "1";
+const SELECTABLE_BUDGET_TIERS_USD = [50, 100, 200, 500, 1000] as const;
 const ENTRY_TIMEOUT_SEC = Math.max(
   10,
   Number(process.env.ENIGMA_ENTRY_TIMEOUT_SEC || 90)
@@ -1197,6 +1198,24 @@ function resolveSingleAgentMint(rawMint: string, rawMints: string): string {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizeSelectableBudgetUsd(value: number, fallback = 100): number {
+  const numeric = Number(value || 0);
+  const fallbackNumeric = Number(fallback || 0);
+  const fallbackTier = SELECTABLE_BUDGET_TIERS_USD.includes(
+    fallbackNumeric as (typeof SELECTABLE_BUDGET_TIERS_USD)[number]
+  )
+    ? fallbackNumeric
+    : 100;
+  if (
+    SELECTABLE_BUDGET_TIERS_USD.includes(
+      numeric as (typeof SELECTABLE_BUDGET_TIERS_USD)[number]
+    )
+  ) {
+    return numeric;
+  }
+  return fallbackTier;
 }
 
 function firstPositiveNumber(values: unknown[]): number {
@@ -3183,10 +3202,9 @@ app.put("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, re
   const next = putAutoTradeExecutionConfig(req.user.id, {
     enabled: typeof req.body.enabled === "boolean" ? Boolean(req.body.enabled) : current.enabled,
     mode,
-    paperBudgetUsd: clampNumber(
+    paperBudgetUsd: normalizeSelectableBudgetUsd(
       Number(req.body.paperBudgetUsd ?? current.paperBudgetUsd),
-      10,
-      1_000_000
+      current.paperBudgetUsd
     ),
     tradeAmountUsd: clampNumber(Number(req.body.tradeAmountUsd ?? current.tradeAmountUsd), 1, 50000),
     maxOpenPositions: clampNumber(Number(req.body.maxOpenPositions ?? current.maxOpenPositions), 1, 50),
@@ -3302,7 +3320,10 @@ app.post("/api/mission/workspaces/:workspaceId/preview", authRequired, async (re
     if (!workspaceId) {
       return res.status(400).json({ error: "workspaceId is required" });
     }
-    const budgetUsd = clampNumber(Number(req.body?.budgetUsd || 0), 1, 1_000_000);
+    const budgetUsd = normalizeSelectableBudgetUsd(
+      Number(req.body?.budgetUsd || 0),
+      Number(req.user ? getAutoTradeExecutionConfig(req.user.id).paperBudgetUsd : 100)
+    );
     const result = await previewOpenClawMissionForUser(req.user, workspaceId, budgetUsd);
     return res.json({
       workspaceId,
@@ -3328,7 +3349,10 @@ app.post("/api/mission/workspaces/:workspaceId/execute", authRequired, async (re
     if (!workspaceId) {
       return res.status(400).json({ error: "workspaceId is required" });
     }
-    const budgetUsd = clampNumber(Number(req.body?.budgetUsd || 0), 1, 1_000_000);
+    const budgetUsd = normalizeSelectableBudgetUsd(
+      Number(req.body?.budgetUsd || 0),
+      Number(req.user ? getAutoTradeExecutionConfig(req.user.id).paperBudgetUsd : 100)
+    );
     const snapshot = await executeOpenClawMissionForUser(req.user, workspaceId, budgetUsd);
     return res.json({
       workspaceId,
