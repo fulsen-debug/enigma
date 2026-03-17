@@ -330,6 +330,7 @@ const SAFETY_DRAWDOWN_PAUSE_SEC = Math.max(
 const GLOBAL_EMERGENCY_HALT = String(
   process.env.ENIGMA_GLOBAL_EMERGENCY_HALT || "0"
 ).trim() === "1";
+let runtimeGlobalEmergencyHaltOverride: boolean | null = null;
 const OPS_ALERT_WEBHOOK_URL = String(process.env.ENIGMA_OPS_ALERT_WEBHOOK_URL || "").trim();
 const OPS_ALERT_COOLDOWN_SEC = Math.max(
   5,
@@ -417,6 +418,13 @@ const opsAlertStats = {
   lastStatusCode: null as number | null,
   lastError: null as string | null
 };
+
+function isGlobalEmergencyHaltActive(): boolean {
+  if (runtimeGlobalEmergencyHaltOverride === null) {
+    return GLOBAL_EMERGENCY_HALT;
+  }
+  return runtimeGlobalEmergencyHaltOverride;
+}
 
 function acquireUserExecutionLock(lockMap: Map<number, number>, userId: number): boolean {
   const now = Date.now();
@@ -2961,7 +2969,7 @@ app.get("/api/auth/me", authRequired, async (req: AuthedRequest, res) => {
     live: {
       paperOnlyMode: PAPER_ONLY_MODE,
       executionEnabled: LIVE_EXECUTION_ENABLED,
-      emergencyHalt: GLOBAL_EMERGENCY_HALT,
+      emergencyHalt: isGlobalEmergencyHaltActive(),
       internalGateEnabled: REQUIRE_INTERNAL_LIVE_WALLET,
       eligible: liveEligibility.allowed && LIVE_EXECUTION_ENABLED && !PAPER_ONLY_MODE,
       reason: liveEligibility.allowed
@@ -3001,7 +3009,7 @@ app.get("/api/live/readiness", authRequired, (req: AuthedRequest, res) => {
   const ready =
     LIVE_EXECUTION_ENABLED &&
     !PAPER_ONLY_MODE &&
-    !GLOBAL_EMERGENCY_HALT &&
+    !isGlobalEmergencyHaltActive() &&
     liveEligibility.allowed &&
     signerConfigured &&
     liveModeEnabled;
@@ -3009,7 +3017,7 @@ app.get("/api/live/readiness", authRequired, (req: AuthedRequest, res) => {
   const reasons: string[] = [];
   if (!LIVE_EXECUTION_ENABLED) reasons.push("execution_disabled");
   if (PAPER_ONLY_MODE) reasons.push("paper_only_mode");
-  if (GLOBAL_EMERGENCY_HALT) reasons.push("global_emergency_halt");
+  if (isGlobalEmergencyHaltActive()) reasons.push("global_emergency_halt");
   if (!liveEligibility.allowed) reasons.push(String(liveEligibility.reason || "live_not_allowed"));
   if (!signerConfigured) reasons.push("missing_wallet_signer_mapping");
   if (!executionConfig.enabled) reasons.push("execution_engine_disabled");
@@ -3027,7 +3035,7 @@ app.get("/api/live/readiness", authRequired, (req: AuthedRequest, res) => {
       reasons,
       executionEnabled: LIVE_EXECUTION_ENABLED,
       paperOnlyMode: PAPER_ONLY_MODE,
-      globalEmergencyHalt: GLOBAL_EMERGENCY_HALT,
+      globalEmergencyHalt: isGlobalEmergencyHaltActive(),
       internalWalletGate: REQUIRE_INTERNAL_LIVE_WALLET,
       eligibleWallet: liveEligibility.allowed,
       eligibleReason: liveEligibility.allowed ? "ok" : String(liveEligibility.reason || "blocked"),
@@ -3198,7 +3206,9 @@ app.get("/api/live/status", (req, res) => {
     live: {
       executionEnabled: LIVE_EXECUTION_ENABLED,
       paperOnlyMode: PAPER_ONLY_MODE,
-      emergencyHalt: GLOBAL_EMERGENCY_HALT,
+      emergencyHalt: isGlobalEmergencyHaltActive(),
+      emergencyHaltOverride:
+        runtimeGlobalEmergencyHaltOverride === null ? "env" : runtimeGlobalEmergencyHaltOverride,
       internalWalletGate: REQUIRE_INTERNAL_LIVE_WALLET
     },
     alerts: {
@@ -3370,8 +3380,11 @@ app.get("/api/live/canary-precheck", (req, res) => {
   const checks = {
     oneInternalWalletOnly: INTERNAL_LIVE_WALLETS.size === 1,
     exactlyOneLiveWalletEnabled: activeLiveWallets.length === 1,
-    emergencyHaltOffForPrep: !GLOBAL_EMERGENCY_HALT,
+    emergencyHaltOffForPrep: !isGlobalEmergencyHaltActive(),
+    webhookConfigured: Boolean(OPS_ALERT_WEBHOOK_URL),
     noRuntimeConfigErrors: liveRuntimeErrors.length === 0,
+    signerMappedOnEnabledWallet:
+      walletChecks.filter((item) => item.enabled && item.mode === "live").every((item) => hasSignerForWallet(item.wallet)),
     strictRiskLimitsOnEnabledWallet:
       walletChecks.filter((item) => item.enabled && item.mode === "live").every((item) => item.strictRiskProfilePass)
   };
@@ -3398,11 +3411,137 @@ app.get("/api/live/canary-precheck", (req, res) => {
     live: {
       executionEnabled: LIVE_EXECUTION_ENABLED,
       paperOnlyMode: PAPER_ONLY_MODE,
-      emergencyHalt: GLOBAL_EMERGENCY_HALT,
+      emergencyHalt: isGlobalEmergencyHaltActive(),
       internalWalletCount: INTERNAL_LIVE_WALLETS.size,
       runtimeErrors: liveRuntimeErrors
     }
   });
+});
+
+app.post("/api/live/emergency-halt", (req, res) => {
+  if (!requireAdminToken(req, res)) {
+    return;
+  }
+  const enabled = Boolean(req.body?.enabled);
+  runtimeGlobalEmergencyHaltOverride = enabled;
+  const wallets = Array.from(INTERNAL_LIVE_WALLETS.values());
+  const eventWallets: string[] = [];
+  for (const wallet of wallets) {
+    const user = getUserByWallet(wallet);
+    if (!user) continue;
+    eventWallets.push(wallet);
+    persistAutoTradeEvent({
+      userId: user.id,
+      mode: "live",
+      severity: "CRITICAL",
+      eventType: "GLOBAL_EMERGENCY_HALT",
+      closeReason: enabled ? "GLOBAL_EMERGENCY_HALT_ON" : "GLOBAL_EMERGENCY_HALT_OFF",
+      payload: {
+        wallet,
+        enabled,
+        source: "admin_override"
+      }
+    });
+  }
+  return res.json({
+    ok: true,
+    ts: new Date().toISOString(),
+    enabled,
+    effectiveEmergencyHalt: isGlobalEmergencyHaltActive(),
+    source: "runtime_override",
+    envEmergencyHalt: GLOBAL_EMERGENCY_HALT,
+    walletsNotified: eventWallets
+  });
+});
+
+app.post("/api/live/simulate", (req, res) => {
+  if (!requireAdminToken(req, res)) {
+    return;
+  }
+  const wallet = String(req.body?.wallet || "").trim();
+  const type = String(req.body?.type || "").trim().toLowerCase();
+  if (!wallet) {
+    return res.status(400).json({ error: "wallet is required" });
+  }
+  if (!type) {
+    return res.status(400).json({ error: "type is required (drawdown_breach|failed_trade)" });
+  }
+  const user = getUserByWallet(wallet);
+  if (!user) {
+    return res.status(404).json({ error: "wallet user not found" });
+  }
+
+  if (type === "drawdown_breach") {
+    const currentPolicy = getAutoTradeConfig(user.id);
+    const currentExec = getAutoTradeExecutionConfig(user.id);
+    const nextPolicy = putAutoTradeConfig(user.id, {
+      ...currentPolicy,
+      enabled: false,
+      mode: "paper"
+    });
+    const nextExec = putAutoTradeExecutionConfig(user.id, {
+      ...currentExec,
+      enabled: false,
+      mode: "paper"
+    });
+    const breachId = persistAutoTradeEvent({
+      userId: user.id,
+      mode: "live",
+      severity: "CRITICAL",
+      eventType: "DRAWDOWN_BREACH",
+      closeReason: "drawdown_threshold_breached",
+      payload: {
+        wallet,
+        simulated: true,
+        note: "Manual simulation of drawdown breach."
+      }
+    });
+    const haltId = persistAutoTradeEvent({
+      userId: user.id,
+      mode: "live",
+      severity: "CRITICAL",
+      eventType: "HALT",
+      closeReason: "DRAWDOWN_BREACH_HALT",
+      payload: {
+        wallet,
+        simulated: true,
+        note: "Execution engine forced to paper due to simulated drawdown breach."
+      }
+    });
+    return res.json({
+      ok: true,
+      ts: new Date().toISOString(),
+      wallet,
+      type,
+      eventIds: [breachId, haltId],
+      policy: nextPolicy,
+      executionConfig: nextExec
+    });
+  }
+
+  if (type === "failed_trade") {
+    const errorId = persistAutoTradeEvent({
+      userId: user.id,
+      mode: "live",
+      severity: "CRITICAL",
+      eventType: "ERROR",
+      closeReason: "simulated_live_trade_failure",
+      payload: {
+        wallet,
+        simulated: true,
+        note: "Manual simulation of failed live trade path."
+      }
+    });
+    return res.json({
+      ok: true,
+      ts: new Date().toISOString(),
+      wallet,
+      type,
+      eventIds: [errorId]
+    });
+  }
+
+  return res.status(400).json({ error: "unknown simulation type", supported: ["drawdown_breach", "failed_trade"] });
 });
 
 app.get("/api/health", async (_req, res) => {
@@ -3421,7 +3560,7 @@ app.get("/api/health", async (_req, res) => {
     live: {
       executionEnabled: LIVE_EXECUTION_ENABLED,
       paperOnlyMode: PAPER_ONLY_MODE,
-      emergencyHalt: GLOBAL_EMERGENCY_HALT,
+      emergencyHalt: isGlobalEmergencyHaltActive(),
       internalWalletGate: REQUIRE_INTERNAL_LIVE_WALLET,
       internalWalletCount: INTERNAL_LIVE_WALLETS.size,
       requirePerWalletSigner: REQUIRE_PER_WALLET_SIGNER,
@@ -3982,7 +4121,7 @@ app.get("/api/autotrade/canary-status", authRequired, (req: AuthedRequest, res) 
     live: {
       executionEnabled: LIVE_EXECUTION_ENABLED,
       paperOnlyMode: PAPER_ONLY_MODE,
-      emergencyHalt: GLOBAL_EMERGENCY_HALT
+      emergencyHalt: isGlobalEmergencyHaltActive()
     },
     summary: {
       events: events.length,
@@ -4570,7 +4709,7 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
             liveAllowed
           ? "live"
           : "paper";
-    if (monitorMode === "live" && GLOBAL_EMERGENCY_HALT) {
+    if (monitorMode === "live" && isGlobalEmergencyHaltActive()) {
       persistAutoTradeEvent({
         userId: req.user.id,
         mode: "live",
@@ -4603,7 +4742,7 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
           maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
           maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
           maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
-          emergencyHalt: GLOBAL_EMERGENCY_HALT,
+          emergencyHalt: isGlobalEmergencyHaltActive(),
           paperBudgetUsd: Number(Math.max(1, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
           paperAvailableUsd: Number(Math.max(0, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
           openExposureUsd: 0,
@@ -4821,7 +4960,7 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
         maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
         maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
         maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
-        emergencyHalt: GLOBAL_EMERGENCY_HALT,
+        emergencyHalt: isGlobalEmergencyHaltActive(),
         paperBudgetUsd,
         paperAvailableUsd,
         openExposureUsd,
@@ -4883,7 +5022,7 @@ app.post(
         : baseModeState;
       const executionMode: "paper" | "live" =
         modeState.mode === "live" && liveEnabled && !PAPER_ONLY_MODE ? "live" : "paper";
-      if (executionMode === "live" && GLOBAL_EMERGENCY_HALT) {
+      if (executionMode === "live" && isGlobalEmergencyHaltActive()) {
         persistAutoTradeEvent({
           userId: req.user.id,
           mode: "live",
@@ -4900,7 +5039,7 @@ app.post(
           live: {
             executionEnabled: LIVE_EXECUTION_ENABLED,
             paperOnlyMode: PAPER_ONLY_MODE,
-            emergencyHalt: GLOBAL_EMERGENCY_HALT
+            emergencyHalt: isGlobalEmergencyHaltActive()
           }
         });
       }
@@ -5488,7 +5627,7 @@ app.post(
           maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
           maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
           maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
-          emergencyHalt: GLOBAL_EMERGENCY_HALT,
+          emergencyHalt: isGlobalEmergencyHaltActive(),
           paperBudgetUsd: Number(Math.max(effectiveTradeAmountUsd, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)),
           paperAvailableUsd: paperAvailableAfterUsd,
           openExposureUsd: openExposureAfterUsd,

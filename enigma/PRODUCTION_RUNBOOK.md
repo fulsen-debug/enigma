@@ -112,6 +112,8 @@ Operator endpoints (admin token required):
 - `POST /api/live/alerts/test`
 - `GET /api/live/status`
 - `GET /api/live/canary-precheck`
+- `POST /api/live/emergency-halt` (runtime halt toggle for validation)
+- `POST /api/live/simulate` (`drawdown_breach` / `failed_trade`)
 
 One-command smoke test:
 
@@ -123,3 +125,28 @@ Expected behavior:
 - INFO bursts are deduplicated by cooldown.
 - CRITICAL bursts bypass cooldown and are never suppressed.
 - `/api/live/status` returns active wallet/risk/PnL state plus alert delivery health.
+
+Canary pre-activation checklist:
+- `GET /api/live/canary-precheck` must return `"pass": true`
+- only Wallet A appears in `ENIGMA_INTERNAL_LIVE_WALLETS`
+- Wallet B is removed from allowlist and signer map
+- Wallet A execution config is strict: `paperBudgetUsd=50`, `maxOpenPositions=1`, conservative trade size
+
+Manual safety simulations (admin token required):
+
+```bash
+curl -X POST "$BASE_URL/api/live/emergency-halt" \
+  -H "x-admin-token: $ENIGMA_ADMIN_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"enabled":true}'
+
+curl -X POST "$BASE_URL/api/live/simulate" \
+  -H "x-admin-token: $ENIGMA_ADMIN_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"wallet":"<walletA>","type":"drawdown_breach"}'
+
+curl -X POST "$BASE_URL/api/live/simulate" \
+  -H "x-admin-token: $ENIGMA_ADMIN_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"wallet":"<walletA>","type":"failed_trade"}'
+```
