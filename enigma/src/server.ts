@@ -3323,7 +3323,7 @@ app.get("/api/live/alert-templates", (req, res) => {
   });
 });
 
-app.post("/api/live/alerts/test", (req, res) => {
+app.post("/api/live/alerts/test", async (req, res) => {
   if (!requireAdminToken(req, res)) {
     return;
   }
@@ -3368,6 +3368,10 @@ app.post("/api/live/alerts/test", (req, res) => {
     });
     ids.push(criticalId);
   }
+
+  // Allow async webhook delivery promises to settle so `after` stats reflect
+  // real sent/failed counts for this smoke-test response.
+  await new Promise((resolve) => setTimeout(resolve, 700));
 
   return res.json({
     ok: true,
