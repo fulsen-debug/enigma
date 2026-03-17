@@ -118,6 +118,8 @@ const AUTH_COOKIE_SECURE = String(process.env.NODE_ENV || "development") === "pr
 const PREMIUM_TELEGRAM = String(process.env.ENIGMA_PREMIUM_TELEGRAM || "@KOBECOIN_SUPPORT").trim();
 const ADMIN_TOKEN = String(process.env.ENIGMA_ADMIN_TOKEN || "").trim();
 const KOBX_MINT = "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump";
+const KOBX_GATING_ENABLED =
+  String(process.env.ENIGMA_KOBX_GATING_ENABLED || "0").trim() === "1";
 const KOBX_REQUIRED_BALANCE = Math.max(
   0,
   Number(process.env.ENIGMA_KOBX_REQUIRED_BALANCE || 500_000)
@@ -1835,7 +1837,7 @@ async function getKobxAccessStatus(wallet: string): Promise<{
   scannerDailyRemaining: number;
   scannerTier: "none" | "base" | "high";
 }> {
-  if (KOBX_REQUIRED_BALANCE <= 0) {
+  if (!KOBX_GATING_ENABLED || KOBX_REQUIRED_BALANCE <= 0) {
     const syntheticLimit = 999_999;
     return {
       mint: KOBX_MINT,
