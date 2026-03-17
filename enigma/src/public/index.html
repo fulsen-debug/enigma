@@ -152,6 +152,7 @@
                     <span class="small muted">Token</span>
                     <strong id="agent-current-token-label">No token selected</strong>
                     <span id="agent-current-token-mint" class="agent-token-mint muted">Save one token to arm the console.</span>
+                    <button id="agent-clear-target" type="button" class="secondary tiny-btn agent-token-clear-btn">Remove Token</button>
                   </div>
                 </div>
                 <div class="agent-command-stat">
@@ -469,7 +470,10 @@
                       <label for="agent-target-mint">Mission Token</label>
                       <input id="agent-target-mint" type="text" placeholder="Paste one token ID (Solana mint, BTC, ETH)" />
                     </div>
-                    <button id="agent-save-target" class="secondary">Save Agent Token</button>
+                    <div class="agent-target-actions">
+                      <button id="agent-save-target" class="secondary">Save Agent Token</button>
+                      <button id="agent-clear-target-secondary" class="secondary">Clear</button>
+                    </div>
                   </div>
                 </section>
 

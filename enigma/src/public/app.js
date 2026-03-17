@@ -123,6 +123,8 @@ const paperEquityChart = document.querySelector("#paper-equity-chart");
 const paperPerformanceSummary = document.querySelector("#paper-performance-summary");
 const paperPerformanceRuns = document.querySelector("#paper-performance-runs");
 const agentTargetMintInput = document.querySelector("#agent-target-mint");
+const agentClearTargetButton = document.querySelector("#agent-clear-target");
+const agentClearTargetSecondaryButton = document.querySelector("#agent-clear-target-secondary");
 const agentOperatingPresetSelect = document.querySelector("#agent-operating-preset");
 const agentRunTestButton = document.querySelector("#agent-run-test");
 const agentRunLiveButton = document.querySelector("#agent-run-live");
@@ -1799,6 +1801,50 @@ function saveAgentTargetMint(options = {}) {
   }
   renderAgentScannerSummary([]);
   return true;
+}
+
+function clearAgentTargetMint(options = {}) {
+  const notify = options.notify !== false;
+  stopPaperLoop();
+  stopEngineLoop();
+  persistAgentTargetMints([]);
+  if (agentTargetMintInput) {
+    agentTargetMintInput.value = "";
+  }
+  agentPricePoints = [];
+  renderAgentPriceGraph();
+  updateAgentTradeState({
+    preview: null,
+    decision: null,
+    position: null,
+    missionStatus: "idle",
+    error: null,
+    executionTrace: {
+      previewState: "Token removed",
+      submitted: "-",
+      txHash: "-",
+      filledAmount: "-",
+      averageEntry: "-",
+      stopLoss: "-",
+      takeProfit: "-",
+      holdHorizon: "-",
+      currentPnl: "-"
+    }
+  });
+  recordAgentActivity("Mission token removed. Set a token to arm OpenClaw again.", "info", {
+    title: "Mission Token Cleared"
+  });
+  if (notify) {
+    pushMessage("Agent token removed.", "info");
+  }
+  syncAgentTargetMintUi();
+}
+
+function syncAgentExecutionModeUi() {
+  const selectedMode = getSelectedExecutionMode();
+  if (agentRunTestButton) {
+    agentRunTestButton.textContent = selectedMode === "live" ? "Start Live" : "Start Test";
+  }
 }
 
 function setAgentPriceStatus(text, mode = "idle") {
@@ -3809,6 +3855,7 @@ function renderAgentMissionConsole() {
   }
 
   if (agentModeView) agentModeView.value = getSelectedExecutionMode() === "live" ? "Live guarded runtime" : "Paper runtime";
+  syncAgentExecutionModeUi();
   if (agentTrailingPreview) agentTrailingPreview.textContent = `${formatNumber(Number(engineTrailingInput?.value || CORE_ENGINE_PROFILE.trailingStopPct), 1)}%`;
   if (agentOpenSlotsPreview) agentOpenSlotsPreview.textContent = String(CORE_ENGINE_PROFILE.maxOpenPositions);
   if (agentHaltState) agentHaltState.textContent = agentTradeState.emergencyStopEnabled ? "Engaged" : "Armed";
@@ -4551,6 +4598,7 @@ function syncEngineConfigUi(config) {
     } else {
       agentExecutionModeSelect.value = "paper";
     }
+    syncAgentExecutionModeUi();
   }
   if (paperBudgetInput) {
     const normalizedBudget = normalizeSelectableBudget(
@@ -7216,6 +7264,12 @@ tradeActivityClearButton?.addEventListener("click", () => {
 agentSaveTargetButton?.addEventListener("click", () => {
   saveAgentTargetMint({ notify: true });
 });
+agentClearTargetButton?.addEventListener("click", () => {
+  clearAgentTargetMint({ notify: true });
+});
+agentClearTargetSecondaryButton?.addEventListener("click", () => {
+  clearAgentTargetMint({ notify: true });
+});
 paperBudgetInput?.addEventListener("change", () => {
   updateAgentTradeState({
     budgetUsd: getSelectedBudgetUsd(agentTradeState.budgetUsd || 100)
@@ -7354,7 +7408,7 @@ hydrateSession();
 pushMessage("Quick path: Connect Wallet -> Scan Random Token or run a Manual token scan.", "info");
 pushMessage("Scanner Workspace is optimized for one-token analysis per action in this release.", "info");
 pushMessage(
-  "Set 1 Agent Token, define budget, trade amount, and check cadence, then click Run Test. AIG Core handles the internal paper-trading rules automatically.",
+  "Set 1 Agent Token, choose budget + mode (Test/Live), then click Start. OpenClaw runs the mission flow automatically.",
   "info"
 );
 if (isPaperOnlyMode()) {

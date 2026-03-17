@@ -6312,6 +6312,17 @@ body.theme-light .agent-mode-input-wrap {
   width: 100%;
 }
 
+.agent-token-clear-btn {
+  margin-top: 4px;
+  align-self: flex-start;
+}
+
+.agent-target-actions {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
 .agent-provider-badge,
 body.theme-dark .agent-provider-badge,
 body.theme-light .agent-provider-badge {
