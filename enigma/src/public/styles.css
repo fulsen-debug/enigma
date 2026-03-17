@@ -6290,6 +6290,28 @@ body.theme-light .agent-budget-input-wrap {
   width: 100%;
 }
 
+.agent-mode-input-wrap,
+body.theme-dark .agent-mode-input-wrap,
+body.theme-light .agent-mode-input-wrap {
+  margin: 0;
+  padding: 6px 8px;
+  min-height: 40px;
+  border-radius: 8px;
+  border: 1px solid rgba(122, 153, 189, 0.26) !important;
+  background: rgba(255, 255, 255, 0.02) !important;
+}
+
+.agent-mode-input-wrap select {
+  font-size: 0.9rem !important;
+  font-family: var(--terminal-mono);
+  color: var(--terminal-fg);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  width: 100%;
+}
+
 .agent-provider-badge,
 body.theme-dark .agent-provider-badge,
 body.theme-light .agent-provider-badge {

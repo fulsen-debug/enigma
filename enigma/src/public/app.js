@@ -53,6 +53,7 @@ const paperTestModelSelect = document.querySelector("#paper-test-model");
 const paperTestModelNote = document.querySelector("#paper-test-model-note");
 const paperMaxPositionInput = document.querySelector("#paper-max-position");
 const paperBudgetInput = document.querySelector("#paper-budget");
+const agentExecutionModeSelect = document.querySelector("#agent-execution-mode-select");
 const paperIntervalInput = document.querySelector("#paper-interval");
 const agentPreviewPlanButton = document.querySelector("#agent-preview-plan");
 const agentClosePositionButton = document.querySelector("#agent-close-position");
@@ -163,8 +164,7 @@ const paperStopLoopButton = document.querySelector("#paper-stop-loop");
 const agentSaveTargetButton = document.querySelector("#agent-save-target");
 const engineStartLoopButton = document.querySelector("#engine-start-loop");
 const engineStopLoopButton = document.querySelector("#engine-stop-loop");
-const PAPER_ONLY_MODE = true;
-const LIVE_MODE_PREVIEW_DISABLED = PAPER_ONLY_MODE;
+const PAPER_ONLY_MODE = false;
 const HOLDER_SAMPLE_LIMIT = 10;
 const HOLDER_DEEP_LIMIT = 20;
 const SCANNER_RESULTS_MAX_ITEMS = 30;
@@ -368,6 +368,16 @@ let agentMissionLastEventAt = "";
 let agentMissionLastHeartbeatAt = "";
 let agentMissionDiagnostics = null;
 let agentLiveReadiness = null;
+
+function isPaperOnlyMode() {
+  return Boolean(agentLiveReadiness?.live?.paperOnlyMode ?? PAPER_ONLY_MODE);
+}
+
+function getSelectedExecutionMode() {
+  const requested = String(agentExecutionModeSelect?.value || "paper").trim().toLowerCase();
+  if (requested !== "live") return "paper";
+  return isPaperOnlyMode() ? "paper" : "live";
+}
 let agentMissionSessions = [];
 let agentMissionSessionDetail = null;
 const legacyPaperAgentProvider = createLegacyPaperAgentProvider({ request: api });
@@ -3012,7 +3022,7 @@ function buildAgentThesisView(source) {
     reasons: reasons.slice(0, 4),
     actionIntent,
     riskPosture,
-    executionPosture: PAPER_ONLY_MODE ? "Paper Guarded" : "Live Guarded",
+    executionPosture: getSelectedExecutionMode() === "live" ? "Live Guarded" : "Paper Guarded",
     thesisSummary,
     entryLow: firstPrice([tradePlan.buyZone?.low]),
     entryHigh: firstPrice([tradePlan.buyZone?.high]),
@@ -3779,7 +3789,9 @@ function renderAgentMissionConsole() {
     ...(missionModel.executionTrace || {})
   };
   if (agentExecutionMode) {
-    agentExecutionMode.textContent = agentTradeState.emergencyStopEnabled ? "Halt Engaged" : "Guarded Runtime";
+    const activeMode = getSelectedExecutionMode();
+    const modeLabel = activeMode === "live" ? "Live Guarded" : "Paper Guarded";
+    agentExecutionMode.textContent = agentTradeState.emergencyStopEnabled ? "Halt Engaged" : modeLabel;
     agentExecutionMode.className = `pill ${agentTradeState.emergencyStopEnabled ? "high-risk" : "caution"}`;
   }
   if (agentExecutionTrace) {
@@ -3796,7 +3808,7 @@ function renderAgentMissionConsole() {
     `;
   }
 
-  if (agentModeView) agentModeView.value = PAPER_ONLY_MODE ? "Paper runtime" : "Live guarded runtime";
+  if (agentModeView) agentModeView.value = getSelectedExecutionMode() === "live" ? "Live guarded runtime" : "Paper runtime";
   if (agentTrailingPreview) agentTrailingPreview.textContent = `${formatNumber(Number(engineTrailingInput?.value || CORE_ENGINE_PROFILE.trailingStopPct), 1)}%`;
   if (agentOpenSlotsPreview) agentOpenSlotsPreview.textContent = String(CORE_ENGINE_PROFILE.maxOpenPositions);
   if (agentHaltState) agentHaltState.textContent = agentTradeState.emergencyStopEnabled ? "Engaged" : "Armed";
@@ -4043,7 +4055,17 @@ function applySavedPaperTestModel() {
 }
 
 function applyLivePreviewMode() {
-  if (!LIVE_MODE_PREVIEW_DISABLED) return;
+  const paperOnly = isPaperOnlyMode();
+  if (agentExecutionModeSelect) {
+    const liveOption = agentExecutionModeSelect.querySelector('option[value="live"]');
+    if (liveOption) {
+      liveOption.disabled = paperOnly;
+    }
+    if (paperOnly) {
+      agentExecutionModeSelect.value = "paper";
+    }
+  }
+  if (!paperOnly) return;
   if (agentRunLiveButton) {
     agentRunLiveButton.disabled = true;
     agentRunLiveButton.hidden = true;
@@ -4522,6 +4544,14 @@ function renderPaperEquityChart(runs) {
 
 function syncEngineConfigUi(config) {
   if (!config) return;
+  if (agentExecutionModeSelect) {
+    const mode = String(config.mode || getSelectedExecutionMode() || "paper").toLowerCase();
+    if (mode === "live" && !isPaperOnlyMode()) {
+      agentExecutionModeSelect.value = "live";
+    } else {
+      agentExecutionModeSelect.value = "paper";
+    }
+  }
   if (paperBudgetInput) {
     const normalizedBudget = normalizeSelectableBudget(
       Number(config.paperBudgetUsd ?? 100),
@@ -4548,9 +4578,10 @@ function readEngineConfigFromUi() {
   const pollIntervalSec = Math.max(5, Math.min(3600, Number(paperIntervalInput?.value || enginePollInput?.value || 30)));
   const tradeAmountUsd = Math.max(1, Math.min(50000, Number(paperMaxPositionInput?.value || engineAmountInput?.value || 25)));
   const budgetUsd = getSelectedBudgetUsd(100);
+  const mode = getSelectedExecutionMode();
   return {
     enabled: true,
-    mode: PAPER_ONLY_MODE ? "paper" : "live",
+    mode,
     paperBudgetUsd: budgetUsd,
     tradeAmountUsd,
     maxOpenPositions: CORE_ENGINE_PROFILE.maxOpenPositions,
@@ -5215,10 +5246,7 @@ async function saveEngineConfig(options = {}) {
   }
   try {
     const normalized = normalizeEngineConfig(readEngineConfigFromUi());
-    const payload = {
-      ...normalized.config,
-      mode: PAPER_ONLY_MODE ? "paper" : normalized.config.mode
-    };
+    const payload = { ...normalized.config };
     const response = await api(
       "/api/autotrade/execution-config",
       payload,
@@ -5604,7 +5632,11 @@ async function runEngineTickOnce(options = {}) {
 
 async function startEngineLoop() {
   if (!ensureWalletConnected("start live agent")) return;
-  if (LIVE_MODE_PREVIEW_DISABLED) {
+  if (getSelectedExecutionMode() !== "live") {
+    await startPaperLoop();
+    return;
+  }
+  if (isPaperOnlyMode()) {
     pushMessage("Paper-only mode is enabled. Use Run Test for validation.", "info");
     return;
   }
@@ -6097,6 +6129,8 @@ async function refreshLiveReadiness() {
   } catch {
     agentLiveReadiness = null;
   } finally {
+    applyLivePreviewMode();
+    renderAgentMissionConsole();
     renderAgentDiagnostics();
   }
 }
@@ -7142,7 +7176,11 @@ refreshProfileWorkspaceButton?.addEventListener("click", async () => {
 agentRunTestButton?.addEventListener("click", async () => {
   setButtonBusy(agentRunTestButton, true, "Running...");
   try {
-    await startPaperLoop();
+    if (getSelectedExecutionMode() === "live") {
+      await startEngineLoop();
+    } else {
+      await startPaperLoop();
+    }
   } finally {
     setButtonBusy(agentRunTestButton, false);
   }
@@ -7182,6 +7220,20 @@ paperBudgetInput?.addEventListener("change", () => {
   updateAgentTradeState({
     budgetUsd: getSelectedBudgetUsd(agentTradeState.budgetUsd || 100)
   });
+});
+agentExecutionModeSelect?.addEventListener("change", () => {
+  if (agentExecutionModeSelect.value === "live" && isPaperOnlyMode()) {
+    agentExecutionModeSelect.value = "paper";
+    pushMessage("Live mode is disabled by server policy (paper-only).", "info");
+  } else {
+    pushMessage(
+      agentExecutionModeSelect.value === "live"
+        ? "Mode set to Live. Start will run live guarded execution checks."
+        : "Mode set to Test (Paper).",
+      "info"
+    );
+  }
+  renderAgentMissionConsole();
 });
 agentAdvancedDrawer?.addEventListener("toggle", () => {
   updateAgentTradeState({
@@ -7305,7 +7357,7 @@ pushMessage(
   "Set 1 Agent Token, define budget, trade amount, and check cadence, then click Run Test. AIG Core handles the internal paper-trading rules automatically.",
   "info"
 );
-if (PAPER_ONLY_MODE) {
+if (isPaperOnlyMode()) {
   pushMessage("Paper-only mode enabled. Live execution is intentionally disabled.", "info");
 }
 pushMessage("Read Risk Analysis first. Trade Plan is guidance, not financial advice.", "info");
