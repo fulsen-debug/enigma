@@ -3188,6 +3188,12 @@ function classifyRuntimeHealth() {
   const readiness = agentLiveReadiness || {};
   const live = readiness.live || {};
   const config = readiness.config || {};
+  const liveEligibleWallet = Boolean(
+    live.eligibleWallet ?? live.eligible ?? false
+  );
+  const liveSignerConfigured = Boolean(
+    live.signerConfigured ?? false
+  );
   const workerStatus = String(agentMissionDiagnostics?.workerStatus || "").trim();
   const fallbackState = String(agentMissionDiagnostics?.fallbackState || "").trim();
   if (agentMissionStreamStatus === "reconnecting") {
@@ -3247,6 +3253,13 @@ function classifyRuntimeHealth() {
       note: reasons.length
         ? `Live not armed: ${reasons.join(", ")}.`
         : "Live mode requested but readiness checks are not satisfied."
+    };
+  }
+  if (liveEligibleWallet && !isPaperOnlyMode() && !live.globalEmergencyHalt && liveSignerConfigured) {
+    return {
+      tone: "ok",
+      label: "Live Eligible",
+      note: "Wallet is allowlisted and signer-ready. Switch mode to Live to start unattended execution."
     };
   }
   return {
@@ -5690,6 +5703,21 @@ async function startEngineLoop() {
   }
   setButtonBusy(engineStartLoopButton, true, "Starting...");
   try {
+    await refreshLiveReadiness();
+    const live = agentLiveReadiness?.live || {};
+    const liveEligibleWallet = Boolean(live.eligibleWallet ?? live.eligible ?? false);
+    if (!liveEligibleWallet) {
+      const reason = formatLiveReadinessReason(
+        String(live.eligibleReason || (Array.isArray(live.reasons) ? live.reasons[0] : "internal_wallet_required"))
+      );
+      throw new Error(`Live blocked: wallet is not allowlisted (${reason}).`);
+    }
+    if (!Boolean(live.signerConfigured)) {
+      throw new Error("Live blocked: signer key is not configured for this wallet.");
+    }
+    if (Boolean(live.globalEmergencyHalt)) {
+      throw new Error("Live blocked: global emergency halt is active.");
+    }
     const consentReady = await ensureLiveConsentBeforeStart();
     if (!consentReady) return;
     const agentMints = resolveAgentTargetMints({ notify: true });
