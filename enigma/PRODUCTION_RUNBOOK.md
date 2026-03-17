@@ -98,3 +98,28 @@ Do not market this deployment as:
 Market it as:
 - fast scanner for traders
 - autonomous paper agent for one selected token
+
+## Live Ops Alerting (Phase 4.1)
+
+Required env:
+- `ENIGMA_OPS_ALERT_WEBHOOK_URL`
+- `ENIGMA_OPS_ALERT_MIN_LEVEL` (`info|warn|error`)
+- `ENIGMA_OPS_ALERT_COOLDOWN_SEC`
+- `ENIGMA_LIVE_CONSENT_VERSION` (versioned live consent gate)
+
+Operator endpoints (admin token required):
+- `GET /api/live/alert-templates`
+- `POST /api/live/alerts/test`
+- `GET /api/live/status`
+- `GET /api/live/canary-precheck`
+
+One-command smoke test:
+
+```bash
+ENIGMA_ADMIN_TOKEN=<admin_token> BASE_URL=https://<your-domain> npm run -s live:ops:smoke
+```
+
+Expected behavior:
+- INFO bursts are deduplicated by cooldown.
+- CRITICAL bursts bypass cooldown and are never suppressed.
+- `/api/live/status` returns active wallet/risk/PnL state plus alert delivery health.

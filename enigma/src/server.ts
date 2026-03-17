@@ -405,6 +405,18 @@ const livePriceCache = new Map<
   { priceUsd: number; updatedAt: number; market: Record<string, unknown> }
 >();
 const opsAlertLastSentAt = new Map<string, number>();
+const opsAlertStats = {
+  attempted: 0,
+  sent: 0,
+  failed: 0,
+  suppressedCooldown: 0,
+  criticalBypass: 0,
+  lastAttemptAt: null as string | null,
+  lastSentAt: null as string | null,
+  lastFailedAt: null as string | null,
+  lastStatusCode: null as number | null,
+  lastError: null as string | null
+};
 
 function acquireUserExecutionLock(lockMap: Map<number, number>, userId: number): boolean {
   const now = Date.now();
@@ -739,6 +751,8 @@ function maybeSendOpsAlert(input: {
   if (!OPS_ALERT_WEBHOOK_URL) return;
   const level = eventLevelForSeverity(input.severity);
   if (!minLevelAllows(level)) return;
+  opsAlertStats.attempted += 1;
+  opsAlertStats.lastAttemptAt = new Date().toISOString();
 
   const fingerprint = [
     level,
@@ -748,11 +762,17 @@ function maybeSendOpsAlert(input: {
     String(input.closeReason || "")
   ].join("|");
   const nowMs = Date.now();
-  const last = Number(opsAlertLastSentAt.get(fingerprint) || 0);
-  if (last > 0 && nowMs - last < OPS_ALERT_COOLDOWN_SEC * 1000) {
-    return;
+  const bypassCooldown = level === "error";
+  if (bypassCooldown) {
+    opsAlertStats.criticalBypass += 1;
+  } else {
+    const last = Number(opsAlertLastSentAt.get(fingerprint) || 0);
+    if (last > 0 && nowMs - last < OPS_ALERT_COOLDOWN_SEC * 1000) {
+      opsAlertStats.suppressedCooldown += 1;
+      return;
+    }
+    opsAlertLastSentAt.set(fingerprint, nowMs);
   }
-  opsAlertLastSentAt.set(fingerprint, nowMs);
 
   const body = {
     source: "enigma-autotrade",
@@ -782,7 +802,23 @@ function maybeSendOpsAlert(input: {
       body: JSON.stringify({
         text: `${summary}\n${JSON.stringify(body)}`
       })
-    }).catch(() => {});
+    })
+      .then((response) => {
+        opsAlertStats.lastStatusCode = response.status;
+        if (response.ok) {
+          opsAlertStats.sent += 1;
+          opsAlertStats.lastSentAt = new Date().toISOString();
+        } else {
+          opsAlertStats.failed += 1;
+          opsAlertStats.lastFailedAt = new Date().toISOString();
+          opsAlertStats.lastError = `webhook status ${response.status}`;
+        }
+      })
+      .catch((error) => {
+        opsAlertStats.failed += 1;
+        opsAlertStats.lastFailedAt = new Date().toISOString();
+        opsAlertStats.lastError = String((error as Error)?.message || "webhook delivery failed");
+      });
     return;
   }
 
@@ -794,7 +830,23 @@ function maybeSendOpsAlert(input: {
         text: summary,
         ...(!isSlack ? { embeds: [{ title: "Enigma Live Alert", description: JSON.stringify(body), color: input.severity === "CRITICAL" ? 15158332 : input.severity === "WARN" ? 16763904 : 5793266 }] } : {})
       })
-    }).catch(() => {});
+    })
+      .then((response) => {
+        opsAlertStats.lastStatusCode = response.status;
+        if (response.ok) {
+          opsAlertStats.sent += 1;
+          opsAlertStats.lastSentAt = new Date().toISOString();
+        } else {
+          opsAlertStats.failed += 1;
+          opsAlertStats.lastFailedAt = new Date().toISOString();
+          opsAlertStats.lastError = `webhook status ${response.status}`;
+        }
+      })
+      .catch((error) => {
+        opsAlertStats.failed += 1;
+        opsAlertStats.lastFailedAt = new Date().toISOString();
+        opsAlertStats.lastError = String((error as Error)?.message || "webhook delivery failed");
+      });
     return;
   }
 
@@ -802,7 +854,23 @@ function maybeSendOpsAlert(input: {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
-  }).catch(() => {});
+  })
+    .then((response) => {
+      opsAlertStats.lastStatusCode = response.status;
+      if (response.ok) {
+        opsAlertStats.sent += 1;
+        opsAlertStats.lastSentAt = new Date().toISOString();
+      } else {
+        opsAlertStats.failed += 1;
+        opsAlertStats.lastFailedAt = new Date().toISOString();
+        opsAlertStats.lastError = `webhook status ${response.status}`;
+      }
+    })
+    .catch((error) => {
+      opsAlertStats.failed += 1;
+      opsAlertStats.lastFailedAt = new Date().toISOString();
+      opsAlertStats.lastError = String((error as Error)?.message || "webhook delivery failed");
+    });
 }
 
 function normalizeTsMs(value: number): number {
@@ -3133,6 +3201,14 @@ app.get("/api/live/status", (req, res) => {
       emergencyHalt: GLOBAL_EMERGENCY_HALT,
       internalWalletGate: REQUIRE_INTERNAL_LIVE_WALLET
     },
+    alerts: {
+      configured: Boolean(OPS_ALERT_WEBHOOK_URL),
+      minLevel: OPS_ALERT_MIN_LEVEL,
+      cooldownSec: OPS_ALERT_COOLDOWN_SEC,
+      stats: {
+        ...opsAlertStats
+      }
+    },
     summary: {
       configuredWallets: walletStatuses.filter((item) => item.configured).length,
       activeWallets: activeWallets.length,
@@ -3145,6 +3221,187 @@ app.get("/api/live/status", (req, res) => {
       )
     },
     wallets: walletStatuses
+  });
+});
+
+app.get("/api/live/alert-templates", (req, res) => {
+  if (!requireAdminToken(req, res)) {
+    return;
+  }
+  const sample = {
+    eventType: "LIVE_SELL",
+    severity: "CRITICAL",
+    wallet: "3hh5...8bUw",
+    pnlPct: -3.18,
+    reason: "DRAWDOWN_BREACH",
+    timestamp: new Date().toISOString()
+  };
+  return res.json({
+    sample,
+    telegram: {
+      method: "POST",
+      contentType: "application/json",
+      body: {
+        text:
+          `[${sample.severity}] ${sample.eventType} | wallet=${sample.wallet} | pnl=${sample.pnlPct}% | reason=${sample.reason} | ts=${sample.timestamp}`
+      }
+    },
+    slack: {
+      method: "POST",
+      contentType: "application/json",
+      body: {
+        text:
+          `[${sample.severity}] ${sample.eventType} | wallet=${sample.wallet} | pnl=${sample.pnlPct}% | reason=${sample.reason} | ts=${sample.timestamp}`
+      }
+    },
+    discord: {
+      method: "POST",
+      contentType: "application/json",
+      body: {
+        text:
+          `[${sample.severity}] ${sample.eventType} | wallet=${sample.wallet} | pnl=${sample.pnlPct}% | reason=${sample.reason} | ts=${sample.timestamp}`,
+        embeds: [
+          {
+            title: "Enigma Live Alert",
+            description:
+              `event=${sample.eventType} severity=${sample.severity}\nwallet=${sample.wallet}\npnl=${sample.pnlPct}%\nreason=${sample.reason}\nts=${sample.timestamp}`,
+            color: 15158332
+          }
+        ]
+      }
+    }
+  });
+});
+
+app.post("/api/live/alerts/test", (req, res) => {
+  if (!requireAdminToken(req, res)) {
+    return;
+  }
+  const wallet = String(req.body?.wallet || "").trim();
+  const user = wallet ? getUserByWallet(wallet) : null;
+  const userId = user?.id || 0;
+  const targetWallet = user?.wallet || wallet || "unknown-wallet";
+  const burst = Math.max(1, Math.min(12, Number(req.body?.burst || 3)));
+  const before = { ...opsAlertStats };
+  const ids: number[] = [];
+
+  for (let i = 0; i < burst; i += 1) {
+    const infoId = persistAutoTradeEvent({
+      userId,
+      mode: "live",
+      severity: "INFO",
+      eventType: "TEST_INFO",
+      mint: "So11111111111111111111111111111111111111112",
+      closeReason: "operator_smoke_test",
+      payload: {
+        wallet: targetWallet,
+        burstIndex: i,
+        kind: "info"
+      }
+    });
+    ids.push(infoId);
+  }
+
+  for (let i = 0; i < burst; i += 1) {
+    const criticalId = persistAutoTradeEvent({
+      userId,
+      mode: "live",
+      severity: "CRITICAL",
+      eventType: "TEST_CRITICAL",
+      mint: "So11111111111111111111111111111111111111112",
+      closeReason: "operator_smoke_test_critical",
+      payload: {
+        wallet: targetWallet,
+        burstIndex: i,
+        kind: "critical"
+      }
+    });
+    ids.push(criticalId);
+  }
+
+  return res.json({
+    ok: true,
+    ts: new Date().toISOString(),
+    wallet: targetWallet,
+    userId: userId || null,
+    burst,
+    eventIds: ids,
+    webhookConfigured: Boolean(OPS_ALERT_WEBHOOK_URL),
+    before,
+    after: { ...opsAlertStats },
+    note:
+      "INFO burst should deduplicate by cooldown; CRITICAL burst bypasses cooldown and should always dispatch."
+  });
+});
+
+app.get("/api/live/canary-precheck", (req, res) => {
+  if (!requireAdminToken(req, res)) {
+    return;
+  }
+
+  const configuredWallets = Array.from(INTERNAL_LIVE_WALLETS.values())
+    .map((wallet) => ({ wallet, user: getUserByWallet(wallet) }))
+    .filter((item) => item.user);
+  const activeLiveWallets = configuredWallets.filter((item) => {
+    if (!item.user) return false;
+    const cfg = getAutoTradeExecutionConfig(item.user.id);
+    return cfg.enabled && cfg.mode === "live";
+  });
+  const walletChecks = configuredWallets.map((item) => {
+    const user = item.user!;
+    const exec = getAutoTradeExecutionConfig(user.id);
+    const strictBudget = Number(exec.paperBudgetUsd || 0) === 50;
+    const strictOpenPositions = Number(exec.maxOpenPositions || 0) <= 1;
+    const strictTradeAmount = Number(exec.tradeAmountUsd || 0) <= 25;
+    const strictPoll = Number(exec.pollIntervalSec || 0) >= 10;
+    return {
+      wallet: item.wallet,
+      userId: user.id,
+      mode: exec.mode,
+      enabled: exec.enabled,
+      budgetUsd: Number(exec.paperBudgetUsd || 0),
+      tradeAmountUsd: Number(exec.tradeAmountUsd || 0),
+      maxOpenPositions: Number(exec.maxOpenPositions || 0),
+      pollIntervalSec: Number(exec.pollIntervalSec || 0),
+      strictRiskProfilePass: strictBudget && strictOpenPositions && strictTradeAmount && strictPoll
+    };
+  });
+
+  const checks = {
+    oneInternalWalletOnly: INTERNAL_LIVE_WALLETS.size === 1,
+    exactlyOneLiveWalletEnabled: activeLiveWallets.length === 1,
+    emergencyHaltOffForPrep: !GLOBAL_EMERGENCY_HALT,
+    noRuntimeConfigErrors: liveRuntimeErrors.length === 0,
+    strictRiskLimitsOnEnabledWallet:
+      walletChecks.filter((item) => item.enabled && item.mode === "live").every((item) => item.strictRiskProfilePass)
+  };
+
+  const pass = Object.values(checks).every(Boolean);
+
+  return res.json({
+    ts: new Date().toISOString(),
+    pass,
+    checks,
+    guidance: {
+      required: [
+        "Set ENIGMA_INTERNAL_LIVE_WALLETS to only Wallet A",
+        "Keep Wallet B out of allowlist (standby)",
+        "Enable live mode only for Wallet A",
+        "Use budget tier 50 with maxOpenPositions=1 for canary"
+      ],
+      notes: [
+        "Canary should not start until alert webhook is configured and smoke-tested.",
+        "Emergency halt and drawdown breach protections are enforced on live execution paths."
+      ]
+    },
+    wallets: walletChecks,
+    live: {
+      executionEnabled: LIVE_EXECUTION_ENABLED,
+      paperOnlyMode: PAPER_ONLY_MODE,
+      emergencyHalt: GLOBAL_EMERGENCY_HALT,
+      internalWalletCount: INTERNAL_LIVE_WALLETS.size,
+      runtimeErrors: liveRuntimeErrors
+    }
   });
 });
 
@@ -4313,6 +4570,22 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
             liveAllowed
           ? "live"
           : "paper";
+    if (monitorMode === "live" && GLOBAL_EMERGENCY_HALT) {
+      persistAutoTradeEvent({
+        userId: req.user.id,
+        mode: "live",
+        severity: "CRITICAL",
+        eventType: "GLOBAL_EMERGENCY_HALT",
+        closeReason: "GLOBAL_EMERGENCY_HALT",
+        payload: {
+          note: "Global emergency halt blocked live monitor tick."
+        }
+      });
+      return res.status(423).json({
+        error: "global emergency halt is active; live monitoring execution is blocked",
+        code: "GLOBAL_EMERGENCY_HALT"
+      });
+    }
     if (!openPositions.length) {
       const usage = getUsage(req.user.id);
       return res.json({
@@ -4819,11 +5092,25 @@ app.post(
       const equity = getStrategyEquitySnapshot(req.user.id, paperBudgetUsd, safetyState);
       const drawdownLimitReached =
         executionMode === "live" && equity.drawdownPct >= SAFETY_MAX_DRAWDOWN_PCT;
+      let drawdownHardHaltTriggered = false;
       if (drawdownLimitReached) {
         safetyState.pausedUntil = Math.max(
           safetyState.pausedUntil,
           nowMs + SAFETY_DRAWDOWN_PAUSE_SEC * 1000
         );
+        const currentPolicy = getAutoTradeConfig(req.user.id);
+        const currentExec = getAutoTradeExecutionConfig(req.user.id);
+        putAutoTradeConfig(req.user.id, {
+          ...currentPolicy,
+          enabled: false,
+          mode: "paper"
+        });
+        putAutoTradeExecutionConfig(req.user.id, {
+          ...currentExec,
+          enabled: false,
+          mode: "paper"
+        });
+        drawdownHardHaltTriggered = true;
         actions.push({
           type: "DRAWDOWN_BREACH",
           mode: executionMode,
@@ -4832,6 +5119,12 @@ app.post(
           maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
           pauseSec: SAFETY_DRAWDOWN_PAUSE_SEC,
           reason: "drawdown_threshold_breached"
+        });
+        actions.push({
+          type: "HALT",
+          mode: executionMode,
+          reason: "DRAWDOWN_BREACH_HALT",
+          note: "Execution engine auto-halted due to drawdown threshold breach."
         });
       }
       const safetyPaused =
@@ -5212,7 +5505,8 @@ app.post(
           pausedUntil: latestSafetyState.pausedUntil
             ? new Date(latestSafetyState.pausedUntil).toISOString()
             : null,
-          errorCountWindow: latestSafetyState.errorTimestamps.length
+          errorCountWindow: latestSafetyState.errorTimestamps.length,
+          drawdownHardHaltTriggered
         },
         usage
       });

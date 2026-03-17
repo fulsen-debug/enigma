@@ -18,6 +18,7 @@
     "test": "bash ./scripts/smoke-test.sh && npm run -s test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
     "env:check": "bash ./scripts/check-backend-env.sh",
+    "live:ops:smoke": "bash ./scripts/live-ops-smoke-test.sh",
     "qa:extended": "bash ./scripts/extended-qa.sh",
     "qa": "npm run build && npm run test && npm run qa:extended"
   },
