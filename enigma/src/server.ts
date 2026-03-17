@@ -393,6 +393,14 @@ const BREAKEVEN_LOCK_PCT = Math.max(
   0,
   Number(process.env.ENIGMA_BREAKEVEN_LOCK_PCT || 0.15)
 );
+const AUTONOMOUS_UNIVERSE_LIMIT = Math.max(
+  3,
+  Math.min(24, Number(process.env.ENIGMA_AUTONOMOUS_UNIVERSE_LIMIT || 8))
+);
+const AUTONOMOUS_UNIVERSE_CACHE_MS = Math.max(
+  15_000,
+  Number(process.env.ENIGMA_AUTONOMOUS_UNIVERSE_CACHE_MS || 60_000)
+);
 const autotradeRunLocks = new Map<number, number>();
 const autotradeTickLocks = new Map<number, number>();
 const autotradeMonitorLocks = new Map<number, number>();
@@ -404,6 +412,7 @@ type ExecutionSafetyState = {
 
 const userExecutionSafetyState = new Map<number, ExecutionSafetyState>();
 const entryFallbackState = new Map<string, { startedAt: number; lastSeenAt: number; cycles: number }>();
+const autonomousUniverseCache = new Map<number, { updatedAt: number; mints: string[] }>();
 const positionExecutionMeta = new Map<
   number,
   { entryReferencePriceUsd: number; entryFillCostUsd: number; expectedPnlPct: number }
@@ -1533,6 +1542,43 @@ function resolveSingleAgentMint(rawMint: string, rawMints: string): string {
 
   const valid = validateMints(candidates);
   return valid.length === 1 ? valid[0] : "";
+}
+
+async function resolveAutonomousUniverseMints(userId: number): Promise<string[]> {
+  const now = Date.now();
+  const cached = autonomousUniverseCache.get(userId);
+  if (cached && now - cached.updatedAt <= AUTONOMOUS_UNIVERSE_CACHE_MS && cached.mints.length) {
+    return cached.mints.slice(0, AUTONOMOUS_UNIVERSE_LIMIT);
+  }
+
+  const fromRecentSignals = (() => {
+    try {
+      const dashboard = getDashboardStats(userId) as Record<string, unknown>;
+      const recent = Array.isArray(dashboard?.recentSignals) ? dashboard.recentSignals : [];
+      return recent
+        .map((row) => normalizeTrackedAssetId(String((row as Record<string, unknown>)?.mint || "")))
+        .filter((mint) => mint && isSupportedTrackedAsset(mint));
+    } catch {
+      return [] as string[];
+    }
+  })();
+
+  let discovered: string[] = [];
+  try {
+    const candidates = await discoverNewSolanaMints(30);
+    discovered = candidates
+      .map((item) => normalizeTrackedAssetId(String(item?.mint || "")))
+      .filter((mint) => mint && isSupportedTrackedAsset(mint));
+  } catch {
+    discovered = [];
+  }
+
+  const merged = Array.from(new Set([...fromRecentSignals, ...discovered])).slice(
+    0,
+    AUTONOMOUS_UNIVERSE_LIMIT
+  );
+  autonomousUniverseCache.set(userId, { updatedAt: now, mints: merged });
+  return merged;
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -3404,7 +3450,7 @@ app.get("/api/live/canary-precheck", (req, res) => {
   const walletChecks = configuredWallets.map((item) => {
     const user = item.user!;
     const exec = getAutoTradeExecutionConfig(user.id);
-    const strictBudget = Number(exec.paperBudgetUsd || 0) === 50;
+    const strictBudget = Number(exec.paperBudgetUsd || 0) <= 50;
     const strictOpenPositions = Number(exec.maxOpenPositions || 0) <= 1;
     const strictTradeAmount = Number(exec.tradeAmountUsd || 0) <= 25;
     const strictPoll = Number(exec.pollIntervalSec || 0) >= 10;
@@ -3444,7 +3490,7 @@ app.get("/api/live/canary-precheck", (req, res) => {
         "Set ENIGMA_INTERNAL_LIVE_WALLETS to only Wallet A",
         "Keep Wallet B out of allowlist (standby)",
         "Enable live mode only for Wallet A",
-        "Use budget tier 50 with maxOpenPositions=1 for canary"
+        "Use budget tier 50 or lower with maxOpenPositions=1 for canary"
       ],
       notes: [
         "Canary should not start until alert webhook is configured and smoke-tested.",
@@ -5098,14 +5144,22 @@ app.post(
       }
       const effectiveTradeAmountUsd = getEffectiveTradeAmountUsd(policy, execCfg);
 
-      const agentMint = resolveSingleAgentMint(
+      const requestedAgentMint = resolveSingleAgentMint(
         String(req.body.mint || ""),
         String(req.body.mints || "")
       );
+      const autonomousRequested =
+        Boolean(req.body?.autonomous) || !requestedAgentMint;
+      const autonomousMints = autonomousRequested
+        ? await resolveAutonomousUniverseMints(req.user.id)
+        : [];
+      let agentMint = requestedAgentMint || autonomousMints[0] || "";
       if (!agentMint) {
-        return res.status(400).json({ error: "exactly one valid agent token is required (Solana mint, BTC, ETH)" });
+        return res.status(400).json({
+          error: "no autonomous trade candidates available yet; run scanner discovery or wait for market universe refresh"
+        });
       }
-      const mints = [agentMint];
+      const mints = requestedAgentMint ? [requestedAgentMint] : autonomousMints;
       const fallbackKey = entryFallbackKey(req.user.id, agentMint);
 
       const actions: Array<Record<string, unknown>> = [];
@@ -5329,7 +5383,25 @@ app.post(
           policy
         );
 
-        const primary = decisions.find((item) => item.ok && item.mint === agentMint);
+        const ranked = decisions
+          .filter((item) => item.ok)
+          .sort((a, b) => {
+            const aScore =
+              (String(a.decision || "") === "BUY_CANDIDATE" ? 1000 : 0) +
+              Number(a.patternScore || 0) +
+              Number(a.confidence || 0) * 100;
+            const bScore =
+              (String(b.decision || "") === "BUY_CANDIDATE" ? 1000 : 0) +
+              Number(b.patternScore || 0) +
+              Number(b.confidence || 0) * 100;
+            return bScore - aScore;
+          });
+        const primary = requestedAgentMint
+          ? ranked.find((item) => item.mint === requestedAgentMint) || null
+          : ranked.find((item) => String(item.decision || "") === "BUY_CANDIDATE") || ranked[0] || null;
+        if (primary?.mint) {
+          agentMint = String(primary.mint);
+        }
         const primaryRegimeHostile = Boolean(primary?.regimePolicy?.hostile);
         const hourlyLossUsd = getWindowRealizedLossUsd(req.user.id, 60 * 60 * 1000, nowMs);
         const tokenHourlyLossUsd = getTokenWindowRealizedLossUsd(
@@ -5651,6 +5723,9 @@ app.post(
       return res.json({
         ts: new Date().toISOString(),
         mode: executionMode,
+        autonomous: autonomousRequested,
+        selectedMint: agentMint,
+        universeSize: mints.length,
         warnings: modeWarnings,
         policy,
         executionConfig: execCfg,

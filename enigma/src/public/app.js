@@ -5595,39 +5595,42 @@ async function runEngineTickOnce(options = {}) {
         .filter(Boolean)
     )
   ).slice(0, 1);
-  if (!agentMints.length) {
-    throw new Error("missing agent token mint(s)");
-  }
+  const autonomous = Boolean(options.autonomous) || !agentMints.length;
   engineTickInFlight = true;
   try {
     await saveEngineConfig({ silent: true });
-    const aggregate = {
-      ts: new Date().toISOString(),
-      mode: "paper",
-      warnings: [],
-      decisions: [],
-      actions: [],
-      positions: { openCount: 0, open: [] },
-      safety: {}
-    };
-    for (const mint of agentMints) {
-      const response = await api("/api/autotrade/engine/tick", { mint }, true, "POST");
-      aggregate.ts = String(response.ts || aggregate.ts);
-      aggregate.mode = String(response.mode || aggregate.mode);
-      aggregate.warnings.push(...(Array.isArray(response.warnings) ? response.warnings : []));
-      aggregate.decisions.push(...(Array.isArray(response.decisions) ? response.decisions : []));
-      aggregate.actions.push(...(Array.isArray(response.actions) ? response.actions : []));
-      if (response.positions) {
-        aggregate.positions = {
-          openCount: Number(response.positions.openCount || 0),
-          open: Array.isArray(response.positions.open) ? response.positions.open : []
-        };
+    let response;
+    if (autonomous) {
+      response = await api("/api/autotrade/engine/tick", { autonomous: true }, true, "POST");
+    } else {
+      const aggregate = {
+        ts: new Date().toISOString(),
+        mode: "paper",
+        warnings: [],
+        decisions: [],
+        actions: [],
+        positions: { openCount: 0, open: [] },
+        safety: {}
+      };
+      for (const mint of agentMints) {
+        const item = await api("/api/autotrade/engine/tick", { mint }, true, "POST");
+        aggregate.ts = String(item.ts || aggregate.ts);
+        aggregate.mode = String(item.mode || aggregate.mode);
+        aggregate.warnings.push(...(Array.isArray(item.warnings) ? item.warnings : []));
+        aggregate.decisions.push(...(Array.isArray(item.decisions) ? item.decisions : []));
+        aggregate.actions.push(...(Array.isArray(item.actions) ? item.actions : []));
+        if (item.positions) {
+          aggregate.positions = {
+            openCount: Number(item.positions.openCount || 0),
+            open: Array.isArray(item.positions.open) ? item.positions.open : []
+          };
+        }
+        if (item.safety) {
+          aggregate.safety = item.safety;
+        }
       }
-      if (response.safety) {
-        aggregate.safety = response.safety;
-      }
+      response = aggregate;
     }
-    const response = aggregate;
     const tickDecisions = Array.isArray(response.decisions) ? response.decisions : [];
     tickDecisions.forEach((item) => {
       cacheTokenMeta(item.token, String(item.mint || ""));
@@ -5660,7 +5663,10 @@ async function runEngineTickOnce(options = {}) {
     if (engineSummary) {
       engineSummary.innerHTML = `
         Engine update ${escapeHtml(new Date(response.ts || Date.now()).toLocaleTimeString())}:
-        opened ${opened}, closed ${closed}, open now ${formatNumber(response.positions?.openCount || 0, 0)}, tokens ${formatNumber(agentMints.length, 0)}.
+        opened ${opened}, closed ${closed}, open now ${formatNumber(response.positions?.openCount || 0, 0)}, tokens ${formatNumber(
+          Number(response.universeSize || (autonomous ? 0 : agentMints.length)),
+          0
+        )}${autonomous ? " (autonomous)" : ""}.
         <br />${escapeHtml(safetyLine)}
         ${opened === 0 && primarySkipReason ? `<br /><span class="error-text">Blocked: ${escapeHtml(primarySkipReason)}</span>` : ""}
         ${warnings.length ? `<br /><span class="error-text">${escapeHtml(warnings.join(" | "))}</span>` : ""}
@@ -5714,10 +5720,7 @@ async function startEngineLoop() {
     }
     const consentReady = await ensureLiveConsentBeforeStart();
     if (!consentReady) return;
-    const agentMints = resolveAgentTargetMints({ notify: true });
-    if (!agentMints.length) {
-      throw new Error("At least one Agent Token is required");
-    }
+    const agentMints = resolveAgentTargetMints({ notify: false });
     const preflight = await api(
       `/api/live/preflight?budgetUsd=${encodeURIComponent(String(getSelectedBudgetUsd(100)))}&tradeAmountUsd=${encodeURIComponent(
         String(Math.max(1, Math.min(50000, Number(paperMaxPositionInput?.value || engineAmountInput?.value || 25))))
@@ -5747,13 +5750,13 @@ async function startEngineLoop() {
     await api("/api/autotrade/config", livePolicy, true, "PUT");
     await saveEngineConfig({ silent: true });
     const intervalSec = Math.max(2, Number(enginePollInput?.value || 15));
-    await runEngineTickOnce({ agentMints });
+    await runEngineTickOnce({ agentMints, autonomous: true });
     engineTimer = setInterval(async () => {
-      await runEngineTickOnce({ agentMints });
+      await runEngineTickOnce({ agentMints, autonomous: true });
     }, intervalSec * 1000);
     startRealtimeMonitor("live");
     startAgentPriceMonitor();
-    pushMessage(`Live agent running every ${intervalSec}s on ${agentMints.length} token(s)`, "ok");
+    pushMessage(`Live autonomous agent running every ${intervalSec}s`, "ok");
   } catch (error) {
     notifyActionError(error, "start live agent");
   } finally {
