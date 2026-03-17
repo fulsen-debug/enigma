@@ -14,6 +14,10 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const BUY_INPUT_MINT = String(process.env.ENIGMA_BUY_INPUT_MINT || SOL_MINT).trim();
 const REQUIRE_TRADER_WALLET_MAPPING =
   String(process.env.ENIGMA_REQUIRE_PER_WALLET_SIGNER || "1").trim() !== "0";
+const LIVE_SOL_RESERVE_LAMPORTS = Math.max(
+  1_000_000,
+  Math.floor(Number(process.env.ENIGMA_LIVE_SOL_RESERVE_LAMPORTS || 20_000_000))
+);
 let solPriceCache: { value: number; expiresAt: number } | null = null;
 
 type WalletSecretRegistry = Record<string, string>;
@@ -276,4 +280,100 @@ export async function executeSolTransfer(input: {
     destinationWallet: input.destinationWallet,
     lamports
   };
+}
+
+export async function getLiveFundingPreflight(input: {
+  traderWallet?: string;
+  budgetUsd: number;
+  tradeAmountUsd: number;
+}): Promise<Record<string, unknown>> {
+  const wallet = traderWallet(input.traderWallet);
+  const connection = rpcConnection();
+  const walletPubkey = wallet.publicKey.toBase58();
+  const solBalanceLamports = Number(await connection.getBalance(wallet.publicKey, "confirmed"));
+  const solBalance = solBalanceLamports / 1_000_000_000;
+  const solReserve = LIVE_SOL_RESERVE_LAMPORTS / 1_000_000_000;
+
+  const requiredUsd = Number(Math.max(1, Math.max(input.budgetUsd || 0, input.tradeAmountUsd || 0)).toFixed(2));
+  const result: Record<string, unknown> = {
+    wallet: walletPubkey,
+    inputMint: BUY_INPUT_MINT,
+    buyInput: BUY_INPUT_MINT === SOL_MINT ? "SOL" : BUY_INPUT_MINT === USDC_MINT ? "USDC" : BUY_INPUT_MINT,
+    requiredUsd,
+    sol: {
+      availableLamports: solBalanceLamports,
+      available: Number(solBalance.toFixed(6)),
+      reserveLamports: LIVE_SOL_RESERVE_LAMPORTS,
+      reserve: Number(solReserve.toFixed(6))
+    },
+    canStart: true,
+    reasons: [] as string[]
+  };
+
+  if (BUY_INPUT_MINT === SOL_MINT) {
+    const solPriceUsd = await fetchSolUsdPrice();
+    const requiredSol = requiredUsd / Math.max(0.00001, solPriceUsd);
+    const requiredWithReserve = requiredSol + solReserve;
+    const canStart = solBalance >= requiredWithReserve;
+    result.required = {
+      usd: requiredUsd,
+      sol: Number(requiredSol.toFixed(6)),
+      solWithReserve: Number(requiredWithReserve.toFixed(6)),
+      priceUsd: Number(solPriceUsd.toFixed(4))
+    };
+    result.canStart = canStart;
+    if (!canStart) {
+      (result.reasons as string[]).push("insufficient_sol_balance");
+    }
+    return result;
+  }
+
+  if (BUY_INPUT_MINT === USDC_MINT) {
+    const holdings = await fetchJson(`${JUP_API_BASE}/holdings/${walletPubkey}`, {
+      headers: {
+        Accept: "application/json",
+        ...optionalApiKeyHeader()
+      }
+    });
+    const tokens = (holdings.tokens as Record<string, unknown>) || {};
+    const tokenAccounts = Array.isArray(tokens[USDC_MINT])
+      ? (tokens[USDC_MINT] as Array<Record<string, unknown>>)
+      : [];
+    const availableUsdc = Number(
+      tokenAccounts.reduce((sum, entry) => {
+        const uiAmount = Number(entry.uiAmount || entry.amountUi || entry.amount_ui || NaN);
+        if (Number.isFinite(uiAmount) && uiAmount >= 0) return sum + uiAmount;
+        const amountRaw = BigInt(String(entry.amount || "0"));
+        const decimals = Math.max(0, Math.min(18, Number(entry.decimals || 6)));
+        return sum + Number(amountRaw) / Math.pow(10, decimals);
+      }, 0)
+    );
+    const canStart = availableUsdc >= requiredUsd && solBalance >= solReserve;
+    result.required = {
+      usd: requiredUsd,
+      usdc: requiredUsd,
+      solReserve
+    };
+    result.available = {
+      usdc: Number(availableUsdc.toFixed(6))
+    };
+    result.canStart = canStart;
+    if (availableUsdc < requiredUsd) {
+      (result.reasons as string[]).push("insufficient_usdc_balance");
+    }
+    if (solBalance < solReserve) {
+      (result.reasons as string[]).push("insufficient_sol_fee_reserve");
+    }
+    return result;
+  }
+
+  result.canStart = solBalance >= solReserve;
+  result.required = {
+    usd: requiredUsd,
+    note: `unrecognized ENIGMA_BUY_INPUT_MINT (${BUY_INPUT_MINT}); only SOL fee reserve was validated`
+  };
+  if (solBalance < solReserve) {
+    (result.reasons as string[]).push("insufficient_sol_fee_reserve");
+  }
+  return result;
 }

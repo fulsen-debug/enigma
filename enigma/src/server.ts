@@ -58,7 +58,12 @@ import {
   isSupportedTrackedAsset,
   normalizeTrackedAssetId
 } from "./server/signalEngine.js";
-import { executeSolTransfer, executeUltraBuy, executeUltraSell } from "./server/jupiterExecutor.js";
+import {
+  executeSolTransfer,
+  executeUltraBuy,
+  executeUltraSell,
+  getLiveFundingPreflight
+} from "./server/jupiterExecutor.js";
 import { fetchCandlesFromBinanceSymbol, fetchCandlesFromGeckoTerminal } from "./server/candles.js";
 import {
   chooseAdaptiveEntryTrigger,
@@ -3067,6 +3072,39 @@ app.get("/api/live/readiness", authRequired, (req: AuthedRequest, res) => {
       maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT
     }
   });
+});
+
+app.get("/api/live/preflight", authRequired, async (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  try {
+    const executionConfig = getAutoTradeExecutionConfig(req.user.id);
+    const budgetUsd = Number(
+      Math.max(1, Number(req.query.budgetUsd || executionConfig.paperBudgetUsd || 100)).toFixed(2)
+    );
+    const tradeAmountUsd = Number(
+      Math.max(1, Number(req.query.tradeAmountUsd || executionConfig.tradeAmountUsd || 25)).toFixed(2)
+    );
+    const funding = await getLiveFundingPreflight({
+      traderWallet: req.user.wallet,
+      budgetUsd,
+      tradeAmountUsd
+    });
+    return res.json({
+      ts: new Date().toISOString(),
+      wallet: req.user.wallet,
+      budgetUsd,
+      tradeAmountUsd,
+      funding
+    });
+  } catch (error) {
+    return res.status(400).json({
+      error: (error as Error).message,
+      code: "LIVE_PREFLIGHT_FAILED"
+    });
+  }
 });
 
 app.get("/api/live/consent", authRequired, (req: AuthedRequest, res) => {

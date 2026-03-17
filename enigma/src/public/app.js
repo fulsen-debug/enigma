@@ -5696,6 +5696,25 @@ async function startEngineLoop() {
     if (!agentMints.length) {
       throw new Error("At least one Agent Token is required");
     }
+    const preflight = await api(
+      `/api/live/preflight?budgetUsd=${encodeURIComponent(String(getSelectedBudgetUsd(100)))}&tradeAmountUsd=${encodeURIComponent(
+        String(Math.max(1, Math.min(50000, Number(paperMaxPositionInput?.value || engineAmountInput?.value || 25))))
+      )}`,
+      null,
+      true,
+      "GET"
+    );
+    if (!preflight?.funding?.canStart) {
+      const reasons = Array.isArray(preflight?.funding?.reasons)
+        ? preflight.funding.reasons.map((reason) => String(reason).replaceAll("_", " ")).join(", ")
+        : "insufficient wallet funding";
+      throw new Error(
+        `Live preflight blocked: ${reasons}. Check wallet balance and try again.`
+      );
+    }
+    const inputLabel = String(preflight?.funding?.buyInput || preflight?.funding?.inputMint || "input asset");
+    const required = Number(preflight?.funding?.required?.usd || getSelectedBudgetUsd(100));
+    pushMessage(`Live preflight pass: ${inputLabel} funding is ready (required ~$${required.toFixed(2)}).`, "ok");
     stopEngineLoop();
     resetTradeActivity();
     const livePolicy = {
