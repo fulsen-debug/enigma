@@ -23,6 +23,7 @@ import {
   getPremiumPaymentBySignature,
   getUserManagedBalance,
   getUserByWallet,
+  getUserLiveConsent,
   getAutoTradeConfig,
   getAutoTradeExecutionConfig,
   getAutoTradePerformance,
@@ -42,6 +43,7 @@ import {
   savePremiumPayment,
   setUserManagedBalance,
   setUserPlanByWallet,
+  putUserLiveConsent,
   saveAutoTradeRun,
   saveAutoTradeEvent,
   saveSignal,
@@ -146,6 +148,7 @@ const REQUIRE_INTERNAL_LIVE_WALLET =
   String(process.env.ENIGMA_REQUIRE_INTERNAL_LIVE_WALLET || "1").trim() !== "0";
 const REQUIRE_PER_WALLET_SIGNER =
   String(process.env.ENIGMA_REQUIRE_PER_WALLET_SIGNER || "1").trim() !== "0";
+const LIVE_CONSENT_VERSION = String(process.env.ENIGMA_LIVE_CONSENT_VERSION || "v1").trim() || "v1";
 
 function parseTraderWalletRegistry(): Record<string, string> {
   const raw = String(process.env.ENIGMA_TRADER_WALLET_KEYS_JSON || "").trim();
@@ -783,6 +786,15 @@ function internalWalletRequiredResponse() {
   };
 }
 
+function liveConsentRequiredResponse() {
+  return {
+    error: "live execution requires explicit consent",
+    liveConsentRequired: true,
+    version: LIVE_CONSENT_VERSION,
+    note: "Please accept the unattended live trading consent before enabling live mode."
+  };
+}
+
 function hasLiveExecutionAccess(userPlan: string): boolean {
   if (String(process.env.ENIGMA_ALLOW_FREE_LIVE || "").trim() === "1") {
     return true;
@@ -796,14 +808,34 @@ function hasInternalLiveWalletAccess(wallet: string): boolean {
   return INTERNAL_LIVE_WALLETS.has(String(wallet || "").trim());
 }
 
-function getLiveEligibility(userPlan: string, wallet: string): { allowed: boolean; reason?: string } {
+function getLiveEligibility(
+  userPlan: string,
+  wallet: string,
+  userId?: number
+): { allowed: boolean; reason?: string } {
   if (!hasLiveExecutionAccess(userPlan)) {
     return { allowed: false, reason: "premium_required" };
   }
   if (!hasInternalLiveWalletAccess(wallet)) {
     return { allowed: false, reason: "internal_wallet_required" };
   }
+  if (Number.isFinite(Number(userId || 0)) && Number(userId || 0) > 0) {
+    const consent = getUserLiveConsent(Number(userId));
+    if (
+      !consent.accepted ||
+      !consent.version ||
+      String(consent.version).trim().toLowerCase() !== LIVE_CONSENT_VERSION.toLowerCase()
+    ) {
+      return { allowed: false, reason: "live_consent_required" };
+    }
+  }
   return { allowed: true };
+}
+
+function liveEligibilityErrorResponse(reason?: string) {
+  if (reason === "internal_wallet_required") return internalWalletRequiredResponse();
+  if (reason === "live_consent_required") return liveConsentRequiredResponse();
+  return premiumRequiredResponse();
 }
 
 function requireAdminToken(req: express.Request, res: express.Response): boolean {
@@ -1378,6 +1410,7 @@ function getEffectiveTradeAmountUsd(
 function getEffectiveMode(
   policy: ReturnType<typeof getAutoTradeConfig>,
   execCfg: ReturnType<typeof getAutoTradeExecutionConfig>,
+  userId: number,
   userPlan: string,
   wallet: string
 ): { mode: "paper" | "live"; warnings: string[] } {
@@ -1386,13 +1419,9 @@ function getEffectiveMode(
     warnings.push(`mode mismatch: policy=${policy.mode}, execution=${execCfg.mode}; using execution mode`);
   }
 
-  const liveEligibility = getLiveEligibility(userPlan, wallet);
+  const liveEligibility = getLiveEligibility(userPlan, wallet, userId);
   if (execCfg.mode === "live" && !liveEligibility.allowed) {
-    warnings.push(
-      liveEligibility.reason === "internal_wallet_required"
-        ? "live mode is currently restricted to approved internal wallets"
-        : "live mode requires premium plan"
-    );
+    warnings.push(formatLiveEligibilityReason(liveEligibility.reason));
   }
 
   if (execCfg.mode === "live" && liveEligibility.allowed) {
@@ -1400,6 +1429,16 @@ function getEffectiveMode(
   }
 
   return { mode: "paper", warnings };
+}
+
+function formatLiveEligibilityReason(reason?: string): string {
+  if (reason === "internal_wallet_required") {
+    return "live mode is currently restricted to approved internal wallets";
+  }
+  if (reason === "live_consent_required") {
+    return "live mode requires explicit unattended-trading consent";
+  }
+  return "live mode requires premium plan";
 }
 
 function buildAutoTradeDecision(input: {
@@ -2756,7 +2795,8 @@ app.get("/api/auth/me", authRequired, async (req: AuthedRequest, res) => {
 
   const stats = getDashboardStats(req.user.id);
   const access = await buildScannerAccessStatus(req.user.id, req.user.wallet);
-  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+  const consent = getUserLiveConsent(req.user.id);
+  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet, req.user.id);
   return res.json({
     user: req.user,
     stats,
@@ -2775,7 +2815,17 @@ app.get("/api/auth/me", authRequired, async (req: AuthedRequest, res) => {
             : "ready"
           : "execution_disabled"
         : liveEligibility.reason || "blocked",
-      signerConfigured: hasSignerForWallet(req.user.wallet)
+      signerConfigured: hasSignerForWallet(req.user.wallet),
+      consent: {
+        accepted: Boolean(consent.accepted),
+        version: consent.version,
+        acceptedAt: consent.accepted_at,
+        requiredVersion: LIVE_CONSENT_VERSION,
+        stale:
+          !consent.accepted ||
+          !consent.version ||
+          String(consent.version).trim().toLowerCase() !== LIVE_CONSENT_VERSION.toLowerCase()
+      }
     }
   });
 });
@@ -2785,7 +2835,8 @@ app.get("/api/live/readiness", authRequired, (req: AuthedRequest, res) => {
     return res.status(401).json({ error: "unauthorized" });
   }
 
-  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+  const consent = getUserLiveConsent(req.user.id);
+  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet, req.user.id);
   const executionConfig = getAutoTradeExecutionConfig(req.user.id);
   const policyConfig = getAutoTradeConfig(req.user.id);
   const signerConfigured = hasSignerForWallet(req.user.wallet);
@@ -2825,7 +2876,13 @@ app.get("/api/live/readiness", authRequired, (req: AuthedRequest, res) => {
       eligibleWallet: liveEligibility.allowed,
       eligibleReason: liveEligibility.allowed ? "ok" : String(liveEligibility.reason || "blocked"),
       signerConfigured,
-      runtimeErrors: liveRuntimeErrors
+      runtimeErrors: liveRuntimeErrors,
+      consent: {
+        accepted: Boolean(consent.accepted),
+        version: consent.version,
+        acceptedAt: consent.accepted_at,
+        requiredVersion: LIVE_CONSENT_VERSION
+      }
     },
     config: {
       policyEnabled: policyConfig.enabled,
@@ -2842,6 +2899,52 @@ app.get("/api/live/readiness", authRequired, (req: AuthedRequest, res) => {
       maxTokenHourlyLossUsd: SAFETY_MAX_TOKEN_HOURLY_LOSS_USD,
       maxLossPerTradeUsd: SAFETY_MAX_LOSS_PER_TRADE_USD,
       maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT
+    }
+  });
+});
+
+app.get("/api/live/consent", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const consent = getUserLiveConsent(req.user.id);
+  return res.json({
+    wallet: req.user.wallet,
+    consent: {
+      accepted: Boolean(consent.accepted),
+      version: consent.version,
+      acceptedAt: consent.accepted_at,
+      requiredVersion: LIVE_CONSENT_VERSION,
+      stale:
+        !consent.accepted ||
+        !consent.version ||
+        String(consent.version).trim().toLowerCase() !== LIVE_CONSENT_VERSION.toLowerCase()
+    }
+  });
+});
+
+app.put("/api/live/consent", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const accepted = Boolean(req.body?.accepted);
+  const next = putUserLiveConsent({
+    userId: req.user.id,
+    accepted,
+    version: accepted ? LIVE_CONSENT_VERSION : null
+  });
+  return res.json({
+    ok: true,
+    wallet: req.user.wallet,
+    consent: {
+      accepted: Boolean(next.accepted),
+      version: next.version,
+      acceptedAt: next.accepted_at,
+      requiredVersion: LIVE_CONSENT_VERSION,
+      stale:
+        !next.accepted ||
+        !next.version ||
+        String(next.version).trim().toLowerCase() !== LIVE_CONSENT_VERSION.toLowerCase()
     }
   });
 });
@@ -3170,15 +3273,9 @@ app.put("/api/autotrade/config", authRequired, (req: AuthedRequest, res) => {
   const requestedMode: "paper" | "live" = modeInput === "live" ? "live" : "paper";
   const mode: "paper" | "live" = PAPER_ONLY_MODE ? "paper" : requestedMode;
   const forcedPaper = PAPER_ONLY_MODE && requestedMode === "live";
-  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet, req.user.id);
   if (mode === "live" && !liveEligibility.allowed) {
-    return res
-      .status(403)
-      .json(
-        liveEligibility.reason === "internal_wallet_required"
-          ? internalWalletRequiredResponse()
-          : premiumRequiredResponse()
-      );
+    return res.status(403).json(liveEligibilityErrorResponse(liveEligibility.reason));
   }
 
   const next = putAutoTradeConfig(req.user.id, {
@@ -3266,7 +3363,7 @@ app.post(
         Math.max(effectiveTradeAmountUsd, Number(execCfg.paperBudgetUsd || 100)).toFixed(2)
       );
       const paperAvailableUsd = Number(Math.max(0, paperBudgetUsd - openExposureUsd).toFixed(2));
-      const baseModeState = getEffectiveMode(config, execCfg, req.user.plan, req.user.wallet);
+      const baseModeState = getEffectiveMode(config, execCfg, req.user.id, req.user.plan, req.user.wallet);
       const modeState = PAPER_ONLY_MODE
         ? {
             mode: "paper" as const,
@@ -3487,15 +3584,9 @@ app.put("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, re
   const requestedMode: "paper" | "live" = modeInput === "live" ? "live" : "paper";
   const mode: "paper" | "live" = PAPER_ONLY_MODE ? "paper" : requestedMode;
   const forcedPaper = PAPER_ONLY_MODE && requestedMode === "live";
-  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+  const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet, req.user.id);
   if (mode === "live" && !liveEligibility.allowed) {
-    return res
-      .status(403)
-      .json(
-        liveEligibility.reason === "internal_wallet_required"
-          ? internalWalletRequiredResponse()
-          : premiumRequiredResponse()
-      );
+    return res.status(403).json(liveEligibilityErrorResponse(liveEligibility.reason));
   }
 
   const next = putAutoTradeExecutionConfig(req.user.id, {
@@ -3990,7 +4081,7 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
     const strategyBudgetUsd = Number(Math.max(1, Number(execCfg.paperBudgetUsd || 100)).toFixed(2));
     const startupEquity = getStrategyEquitySnapshot(req.user.id, strategyBudgetUsd, safetyState);
     const openPositions = listAutoTradePositions(req.user.id, "OPEN");
-    const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+    const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet, req.user.id);
     const liveAllowed = liveEligibility.allowed;
     const monitorMode: "paper" | "live" =
       openPositions.some((position) => position.mode === "live") &&
@@ -4286,17 +4377,11 @@ app.post(
       }
 
       const liveEnabled = LIVE_EXECUTION_ENABLED;
-      const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet);
+      const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet, req.user.id);
       if ((execCfg.mode === "live" || policy.mode === "live") && !liveEligibility.allowed) {
-        return res
-          .status(403)
-          .json(
-            liveEligibility.reason === "internal_wallet_required"
-              ? internalWalletRequiredResponse()
-              : premiumRequiredResponse()
-          );
+        return res.status(403).json(liveEligibilityErrorResponse(liveEligibility.reason));
       }
-      const baseModeState = getEffectiveMode(policy, execCfg, req.user.plan, req.user.wallet);
+      const baseModeState = getEffectiveMode(policy, execCfg, req.user.id, req.user.plan, req.user.wallet);
       const modeState = PAPER_ONLY_MODE
         ? {
             mode: "paper" as const,

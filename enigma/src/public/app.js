@@ -3094,6 +3094,7 @@ function formatLiveReadinessReason(reason) {
     paper_only_mode: "paper-only mode",
     global_emergency_halt: "global emergency halt",
     internal_wallet_required: "wallet not allowlisted",
+    live_consent_required: "live consent required",
     live_not_allowed: "live not allowed",
     missing_wallet_signer_mapping: "wallet signer mapping missing",
     execution_engine_disabled: "execution engine disabled",
@@ -3101,6 +3102,30 @@ function formatLiveReadinessReason(reason) {
     runtime_config_errors_present: "runtime config errors present"
   };
   return labels[key] || key.replaceAll("_", " ");
+}
+
+async function ensureLiveConsentBeforeStart() {
+  if (!authToken) return false;
+  const response = await api("/api/live/consent", null, true, "GET");
+  const consent = response?.consent || {};
+  const stale = Boolean(
+    consent.stale ||
+      !consent.accepted ||
+      !consent.version ||
+      (consent.requiredVersion && String(consent.version) !== String(consent.requiredVersion))
+  );
+  if (!stale) return true;
+
+  const confirmed = window.confirm(
+    "Enable unattended live trading for this wallet now?\n\nThis will allow OpenClaw to place guarded live trades using your configured budget and current risk limits."
+  );
+  if (!confirmed) {
+    pushMessage("Live start canceled. Consent was not accepted.", "info");
+    return false;
+  }
+
+  await api("/api/live/consent", { accepted: true }, true, "PUT");
+  return true;
 }
 
 function classifyRuntimeHealth() {
@@ -5585,6 +5610,8 @@ async function startEngineLoop() {
   }
   setButtonBusy(engineStartLoopButton, true, "Starting...");
   try {
+    const consentReady = await ensureLiveConsentBeforeStart();
+    if (!consentReady) return;
     const agentMints = resolveAgentTargetMints({ notify: true });
     if (!agentMints.length) {
       throw new Error("At least one Agent Token is required");

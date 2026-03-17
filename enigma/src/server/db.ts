@@ -6,8 +6,17 @@ export interface UserRecord {
   id: number;
   wallet: string;
   plan: "free" | "pro";
+  live_consent_enabled?: number;
+  live_consent_version?: string | null;
+  live_consent_at?: string | null;
   created_at: string;
   last_login_at: string;
+}
+
+export interface UserLiveConsentRecord {
+  accepted: boolean;
+  version: string | null;
+  accepted_at: string | null;
 }
 
 export interface UsageRecord {
@@ -401,6 +410,9 @@ ensureColumnExists("autotrade_configs", "allow_caution_entries", "INTEGER NOT NU
 ensureColumnExists("autotrade_configs", "allow_high_risk_entries", "INTEGER NOT NULL DEFAULT 0");
 ensureColumnExists("autotrade_runs", "test_model", "TEXT NOT NULL DEFAULT 'guardian_balanced'");
 ensureColumnExists("autotrade_execution_configs", "paper_budget_usd", "REAL NOT NULL DEFAULT 100");
+ensureColumnExists("users", "live_consent_enabled", "INTEGER NOT NULL DEFAULT 0");
+ensureColumnExists("users", "live_consent_version", "TEXT");
+ensureColumnExists("users", "live_consent_at", "TEXT");
 
 export function getUserByWallet(wallet: string): UserRecord | null {
   const row = db
@@ -411,7 +423,9 @@ export function getUserByWallet(wallet: string): UserRecord | null {
 
 export function getUserById(userId: number): UserRecord | null {
   const row = db
-    .prepare("SELECT id, wallet, plan, created_at, last_login_at FROM users WHERE id = ?")
+    .prepare(
+      "SELECT id, wallet, plan, live_consent_enabled, live_consent_version, live_consent_at, created_at, last_login_at FROM users WHERE id = ?"
+    )
     .get(userId) as UserRecord | undefined;
   return row || null;
 }
@@ -433,6 +447,36 @@ export function createOrTouchUser(wallet: string): UserRecord {
   }
 
   return user;
+}
+
+export function getUserLiveConsent(userId: number): UserLiveConsentRecord {
+  const row = db
+    .prepare(
+      "SELECT live_consent_enabled, live_consent_version, live_consent_at FROM users WHERE id = ?"
+    )
+    .get(userId) as
+    | { live_consent_enabled?: number; live_consent_version?: string | null; live_consent_at?: string | null }
+    | undefined;
+
+  return {
+    accepted: Number(row?.live_consent_enabled || 0) === 1,
+    version: row?.live_consent_version ? String(row.live_consent_version) : null,
+    accepted_at: row?.live_consent_at ? String(row.live_consent_at) : null
+  };
+}
+
+export function putUserLiveConsent(input: {
+  userId: number;
+  accepted: boolean;
+  version?: string | null;
+}): UserLiveConsentRecord {
+  const accepted = Boolean(input.accepted);
+  const acceptedAt = accepted ? new Date().toISOString() : null;
+  const version = accepted ? String(input.version || "").trim() || null : null;
+  db.prepare(
+    "UPDATE users SET live_consent_enabled = ?, live_consent_version = ?, live_consent_at = ? WHERE id = ?"
+  ).run(accepted ? 1 : 0, version, acceptedAt, input.userId);
+  return getUserLiveConsent(input.userId);
 }
 
 export function setUserPlanByWallet(wallet: string, plan: "free" | "pro"): UserRecord {
