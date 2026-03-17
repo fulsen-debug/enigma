@@ -590,6 +590,40 @@ function recordExecutionSuccess(userId: number): void {
   state.errorTimestamps = [];
 }
 
+function inferEventSeverity(
+  eventType: string,
+  closeReason?: string | null,
+  payload?: Record<string, unknown>
+): "INFO" | "WARN" | "CRITICAL" {
+  const type = String(eventType || "").toUpperCase();
+  const reason = String(closeReason || "").toUpperCase();
+  const note = String((payload?.action as Record<string, unknown>)?.note || "").toUpperCase();
+  if (
+    type === "ERROR" ||
+    type === "HALT" ||
+    type === "DRAWDOWN_BREACH" ||
+    type === "GLOBAL_EMERGENCY_HALT" ||
+    type === "LIVE_POSITION_GATED" ||
+    reason.includes("EMERGENCY") ||
+    reason.includes("DRAWDOWN") ||
+    note.includes("DRAWDOWN KILL-SWITCH") ||
+    note.includes("GLOBAL EMERGENCY HALT")
+  ) {
+    return "CRITICAL";
+  }
+  if (
+    type === "LIVE_BUY" ||
+    type === "LIVE_SELL" ||
+    type === "OPEN" ||
+    type === "CLOSE" ||
+    reason.includes("STOP_LOSS") ||
+    reason.includes("TIMEOUT")
+  ) {
+    return "WARN";
+  }
+  return "INFO";
+}
+
 function persistAutoTradeActions(
   userId: number,
   mode: "paper" | "live",
@@ -605,31 +639,15 @@ function persistAutoTradeActions(
     const positionIdRaw = Number(action.positionId || 0);
     const expectedPnlPct = Number(action.expectedPnlPct);
     const realizedAfterCostsPct = Number(action.realizedAfterCostsPct);
-    const decisionId = `${eventType}:${mintRaw || "na"}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-
-    const eventId = saveAutoTradeEvent({
+    const payload = {
+      ...baseMeta,
+      action
+    };
+    const severity = inferEventSeverity(eventType, closeReasonRaw || null, payload);
+    persistAutoTradeEvent({
       userId,
       mode,
-      eventType,
-      mint: mintRaw || null,
-      positionId: Number.isFinite(positionIdRaw) && positionIdRaw > 0 ? positionIdRaw : null,
-      decisionId,
-      orderRequestId: null,
-      txSignature: txSignatureRaw || null,
-      closeReason: closeReasonRaw || null,
-      realizedPnlPct: Number.isFinite(realizedAfterCostsPct)
-        ? realizedAfterCostsPct
-        : Number.isFinite(expectedPnlPct)
-          ? expectedPnlPct
-          : null,
-      payload: {
-        ...baseMeta,
-        action
-      }
-    });
-    maybeSendOpsAlert({
-      userId,
-      mode,
+      severity,
       eventType,
       mint: mintRaw || null,
       positionId: Number.isFinite(positionIdRaw) && positionIdRaw > 0 ? positionIdRaw : null,
@@ -640,21 +658,62 @@ function persistAutoTradeActions(
         : Number.isFinite(expectedPnlPct)
           ? expectedPnlPct
           : null,
-      eventId,
-      payload: {
-        ...baseMeta,
-        action
-      }
+      payload
     });
   });
 }
 
-function eventLevelForType(eventType: string): "info" | "warn" | "error" {
-  const type = String(eventType || "").toUpperCase();
-  if (type === "ERROR") return "error";
-  if (type === "HALT") return "warn";
-  if (type === "LIVE_BUY" || type === "LIVE_SELL") return "warn";
-  if (type === "CLOSE") return "warn";
+function persistAutoTradeEvent(input: {
+  userId: number;
+  mode: "paper" | "live";
+  eventType: string;
+  severity?: "INFO" | "WARN" | "CRITICAL";
+  mint?: string | null;
+  positionId?: number | null;
+  txSignature?: string | null;
+  closeReason?: string | null;
+  realizedPnlPct?: number | null;
+  payload?: Record<string, unknown>;
+}): number {
+  const payload = input.payload || {};
+  const severity = input.severity || inferEventSeverity(input.eventType, input.closeReason || null, payload);
+  const eventId = saveAutoTradeEvent({
+    userId: input.userId,
+    mode: input.mode,
+    severity,
+    eventType: input.eventType,
+    mint: input.mint || null,
+    positionId: Number.isFinite(Number(input.positionId || 0)) ? Number(input.positionId || 0) : null,
+    txSignature: input.txSignature || null,
+    closeReason: input.closeReason || null,
+    realizedPnlPct:
+      Number.isFinite(Number(input.realizedPnlPct))
+        ? Number(input.realizedPnlPct)
+        : null,
+    payload
+  });
+  maybeSendOpsAlert({
+    userId: input.userId,
+    mode: input.mode,
+    severity,
+    eventType: input.eventType,
+    mint: input.mint || null,
+    positionId: Number.isFinite(Number(input.positionId || 0)) ? Number(input.positionId || 0) : null,
+    txSignature: input.txSignature || null,
+    closeReason: input.closeReason || null,
+    realizedPnlPct:
+      Number.isFinite(Number(input.realizedPnlPct))
+        ? Number(input.realizedPnlPct)
+        : null,
+    eventId,
+    payload
+  });
+  return eventId;
+}
+
+function eventLevelForSeverity(severity: "INFO" | "WARN" | "CRITICAL"): "info" | "warn" | "error" {
+  if (severity === "CRITICAL") return "error";
+  if (severity === "WARN") return "warn";
   return "info";
 }
 
@@ -667,6 +726,7 @@ function minLevelAllows(level: "info" | "warn" | "error"): boolean {
 function maybeSendOpsAlert(input: {
   userId: number;
   mode: "paper" | "live";
+  severity: "INFO" | "WARN" | "CRITICAL";
   eventType: string;
   mint?: string | null;
   positionId?: number | null;
@@ -677,7 +737,7 @@ function maybeSendOpsAlert(input: {
   payload?: Record<string, unknown>;
 }): void {
   if (!OPS_ALERT_WEBHOOK_URL) return;
-  const level = eventLevelForType(input.eventType);
+  const level = eventLevelForSeverity(input.severity);
   if (!minLevelAllows(level)) return;
 
   const fingerprint = [
@@ -697,6 +757,7 @@ function maybeSendOpsAlert(input: {
   const body = {
     source: "enigma-autotrade",
     level,
+    severity: input.severity,
     ts: new Date(nowMs).toISOString(),
     userId: input.userId,
     mode: input.mode,
@@ -709,6 +770,33 @@ function maybeSendOpsAlert(input: {
     eventId: input.eventId,
     payload: input.payload || {}
   };
+  const summary = `[${input.severity}] ${input.eventType} | mode=${input.mode} | wallet=${input.userId} | mint=${input.mint || "n/a"}${input.closeReason ? ` | reason=${input.closeReason}` : ""}`;
+  const isTelegram = OPS_ALERT_WEBHOOK_URL.includes("api.telegram.org/bot");
+  const isSlack = OPS_ALERT_WEBHOOK_URL.includes("hooks.slack.com/");
+  const isDiscord = OPS_ALERT_WEBHOOK_URL.includes("discord.com/api/webhooks");
+
+  if (isTelegram) {
+    void fetch(OPS_ALERT_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: `${summary}\n${JSON.stringify(body)}`
+      })
+    }).catch(() => {});
+    return;
+  }
+
+  if (isSlack || isDiscord) {
+    void fetch(OPS_ALERT_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: summary,
+        ...(!isSlack ? { embeds: [{ title: "Enigma Live Alert", description: JSON.stringify(body), color: input.severity === "CRITICAL" ? 15158332 : input.severity === "WARN" ? 16763904 : 5793266 }] } : {})
+      })
+    }).catch(() => {});
+    return;
+  }
 
   void fetch(OPS_ALERT_WEBHOOK_URL, {
     method: "POST",
@@ -2949,6 +3037,117 @@ app.put("/api/live/consent", authRequired, (req: AuthedRequest, res) => {
   });
 });
 
+app.get("/api/live/status", (req, res) => {
+  if (!requireAdminToken(req, res)) {
+    return;
+  }
+
+  const wallets = Array.from(INTERNAL_LIVE_WALLETS.values());
+  const walletStatuses = wallets
+    .map((wallet) => {
+      const user = getUserByWallet(wallet);
+      if (!user) {
+        return {
+          wallet,
+          userId: null,
+          configured: false,
+          executionMode: "paper",
+          executionEnabled: false,
+          openLivePositions: 0,
+          realizedPnlUsd: 0,
+          unrealizedPnlUsd: 0,
+          drawdownPct: 0,
+          pausedUntil: null,
+          lastError: null
+        };
+      }
+
+      const execution = getAutoTradeExecutionConfig(user.id);
+      const openPositions = listAutoTradePositions(user.id, "OPEN");
+      const openLivePositions = openPositions.filter((item) => item.mode === "live");
+      const safety = getExecutionSafetyState(user.id);
+      pruneSafetyErrors(safety);
+      const baselineUsd = Number(Math.max(1, Number(execution.paperBudgetUsd || 100)).toFixed(2));
+      const equity = getStrategyEquitySnapshot(user.id, baselineUsd, safety);
+      const events = listAutoTradeEvents(user.id, 80);
+      const lastError = events.find(
+        (evt) =>
+          String(evt.severity || "INFO").toUpperCase() === "CRITICAL" ||
+          String(evt.eventType || "").toUpperCase() === "ERROR"
+      );
+      const consent = getUserLiveConsent(user.id);
+      const liveEligibility = getLiveEligibility(user.plan, wallet, user.id);
+
+      return {
+        wallet,
+        userId: user.id,
+        configured: true,
+        plan: user.plan,
+        liveEligible: liveEligibility.allowed,
+        liveEligibleReason: liveEligibility.allowed ? "ok" : String(liveEligibility.reason || "blocked"),
+        consent: {
+          accepted: consent.accepted,
+          version: consent.version,
+          acceptedAt: consent.accepted_at
+        },
+        executionMode: execution.mode,
+        executionEnabled: execution.enabled,
+        openLivePositions: openLivePositions.length,
+        openExposureUsd: Number(
+          openLivePositions.reduce((sum, item) => sum + Number(item.sizeUsd || 0), 0).toFixed(2)
+        ),
+        realizedPnlUsd: equity.realizedPnlUsd,
+        unrealizedPnlUsd: equity.unrealizedPnlUsd,
+        currentEquityUsd: equity.currentEquityUsd,
+        peakEquityUsd: equity.peakEquityUsd,
+        drawdownPct: equity.drawdownPct,
+        pausedUntil: safety.pausedUntil ? new Date(safety.pausedUntil).toISOString() : null,
+        riskState: {
+          dailyLossUsd: getDailyRealizedLossUsd(user.id),
+          hourlyLossUsd: getWindowRealizedLossUsd(user.id, 60 * 60 * 1000),
+          lossStreak: getConsecutiveLossStreak(user.id),
+          errorCountWindow: safety.errorTimestamps.length
+        },
+        lastError: lastError
+          ? {
+              ts: lastError.created_at,
+              severity: lastError.severity,
+              eventType: lastError.eventType,
+              closeReason: lastError.closeReason,
+              mint: lastError.mint
+            }
+          : null
+      };
+    })
+    .filter(Boolean);
+
+  const activeWallets = walletStatuses.filter(
+    (item) => item.configured && (item.executionMode === "live" || item.openLivePositions > 0)
+  );
+
+  return res.json({
+    ts: new Date().toISOString(),
+    live: {
+      executionEnabled: LIVE_EXECUTION_ENABLED,
+      paperOnlyMode: PAPER_ONLY_MODE,
+      emergencyHalt: GLOBAL_EMERGENCY_HALT,
+      internalWalletGate: REQUIRE_INTERNAL_LIVE_WALLET
+    },
+    summary: {
+      configuredWallets: walletStatuses.filter((item) => item.configured).length,
+      activeWallets: activeWallets.length,
+      openLivePositions: activeWallets.reduce((sum, item) => sum + Number(item.openLivePositions || 0), 0),
+      aggregateRealizedPnlUsd: Number(
+        activeWallets.reduce((sum, item) => sum + Number(item.realizedPnlUsd || 0), 0).toFixed(2)
+      ),
+      aggregateUnrealizedPnlUsd: Number(
+        activeWallets.reduce((sum, item) => sum + Number(item.unrealizedPnlUsd || 0), 0).toFixed(2)
+      )
+    },
+    wallets: walletStatuses
+  });
+});
+
 app.get("/api/health", async (_req, res) => {
   const context = await createEnigmaContext();
   const helius = await context.tools.onchain.rpcHealth();
@@ -3993,7 +4192,7 @@ app.post("/api/autotrade/positions/close", authRequired, async (req: AuthedReque
     if (!closed) {
       return res.status(500).json({ error: "manual close failed" });
     }
-    saveAutoTradeEvent({
+    persistAutoTradeEvent({
       userId: req.user.id,
       mode: closed.mode,
       eventType: "MANUAL_CLOSE",
@@ -4042,13 +4241,15 @@ app.post("/api/autotrade/halt", authRequired, (req: AuthedRequest, res) => {
     enabled: false,
     mode: "paper"
   });
-  saveAutoTradeEvent({
-    userId: req.user.id,
-    mode: "live",
-    eventType: "HALT",
-    payload: {
-      halted: true,
-      source: "operator",
+    persistAutoTradeEvent({
+      userId: req.user.id,
+      mode: "live",
+      severity: "CRITICAL",
+      eventType: "HALT",
+      closeReason: "EMERGENCY_HALT_TRIGGER",
+      payload: {
+        halted: true,
+        source: "operator",
       policyMode: currentPolicy.mode,
       executionMode: currentExecution.mode
     }
@@ -4081,8 +4282,27 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
     const strategyBudgetUsd = Number(Math.max(1, Number(execCfg.paperBudgetUsd || 100)).toFixed(2));
     const startupEquity = getStrategyEquitySnapshot(req.user.id, strategyBudgetUsd, safetyState);
     const openPositions = listAutoTradePositions(req.user.id, "OPEN");
+    const hasOpenLivePositions = openPositions.some((position) => position.mode === "live");
     const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet, req.user.id);
     const liveAllowed = liveEligibility.allowed;
+    if (hasOpenLivePositions && !liveAllowed) {
+      persistAutoTradeEvent({
+        userId: req.user.id,
+        mode: "live",
+        severity: "CRITICAL",
+        eventType: "LIVE_POSITION_GATED",
+        closeReason: String(liveEligibility.reason || "live_not_allowed"),
+        payload: {
+          note: "Open live positions exist but wallet failed live eligibility gate during monitor tick.",
+          openPositions: openPositions.length
+        }
+      });
+      return res.status(423).json({
+        error: "open live positions are blocked by current live eligibility state",
+        reason: String(liveEligibility.reason || "live_not_allowed"),
+        code: "LIVE_POSITION_GATED"
+      });
+    }
     const monitorMode: "paper" | "live" =
       openPositions.some((position) => position.mode === "live") &&
       LIVE_EXECUTION_ENABLED &&
@@ -4391,6 +4611,16 @@ app.post(
       const executionMode: "paper" | "live" =
         modeState.mode === "live" && liveEnabled && !PAPER_ONLY_MODE ? "live" : "paper";
       if (executionMode === "live" && GLOBAL_EMERGENCY_HALT) {
+        persistAutoTradeEvent({
+          userId: req.user.id,
+          mode: "live",
+          severity: "CRITICAL",
+          eventType: "GLOBAL_EMERGENCY_HALT",
+          closeReason: "GLOBAL_EMERGENCY_HALT",
+          payload: {
+            note: "Global emergency halt blocked live engine tick."
+          }
+        });
         return res.status(423).json({
           error: "global emergency halt is active; live execution ticks are blocked",
           code: "GLOBAL_EMERGENCY_HALT",
@@ -4424,6 +4654,25 @@ app.post(
 
       const actions: Array<Record<string, unknown>> = [];
       const openBefore = listAutoTradePositions(req.user.id, "OPEN");
+      const hasOpenLivePositions = openBefore.some((position) => position.mode === "live");
+      if (hasOpenLivePositions && !liveEligibility.allowed) {
+        persistAutoTradeEvent({
+          userId: req.user.id,
+          mode: "live",
+          severity: "CRITICAL",
+          eventType: "LIVE_POSITION_GATED",
+          closeReason: String(liveEligibility.reason || "live_not_allowed"),
+          payload: {
+            note: "Open live positions exist but wallet failed live eligibility gate during engine tick.",
+            openPositions: openBefore.length
+          }
+        });
+        return res.status(423).json({
+          error: "open live positions are blocked by current live eligibility state",
+          reason: String(liveEligibility.reason || "live_not_allowed"),
+          code: "LIVE_POSITION_GATED"
+        });
+      }
       let openPositions = openBefore.slice();
 
       for (const position of openPositions) {
@@ -4575,6 +4824,15 @@ app.post(
           safetyState.pausedUntil,
           nowMs + SAFETY_DRAWDOWN_PAUSE_SEC * 1000
         );
+        actions.push({
+          type: "DRAWDOWN_BREACH",
+          mode: executionMode,
+          mint: agentMint,
+          drawdownPct: equity.drawdownPct,
+          maxDrawdownPct: SAFETY_MAX_DRAWDOWN_PCT,
+          pauseSec: SAFETY_DRAWDOWN_PAUSE_SEC,
+          reason: "drawdown_threshold_breached"
+        });
       }
       const safetyPaused =
         executionMode === "live" && safetyState.pausedUntil > nowMs;

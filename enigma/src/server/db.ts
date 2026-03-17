@@ -80,6 +80,7 @@ export interface AutoTradeEventRecord {
   id: number;
   userId: number;
   mode: "paper" | "live";
+  severity: "INFO" | "WARN" | "CRITICAL";
   eventType: string;
   mint: string | null;
   positionId: number | null;
@@ -410,6 +411,7 @@ ensureColumnExists("autotrade_configs", "allow_caution_entries", "INTEGER NOT NU
 ensureColumnExists("autotrade_configs", "allow_high_risk_entries", "INTEGER NOT NULL DEFAULT 0");
 ensureColumnExists("autotrade_runs", "test_model", "TEXT NOT NULL DEFAULT 'guardian_balanced'");
 ensureColumnExists("autotrade_execution_configs", "paper_budget_usd", "REAL NOT NULL DEFAULT 100");
+ensureColumnExists("autotrade_events", "severity", "TEXT NOT NULL DEFAULT 'INFO'");
 ensureColumnExists("users", "live_consent_enabled", "INTEGER NOT NULL DEFAULT 0");
 ensureColumnExists("users", "live_consent_version", "TEXT");
 ensureColumnExists("users", "live_consent_at", "TEXT");
@@ -1125,6 +1127,7 @@ export function resetAutoTradeRuns(userId: number, scope: "paper" | "live" | "al
 export function saveAutoTradeEvent(input: {
   userId: number;
   mode: "paper" | "live";
+  severity?: "INFO" | "WARN" | "CRITICAL";
   eventType: string;
   mint?: string | null;
   positionId?: number | null;
@@ -1139,13 +1142,14 @@ export function saveAutoTradeEvent(input: {
   const result = db
     .prepare(
       `INSERT INTO autotrade_events (
-        user_id, mode, event_type, mint, position_id, decision_id, order_request_id,
+        user_id, mode, severity, event_type, mint, position_id, decision_id, order_request_id,
         tx_signature, close_reason, realized_pnl_pct, payload_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.userId,
       input.mode,
+      String(input.severity || "INFO"),
       String(input.eventType || "INFO"),
       input.mint ? String(input.mint) : null,
       Number.isFinite(Number(input.positionId)) ? Number(input.positionId) : null,
@@ -1178,7 +1182,7 @@ export function listAutoTradeEvents(userId: number, limit = 120): AutoTradeEvent
   const rows = db
     .prepare(
       `SELECT
-         id, user_id, mode, event_type, mint, position_id, decision_id, order_request_id,
+         id, user_id, mode, severity, event_type, mint, position_id, decision_id, order_request_id,
          tx_signature, close_reason, realized_pnl_pct, payload_json, created_at
        FROM autotrade_events
        WHERE user_id = ?
@@ -1189,6 +1193,7 @@ export function listAutoTradeEvents(userId: number, limit = 120): AutoTradeEvent
     id: number;
     user_id: number;
     mode: string;
+    severity: string;
     event_type: string;
     mint: string | null;
     position_id: number | null;
@@ -1205,6 +1210,12 @@ export function listAutoTradeEvents(userId: number, limit = 120): AutoTradeEvent
     id: Number(row.id),
     userId: Number(row.user_id),
     mode: String(row.mode || "paper") === "live" ? "live" : "paper",
+    severity:
+      String(row.severity || "INFO").toUpperCase() === "CRITICAL"
+        ? "CRITICAL"
+        : String(row.severity || "INFO").toUpperCase() === "WARN"
+          ? "WARN"
+          : "INFO",
     eventType: String(row.event_type || "INFO"),
     mint: row.mint ? String(row.mint) : null,
     positionId: row.position_id === null ? null : Number(row.position_id),
