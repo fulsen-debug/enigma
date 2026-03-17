@@ -327,6 +327,12 @@ const SAFETY_DRAWDOWN_PAUSE_SEC = Math.max(
 const GLOBAL_EMERGENCY_HALT = String(
   process.env.ENIGMA_GLOBAL_EMERGENCY_HALT || "0"
 ).trim() === "1";
+const OPS_ALERT_WEBHOOK_URL = String(process.env.ENIGMA_OPS_ALERT_WEBHOOK_URL || "").trim();
+const OPS_ALERT_COOLDOWN_SEC = Math.max(
+  5,
+  Number(process.env.ENIGMA_OPS_ALERT_COOLDOWN_SEC || 30)
+);
+const OPS_ALERT_MIN_LEVEL = String(process.env.ENIGMA_OPS_ALERT_MIN_LEVEL || "warn").trim().toLowerCase();
 const SELECTABLE_BUDGET_TIERS_USD = [50, 100, 200, 500, 1000] as const;
 const ENTRY_TIMEOUT_SEC = Math.max(
   10,
@@ -395,6 +401,7 @@ const livePriceCache = new Map<
   string,
   { priceUsd: number; updatedAt: number; market: Record<string, unknown> }
 >();
+const opsAlertLastSentAt = new Map<string, number>();
 
 function acquireUserExecutionLock(lockMap: Map<number, number>, userId: number): boolean {
   const now = Date.now();
@@ -597,7 +604,7 @@ function persistAutoTradeActions(
     const realizedAfterCostsPct = Number(action.realizedAfterCostsPct);
     const decisionId = `${eventType}:${mintRaw || "na"}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 
-    saveAutoTradeEvent({
+    const eventId = saveAutoTradeEvent({
       userId,
       mode,
       eventType,
@@ -617,7 +624,94 @@ function persistAutoTradeActions(
         action
       }
     });
+    maybeSendOpsAlert({
+      userId,
+      mode,
+      eventType,
+      mint: mintRaw || null,
+      positionId: Number.isFinite(positionIdRaw) && positionIdRaw > 0 ? positionIdRaw : null,
+      txSignature: txSignatureRaw || null,
+      closeReason: closeReasonRaw || null,
+      realizedPnlPct: Number.isFinite(realizedAfterCostsPct)
+        ? realizedAfterCostsPct
+        : Number.isFinite(expectedPnlPct)
+          ? expectedPnlPct
+          : null,
+      eventId,
+      payload: {
+        ...baseMeta,
+        action
+      }
+    });
   });
+}
+
+function eventLevelForType(eventType: string): "info" | "warn" | "error" {
+  const type = String(eventType || "").toUpperCase();
+  if (type === "ERROR") return "error";
+  if (type === "HALT") return "warn";
+  if (type === "LIVE_BUY" || type === "LIVE_SELL") return "warn";
+  if (type === "CLOSE") return "warn";
+  return "info";
+}
+
+function minLevelAllows(level: "info" | "warn" | "error"): boolean {
+  const order: Record<string, number> = { info: 1, warn: 2, error: 3 };
+  const threshold = order[OPS_ALERT_MIN_LEVEL] || 2;
+  return (order[level] || 0) >= threshold;
+}
+
+function maybeSendOpsAlert(input: {
+  userId: number;
+  mode: "paper" | "live";
+  eventType: string;
+  mint?: string | null;
+  positionId?: number | null;
+  txSignature?: string | null;
+  closeReason?: string | null;
+  realizedPnlPct?: number | null;
+  eventId: number;
+  payload?: Record<string, unknown>;
+}): void {
+  if (!OPS_ALERT_WEBHOOK_URL) return;
+  const level = eventLevelForType(input.eventType);
+  if (!minLevelAllows(level)) return;
+
+  const fingerprint = [
+    level,
+    input.mode,
+    String(input.eventType || "").toUpperCase(),
+    String(input.mint || ""),
+    String(input.closeReason || "")
+  ].join("|");
+  const nowMs = Date.now();
+  const last = Number(opsAlertLastSentAt.get(fingerprint) || 0);
+  if (last > 0 && nowMs - last < OPS_ALERT_COOLDOWN_SEC * 1000) {
+    return;
+  }
+  opsAlertLastSentAt.set(fingerprint, nowMs);
+
+  const body = {
+    source: "enigma-autotrade",
+    level,
+    ts: new Date(nowMs).toISOString(),
+    userId: input.userId,
+    mode: input.mode,
+    eventType: input.eventType,
+    mint: input.mint || null,
+    positionId: input.positionId || null,
+    txSignature: input.txSignature || null,
+    closeReason: input.closeReason || null,
+    realizedPnlPct: input.realizedPnlPct ?? null,
+    eventId: input.eventId,
+    payload: input.payload || {}
+  };
+
+  void fetch(OPS_ALERT_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  }).catch(() => {});
 }
 
 function normalizeTsMs(value: number): number {
@@ -3276,6 +3370,103 @@ app.post("/api/autotrade/performance/reset", authRequired, (req: AuthedRequest, 
   const usage = getUsage(req.user.id);
   const performance = getAutoTradePerformance(req.user.id, 30);
   return res.json({ ok: true, scope, deletedRuns, performance, usage });
+});
+
+app.get("/api/autotrade/canary-status", authRequired, (req: AuthedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const hours = Math.max(1, Math.min(168, Number(req.query.hours || 24)));
+  const sinceMs = Date.now() - hours * 60 * 60 * 1000;
+  const allEvents = listAutoTradeEvents(req.user.id, 500);
+  const events = allEvents.filter((entry) => {
+    const ts = Date.parse(String(entry.created_at || ""));
+    return Number.isFinite(ts) && ts >= sinceMs;
+  });
+
+  const count = (eventType: string) =>
+    events.filter((entry) => String(entry.eventType || "").toUpperCase() === eventType).length;
+  const errors = count("ERROR");
+  const liveBuys = count("LIVE_BUY");
+  const liveSells = count("LIVE_SELL");
+  const opens = count("OPEN");
+  const closes = count("CLOSE") + count("MANUAL_CLOSE");
+  const halts = count("HALT");
+  const winCloses = events.filter((entry) => {
+    const type = String(entry.eventType || "").toUpperCase();
+    if (type !== "CLOSE" && type !== "MANUAL_CLOSE") return false;
+    const pnl = Number(entry.realizedPnlPct ?? NaN);
+    return Number.isFinite(pnl) && pnl > 0;
+  }).length;
+
+  const closed = listAutoTradePositions(req.user.id, "CLOSED");
+  const closedInWindow = closed.filter((position) => {
+    const ts = Date.parse(String(position.closed_at || ""));
+    return Number.isFinite(ts) && ts >= sinceMs;
+  });
+  const realizedPnlUsd = Number(
+    closedInWindow
+      .reduce((sum, position) => {
+        const sizeUsd = Number(position.sizeUsd || 0);
+        const pnlPct = Number(position.pnlPct || 0);
+        if (!Number.isFinite(sizeUsd) || !Number.isFinite(pnlPct)) return sum;
+        return sum + sizeUsd * (pnlPct / 100);
+      }, 0)
+      .toFixed(2)
+  );
+
+  const openPositions = listAutoTradePositions(req.user.id, "OPEN");
+  const openExposureUsd = Number(
+    openPositions.reduce((sum, position) => sum + Number(position.sizeUsd || 0), 0).toFixed(2)
+  );
+  const runtimeSafety = getExecutionSafetyState(req.user.id);
+  pruneSafetyErrors(runtimeSafety);
+
+  return res.json({
+    ts: new Date().toISOString(),
+    hours,
+    wallet: req.user.wallet,
+    live: {
+      executionEnabled: LIVE_EXECUTION_ENABLED,
+      paperOnlyMode: PAPER_ONLY_MODE,
+      emergencyHalt: GLOBAL_EMERGENCY_HALT
+    },
+    summary: {
+      events: events.length,
+      errors,
+      liveBuys,
+      liveSells,
+      opens,
+      closes,
+      halts,
+      winCloses,
+      closeWinRatePct: closes > 0 ? Number(((winCloses / closes) * 100).toFixed(2)) : 0,
+      realizedPnlUsd,
+      openExposureUsd,
+      openPositions: openPositions.length
+    },
+    safety: {
+      pausedUntil: runtimeSafety.pausedUntil ? new Date(runtimeSafety.pausedUntil).toISOString() : null,
+      errorCountWindow: runtimeSafety.errorTimestamps.length
+    },
+    recentErrors: events
+      .filter((entry) => String(entry.eventType || "").toUpperCase() === "ERROR")
+      .slice(0, 20)
+      .map((entry) => ({
+        id: entry.id,
+        ts: entry.created_at,
+        mint: entry.mint,
+        reason: (() => {
+          try {
+            const payload = JSON.parse(String(entry.payloadJson || "{}")) as Record<string, unknown>;
+            const action = (payload.action as Record<string, unknown>) || {};
+            return String(action.reason || entry.closeReason || "error");
+          } catch {
+            return String(entry.closeReason || "error");
+          }
+        })()
+      }))
+  });
 });
 
 app.get("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, res) => {
