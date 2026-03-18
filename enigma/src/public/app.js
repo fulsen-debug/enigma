@@ -5749,14 +5749,14 @@ async function startEngineLoop() {
     };
     await api("/api/autotrade/config", livePolicy, true, "PUT");
     await saveEngineConfig({ silent: true });
-    const intervalSec = Math.max(2, Number(enginePollInput?.value || 15));
+    const intervalSec = 2;
     await runEngineTickOnce({ agentMints, autonomous: true });
     engineTimer = setInterval(async () => {
       await runEngineTickOnce({ agentMints, autonomous: true });
     }, intervalSec * 1000);
     startRealtimeMonitor("live");
     startAgentPriceMonitor();
-    pushMessage(`Live autonomous agent running every ${intervalSec}s`, "ok");
+    pushMessage(`Live autonomous fast-entry agent running every ${intervalSec}s`, "ok");
   } catch (error) {
     notifyActionError(error, "start live agent");
   } finally {

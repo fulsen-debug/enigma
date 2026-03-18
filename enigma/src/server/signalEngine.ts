@@ -32,6 +32,8 @@ interface DexScreenerProfile {
   tokenAddress?: string;
   icon?: string;
   header?: string;
+  amount?: number;
+  totalAmount?: number;
 }
 
 interface BinanceTicker24hResponse {
@@ -118,6 +120,9 @@ export interface DiscoveryCandidate {
   mint: string;
   iconUrl?: string;
   headerUrl?: string;
+  source?: "profiles_latest" | "boosts_latest" | "boosts_top";
+  boostAmount?: number;
+  boostTotalAmount?: number;
 }
 
 export function normalizeTrackedAssetId(value: string): string {
@@ -714,7 +719,11 @@ export async function discoverNewSolanaMints(max = 25): Promise<DiscoveryCandida
     fetchDiscoverySource("https://api.dexscreener.com/token-boosts/top/v1")
   ]);
 
-  const combined = [...profiles, ...boostsLatest, ...boostsTop];
+  const combined = [
+    ...profiles.map((item) => ({ ...item, __source: "profiles_latest" as const })),
+    ...boostsLatest.map((item) => ({ ...item, __source: "boosts_latest" as const })),
+    ...boostsTop.map((item) => ({ ...item, __source: "boosts_top" as const }))
+  ];
   const seen = new Set<string>();
   const tokens: DiscoveryCandidate[] = [];
 
@@ -726,10 +735,29 @@ export async function discoverNewSolanaMints(max = 25): Promise<DiscoveryCandida
     tokens.push({
       mint,
       iconUrl: item.icon || "",
-      headerUrl: item.header || ""
+      headerUrl: item.header || "",
+      source: item.__source,
+      boostAmount: Number(item.amount || 0),
+      boostTotalAmount: Number(item.totalAmount || 0)
     });
-    if (tokens.length >= max) break;
   }
 
-  return tokens;
+  return tokens
+    .sort((a, b) => {
+      const sourceWeight = (candidate: DiscoveryCandidate): number => {
+        if (candidate.source === "boosts_top") return 3000;
+        if (candidate.source === "boosts_latest") return 2000;
+        return 1000;
+      };
+      const aScore =
+        sourceWeight(a) +
+        Number(a.boostTotalAmount || 0) * 10 +
+        Number(a.boostAmount || 0);
+      const bScore =
+        sourceWeight(b) +
+        Number(b.boostTotalAmount || 0) * 10 +
+        Number(b.boostAmount || 0);
+      return bScore - aScore;
+    })
+    .slice(0, max);
 }

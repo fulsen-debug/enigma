@@ -393,6 +393,11 @@ const BREAKEVEN_LOCK_PCT = Math.max(
   0,
   Number(process.env.ENIGMA_BREAKEVEN_LOCK_PCT || 0.15)
 );
+const FAST_ENTRY_ENABLED = String(process.env.ENIGMA_FAST_ENTRY_ENABLED || "1").trim() !== "0";
+const FAST_ENTRY_COOLDOWN_SEC = Math.max(
+  1,
+  Math.min(30, Number(process.env.ENIGMA_FAST_ENTRY_COOLDOWN_SEC || 2))
+);
 const AUTONOMOUS_UNIVERSE_LIMIT = Math.max(
   3,
   Math.min(24, Number(process.env.ENIGMA_AUTONOMOUS_UNIVERSE_LIMIT || 8))
@@ -5150,6 +5155,11 @@ app.post(
       );
       const autonomousRequested =
         Boolean(req.body?.autonomous) || !requestedAgentMint;
+      if (executionMode === "live" && autonomousRequested && FAST_ENTRY_ENABLED) {
+        modeWarnings.push(
+          `fast-entry mode active: autonomous universe with ${FAST_ENTRY_COOLDOWN_SEC}s max cooldown`
+        );
+      }
       const autonomousMints = autonomousRequested
         ? await resolveAutonomousUniverseMints(req.user.id)
         : [];
@@ -5427,7 +5437,11 @@ app.post(
         const lastOpenedAt = openPositions.length
           ? Math.max(...openPositions.map((item) => Date.parse(item.opened_at) || 0))
           : 0;
-        const cooldownReady = Date.now() - lastOpenedAt >= Number(execCfg.cooldownSec || 0) * 1000;
+        const effectiveCooldownSec =
+          executionMode === "live" && autonomousRequested && FAST_ENTRY_ENABLED
+            ? Math.min(Number(execCfg.cooldownSec || 0), FAST_ENTRY_COOLDOWN_SEC)
+            : Number(execCfg.cooldownSec || 0);
+        const cooldownReady = Date.now() - lastOpenedAt >= effectiveCooldownSec * 1000;
 
         if (safetyPaused) {
           actions.push({
@@ -5687,7 +5701,7 @@ app.post(
         } else {
           actions.push({
             type: "INFO",
-            note: `cooldown active (${execCfg.cooldownSec}s), no new positions opened`
+            note: `cooldown active (${effectiveCooldownSec}s), no new positions opened`
           });
         }
       }
