@@ -1637,6 +1637,173 @@ function getEffectiveTradeAmountUsd(
   return Number(Math.max(1, execAmount).toFixed(2));
 }
 
+type AdaptiveProfileName = "defensive" | "balanced" | "aggressive";
+
+function getRecentExecutionStats(userId: number, limit = 20): {
+  sampleSize: number;
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  avgPnlPct: number;
+} {
+  const closed = listAutoTradePositions(userId, "CLOSED").slice(0, limit);
+  if (!closed.length) {
+    return { sampleSize: 0, wins: 0, losses: 0, winRatePct: 0, avgPnlPct: 0 };
+  }
+  let wins = 0;
+  let losses = 0;
+  let pnlSum = 0;
+  for (const row of closed) {
+    const pnl = Number(row.pnlPct || 0);
+    pnlSum += pnl;
+    if (pnl > 0) wins += 1;
+    else if (pnl < 0) losses += 1;
+  }
+  return {
+    sampleSize: closed.length,
+    wins,
+    losses,
+    winRatePct: Number(((wins / Math.max(1, closed.length)) * 100).toFixed(2)),
+    avgPnlPct: Number((pnlSum / Math.max(1, closed.length)).toFixed(2))
+  };
+}
+
+function buildAdaptiveRuntimeProfile(
+  userId: number,
+  policy: ReturnType<typeof getAutoTradeConfig>,
+  execCfg: ReturnType<typeof getAutoTradeExecutionConfig>,
+  baselineBudgetUsd: number,
+  safetyState: ExecutionSafetyState,
+  nowMs = Date.now()
+): {
+  profile: AdaptiveProfileName;
+  riskMultiplier: number;
+  policy: ReturnType<typeof getAutoTradeConfig>;
+  execCfg: ReturnType<typeof getAutoTradeExecutionConfig>;
+  stats: {
+    recent: ReturnType<typeof getRecentExecutionStats>;
+    dailyLossUsd: number;
+    hourlyLossUsd: number;
+    lossStreak: number;
+    drawdownPct: number;
+  };
+} {
+  const dailyLossUsd = getDailyRealizedLossUsd(userId, nowMs);
+  const hourlyLossUsd = getWindowRealizedLossUsd(userId, 60 * 60 * 1000, nowMs);
+  const lossStreak = getConsecutiveLossStreak(userId);
+  const recent = getRecentExecutionStats(userId, 20);
+  const drawdownPct = Number(
+    getStrategyEquitySnapshot(userId, baselineBudgetUsd, safetyState).drawdownPct || 0
+  );
+
+  let profile: AdaptiveProfileName = "balanced";
+  let riskMultiplier = 1;
+
+  const defensiveTrigger =
+    lossStreak >= 2 ||
+    drawdownPct >= Math.max(4, SAFETY_MAX_DRAWDOWN_PCT * 0.35) ||
+    dailyLossUsd >= Math.max(2, SAFETY_MAX_DAILY_LOSS_USD * 0.25) ||
+    hourlyLossUsd >= Math.max(1.5, SAFETY_MAX_HOURLY_LOSS_USD * 0.35);
+  const aggressiveTrigger =
+    recent.sampleSize >= 10 &&
+    recent.winRatePct >= 62 &&
+    recent.avgPnlPct >= 0.7 &&
+    lossStreak === 0 &&
+    drawdownPct <= 2;
+
+  if (defensiveTrigger) {
+    profile = "defensive";
+    riskMultiplier = 0.7;
+  } else if (aggressiveTrigger) {
+    profile = "aggressive";
+    riskMultiplier = 1.1;
+  }
+
+  const policyNext = {
+    ...policy,
+    minPatternScore: Number(
+      clampNumber(
+        Number(policy.minPatternScore || 0) + (profile === "defensive" ? 6 : profile === "aggressive" ? -2 : 0),
+        0,
+        95
+      ).toFixed(2)
+    ),
+    minConfidence: Number(
+      clampNumber(
+        Number(policy.minConfidence || 0) + (profile === "defensive" ? 0.06 : profile === "aggressive" ? -0.02 : 0),
+        0.1,
+        0.99
+      ).toFixed(4)
+    ),
+    allowHighRiskEntries:
+      profile === "defensive" ? false : Boolean(policy.allowHighRiskEntries),
+    maxPositionUsd: Number(
+      clampNumber(Number(policy.maxPositionUsd || 0) * riskMultiplier, 1, 50000).toFixed(2)
+    )
+  };
+
+  const execNext = {
+    ...execCfg,
+    tradeAmountUsd: Number(
+      clampNumber(Number(execCfg.tradeAmountUsd || 0) * riskMultiplier, 1, 50000).toFixed(2)
+    ),
+    maxOpenPositions:
+      profile === "defensive"
+        ? Math.max(1, Math.min(Number(execCfg.maxOpenPositions || 1), 1))
+        : profile === "aggressive"
+          ? Math.max(1, Math.min(Number(execCfg.maxOpenPositions || 1) + 1, 12))
+          : Math.max(1, Number(execCfg.maxOpenPositions || 1)),
+    cooldownSec:
+      profile === "defensive"
+        ? Math.max(Number(execCfg.cooldownSec || 0), 5)
+        : profile === "aggressive"
+          ? Math.max(1, Math.min(Number(execCfg.cooldownSec || 0), 3))
+          : Math.max(1, Number(execCfg.cooldownSec || 0)),
+    tpPct: Number(
+      clampNumber(
+        Number(execCfg.tpPct || 0) *
+          (profile === "defensive" ? 0.9 : profile === "aggressive" ? 1.05 : 1),
+        0.2,
+        60
+      ).toFixed(2)
+    ),
+    slPct: Number(
+      clampNumber(
+        Number(execCfg.slPct || 0) *
+          (profile === "defensive" ? 0.85 : profile === "aggressive" ? 1.05 : 1),
+        0.2,
+        40
+      ).toFixed(2)
+    ),
+    trailingStopPct: Number(
+      clampNumber(
+        Number(execCfg.trailingStopPct || 0) *
+          (profile === "defensive" ? 0.85 : profile === "aggressive" ? 1.05 : 1),
+        0.2,
+        30
+      ).toFixed(2)
+    ),
+    pollIntervalSec:
+      profile === "aggressive"
+        ? Math.max(2, Math.min(Number(execCfg.pollIntervalSec || 2), 5))
+        : Math.max(2, Number(execCfg.pollIntervalSec || 2))
+  };
+
+  return {
+    profile,
+    riskMultiplier: Number(riskMultiplier.toFixed(2)),
+    policy: policyNext,
+    execCfg: execNext,
+    stats: {
+      recent,
+      dailyLossUsd: Number(dailyLossUsd.toFixed(2)),
+      hourlyLossUsd: Number(hourlyLossUsd.toFixed(2)),
+      lossStreak,
+      drawdownPct: Number(drawdownPct.toFixed(2))
+    }
+  };
+}
+
 function getEffectiveMode(
   policy: ReturnType<typeof getAutoTradeConfig>,
   execCfg: ReturnType<typeof getAutoTradeExecutionConfig>,
@@ -5105,18 +5272,24 @@ app.post(
         return res.status(429).json({ error: "engine tick already in progress; retry shortly" });
       }
 
-      const policy = getAutoTradeConfig(req.user.id);
-      const execCfg = getAutoTradeExecutionConfig(req.user.id);
-      if (!execCfg.enabled) {
-        return res.status(400).json({ error: "execution engine is disabled", config: execCfg });
+      const basePolicy = getAutoTradeConfig(req.user.id);
+      const baseExecCfg = getAutoTradeExecutionConfig(req.user.id);
+      if (!baseExecCfg.enabled) {
+        return res.status(400).json({ error: "execution engine is disabled", config: baseExecCfg });
       }
 
       const liveEnabled = LIVE_EXECUTION_ENABLED;
       const liveEligibility = getLiveEligibility(req.user.plan, req.user.wallet, req.user.id);
-      if ((execCfg.mode === "live" || policy.mode === "live") && !liveEligibility.allowed) {
+      if ((baseExecCfg.mode === "live" || basePolicy.mode === "live") && !liveEligibility.allowed) {
         return res.status(403).json(liveEligibilityErrorResponse(liveEligibility.reason));
       }
-      const baseModeState = getEffectiveMode(policy, execCfg, req.user.id, req.user.plan, req.user.wallet);
+      const baseModeState = getEffectiveMode(
+        basePolicy,
+        baseExecCfg,
+        req.user.id,
+        req.user.plan,
+        req.user.wallet
+      );
       const modeState = PAPER_ONLY_MODE
         ? {
             mode: "paper" as const,
@@ -5155,6 +5328,19 @@ app.post(
           "live mode requested but ENIGMA_EXECUTION_ENABLED!=1, downgraded to paper simulation"
         );
       }
+      const adaptiveRuntime = buildAdaptiveRuntimeProfile(
+        req.user.id,
+        basePolicy,
+        baseExecCfg,
+        Number(Math.max(1, Number(baseExecCfg.paperBudgetUsd || 100)).toFixed(2)),
+        safetyState,
+        nowMs
+      );
+      const policy = adaptiveRuntime.policy;
+      const execCfg = adaptiveRuntime.execCfg;
+      modeWarnings.push(
+        `adaptive profile: ${adaptiveRuntime.profile} (risk x${adaptiveRuntime.riskMultiplier.toFixed(2)})`
+      );
       const effectiveTradeAmountUsd = getEffectiveTradeAmountUsd(policy, execCfg);
 
       const requestedAgentMint = resolveSingleAgentMint(
@@ -5766,8 +5952,15 @@ app.post(
         selectedMint: agentMint,
         universeSize: mints.length,
         warnings: modeWarnings,
+        adaptiveProfile: {
+          profile: adaptiveRuntime.profile,
+          riskMultiplier: adaptiveRuntime.riskMultiplier,
+          stats: adaptiveRuntime.stats
+        },
         policy,
         executionConfig: execCfg,
+        basePolicy,
+        baseExecutionConfig: baseExecCfg,
         effectiveTradeAmountUsd,
         scanned: mints.length,
         decisions,
