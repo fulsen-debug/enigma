@@ -8038,6 +8038,94 @@ body,
     linear-gradient(180deg, rgba(11, 18, 30, 0.98), rgba(6, 11, 19, 0.98));
 }
 
+.neural-core-flow {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.neural-flow-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.neural-flow-trail {
+  fill: none;
+  stroke: url(#neuralFlowTrail);
+  stroke-width: 18;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.45;
+}
+
+.neural-flow-core {
+  fill: none;
+  stroke: url(#neuralFlowCore);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 14 10;
+  filter: drop-shadow(0 0 8px rgba(126, 232, 255, 0.42));
+  transition: stroke-dashoffset 220ms linear;
+}
+
+.flow-particle {
+  opacity: 0.88;
+  filter: drop-shadow(0 0 6px rgba(131, 228, 255, 0.5));
+}
+
+.flow-particle.buy {
+  fill: rgba(124, 232, 255, 0.92);
+}
+
+.flow-particle.sell {
+  fill: rgba(255, 149, 132, 0.86);
+}
+
+.neural-flow-tag {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  color: rgba(203, 227, 246, 0.78);
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(130, 165, 192, 0.2);
+  background: rgba(7, 18, 30, 0.64);
+}
+
+.agent-adaptive-profile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(100, 144, 176, 0.3);
+  background: rgba(18, 31, 49, 0.62);
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+}
+
+.agent-adaptive-profile.defensive {
+  border-color: rgba(255, 164, 112, 0.35);
+  color: #ffd9be;
+}
+
+.agent-adaptive-profile.balanced {
+  border-color: rgba(112, 198, 255, 0.35);
+  color: #d7f1ff;
+}
+
+.agent-adaptive-profile.aggressive {
+  border-color: rgba(123, 255, 182, 0.35);
+  color: #cfffdf;
+}
+
 .neural-core-grid {
   position: relative;
   z-index: 2;

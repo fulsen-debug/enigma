@@ -103,6 +103,8 @@ const agentProcessingCurve = document.querySelector("#agent-processing-curve");
 const agentRuntimeLogStream = document.querySelector("#agent-runtime-log-stream");
 const agentRuntimeStreamLabel = document.querySelector("#agent-runtime-stream-label");
 const agentNeuralCore = document.querySelector("#agent-neural-core");
+const agentNeuralFlow = document.querySelector("#agent-neural-flow");
+const agentAdaptiveProfile = document.querySelector("#agent-adaptive-profile");
 const agentActivityFeed = document.querySelector("#agent-activity-feed");
 const agentAdvancedDrawer = document.querySelector("#agent-advanced-drawer");
 const agentDiagnosticsDrawer = document.querySelector("#agent-diagnostics-drawer");
@@ -368,6 +370,7 @@ let agentMissionLastEventAt = "";
 let agentMissionLastHeartbeatAt = "";
 let agentMissionDiagnostics = null;
 let agentLiveReadiness = null;
+let agentRuntimeAdaptiveProfile = { profile: "balanced", riskMultiplier: 1 };
 
 function isPaperOnlyMode() {
   return Boolean(agentLiveReadiness?.live?.paperOnlyMode ?? PAPER_ONLY_MODE);
@@ -3424,6 +3427,12 @@ function renderAgentProcessingTelemetry() {
   if (agentProcessingCoreState) {
     agentProcessingCoreState.textContent = mode.toUpperCase();
   }
+  if (agentAdaptiveProfile) {
+    const profileName = String(agentRuntimeAdaptiveProfile?.profile || "balanced").toLowerCase();
+    const riskMultiplier = Number(agentRuntimeAdaptiveProfile?.riskMultiplier || 1);
+    agentAdaptiveProfile.textContent = `${profileName.charAt(0).toUpperCase()}${profileName.slice(1)} x${riskMultiplier.toFixed(2)}`;
+    agentAdaptiveProfile.className = `agent-adaptive-profile ${profileName}`;
+  }
   if (agentProcessingStateChip) {
     agentProcessingStateChip.textContent = mode.toUpperCase();
   }
@@ -3466,6 +3475,54 @@ function renderAgentProcessingTelemetry() {
         }).join("")}
       </div>
     `).join("");
+  }
+  if (agentNeuralFlow) {
+    const recentActivity = Array.isArray(agentTradeState.activity) ? agentTradeState.activity.slice(0, 10) : [];
+    const buySignals = recentActivity.filter((item) => /execution_confirmed|position_opened|open/i.test(String(item?.eventType || ""))).length;
+    const sellSignals = recentActivity.filter((item) => /position_closed|close|tp_hit|sl_hit|trailing|halt/i.test(String(item?.eventType || ""))).length;
+    const netBias = Math.max(-4, Math.min(4, buySignals - sellSignals));
+    const width = 1000;
+    const height = 480;
+    const baseY = height * 0.56;
+    const amplitude = 44 + energy * 36;
+    const points = Array.from({ length: 36 }, (_, idx) => {
+      const x = (idx / 35) * width;
+      const y =
+        baseY +
+        Math.sin(idx * 0.42 + agentProcessingTick * 0.15) * amplitude * 0.34 +
+        Math.cos(idx * 0.19 + agentProcessingTick * 0.09) * amplitude * 0.19 -
+        netBias * 2.2;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+    const particles = Array.from({ length: 7 }, (_, idx) => {
+      const t = ((agentProcessingTick * (0.017 + idx * 0.003) + idx * 0.11) % 1);
+      const x = t * width;
+      const y = baseY + Math.sin((t * 7.4) + agentProcessingTick * 0.13 + idx * 0.6) * amplitude * 0.28 - netBias * 1.6;
+      const type = idx % 2 === 0 ? "buy" : "sell";
+      const pulse = 2.8 + (type === "buy" ? buySignals : sellSignals) * 0.45 + energy * 1.8;
+      return `<circle class="flow-particle ${type}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${pulse.toFixed(2)}"></circle>`;
+    }).join("");
+    const txTag = buySignals || sellSignals ? `BUY ${buySignals} • SELL ${sellSignals}` : "NO EXECUTION EVENTS YET";
+    agentNeuralFlow.innerHTML = `
+      <svg class="neural-flow-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="neuralFlowTrail" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="rgba(69,190,255,0.05)"></stop>
+            <stop offset="50%" stop-color="rgba(113,223,255,0.58)"></stop>
+            <stop offset="100%" stop-color="rgba(69,190,255,0.08)"></stop>
+          </linearGradient>
+          <linearGradient id="neuralFlowCore" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="rgba(122,224,255,0.15)"></stop>
+            <stop offset="50%" stop-color="rgba(172,240,255,0.98)"></stop>
+            <stop offset="100%" stop-color="rgba(122,224,255,0.22)"></stop>
+          </linearGradient>
+        </defs>
+        <polyline class="neural-flow-trail" points="${points}" />
+        <polyline class="neural-flow-core" points="${points}" style="stroke-dashoffset:${(agentProcessingTick * -6).toFixed(2)}px" />
+        ${particles}
+      </svg>
+      <div class="neural-flow-tag">${escapeHtml(txTag)}</div>
+    `;
   }
   if (agentDistributionHistogram) {
     agentDistributionHistogram.innerHTML = agentProcessingTelemetry.histogram
@@ -5631,6 +5688,7 @@ async function runEngineTickOnce(options = {}) {
       }
       response = aggregate;
     }
+    agentRuntimeAdaptiveProfile = response?.adaptiveProfile || { profile: "balanced", riskMultiplier: 1 };
     const tickDecisions = Array.isArray(response.decisions) ? response.decisions : [];
     tickDecisions.forEach((item) => {
       cacheTokenMeta(item.token, String(item.mint || ""));
