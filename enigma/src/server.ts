@@ -43,6 +43,7 @@ import {
   savePremiumPayment,
   setUserManagedBalance,
   setUserPlanByWallet,
+  updateAutoTradePositionPnlPct,
   putUserLiveConsent,
   saveAutoTradeRun,
   saveAutoTradeEvent,
@@ -405,6 +406,14 @@ const NET_EDGE_MIN_PCT = Math.max(
 const NET_EDGE_COST_BUFFER_PCT = Math.max(
   0,
   Math.min(10, Number(process.env.ENIGMA_NET_EDGE_COST_BUFFER_PCT || 0.15))
+);
+const LIVE_MIN_TRADE_USD = Math.max(
+  1,
+  Number(process.env.ENIGMA_LIVE_MIN_TRADE_USD || 12)
+);
+const LIVE_MIN_TRADE_BUDGET_SHARE = Math.max(
+  0,
+  Math.min(1, Number(process.env.ENIGMA_LIVE_MIN_TRADE_BUDGET_SHARE || 0.2))
 );
 const AUTONOMOUS_UNIVERSE_LIMIT = Math.max(
   3,
@@ -1616,6 +1625,12 @@ function normalizeSelectableBudgetUsd(value: number, fallback = 100): number {
   return fallbackTier;
 }
 
+function computeLiveMinTradeUsd(budgetUsd: number): number {
+  const budget = Number(Math.max(1, Number(budgetUsd || 0)).toFixed(2));
+  const byShare = Number((budget * LIVE_MIN_TRADE_BUDGET_SHARE).toFixed(2));
+  return Number(Math.max(1, Math.min(budget, Math.max(LIVE_MIN_TRADE_USD, byShare))).toFixed(2));
+}
+
 function firstPositiveNumber(values: unknown[]): number {
   for (const value of values) {
     const n = Number(value || 0);
@@ -1630,11 +1645,30 @@ function getEffectiveTradeAmountUsd(
 ): number {
   const policyCap = Number(policy.maxPositionUsd || 0);
   const execAmount = Number(execCfg.tradeAmountUsd || 0);
-  if (policyCap > 0 && execAmount > 0) {
-    return Number(Math.min(policyCap, execAmount).toFixed(2));
+  const budgetUsd = Number(Math.max(1, Number(execCfg.paperBudgetUsd || 0)).toFixed(2));
+  const upperCap = Number(
+    Math.max(
+      1,
+      Math.min(
+        budgetUsd,
+        policyCap > 0 ? policyCap : Number.MAX_SAFE_INTEGER
+      )
+    ).toFixed(2)
+  );
+  const baseAmount = Number(
+    Math.max(
+      1,
+      policyCap > 0 && execAmount > 0 ? Math.min(policyCap, execAmount) : policyCap > 0 ? policyCap : execAmount
+    ).toFixed(2)
+  );
+  if (String(execCfg.mode || "paper").toLowerCase() !== "live") {
+    return Number(Math.min(baseAmount, upperCap).toFixed(2));
   }
-  if (policyCap > 0) return Number(policyCap.toFixed(2));
-  return Number(Math.max(1, execAmount).toFixed(2));
+  const liveFloor = computeLiveMinTradeUsd(budgetUsd);
+  if (upperCap <= liveFloor) {
+    return Number(upperCap.toFixed(2));
+  }
+  return Number(clampNumber(baseAmount, liveFloor, upperCap).toFixed(2));
 }
 
 type AdaptiveProfileName = "defensive" | "balanced" | "aggressive";
@@ -4454,14 +4488,25 @@ app.put("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, re
     return res.status(403).json(liveEligibilityErrorResponse(liveEligibility.reason));
   }
 
+  const normalizedBudgetUsd = normalizeSelectableBudgetUsd(
+    Number(req.body.paperBudgetUsd ?? current.paperBudgetUsd),
+    current.paperBudgetUsd
+  );
+  const requestedTradeAmountUsd = clampNumber(
+    Number(req.body.tradeAmountUsd ?? current.tradeAmountUsd),
+    1,
+    50000
+  );
+  const liveMinTradeUsd = mode === "live" ? computeLiveMinTradeUsd(normalizedBudgetUsd) : 1;
+  const normalizedTradeAmountUsd = mode === "live"
+    ? Number(clampNumber(requestedTradeAmountUsd, liveMinTradeUsd, normalizedBudgetUsd).toFixed(2))
+    : Number(requestedTradeAmountUsd.toFixed(2));
+
   const next = putAutoTradeExecutionConfig(req.user.id, {
     enabled: typeof req.body.enabled === "boolean" ? Boolean(req.body.enabled) : current.enabled,
     mode,
-    paperBudgetUsd: normalizeSelectableBudgetUsd(
-      Number(req.body.paperBudgetUsd ?? current.paperBudgetUsd),
-      current.paperBudgetUsd
-    ),
-    tradeAmountUsd: clampNumber(Number(req.body.tradeAmountUsd ?? current.tradeAmountUsd), 1, 50000),
+    paperBudgetUsd: normalizedBudgetUsd,
+    tradeAmountUsd: normalizedTradeAmountUsd,
     maxOpenPositions: clampNumber(Number(req.body.maxOpenPositions ?? current.maxOpenPositions), 1, 50),
     tpPct: clampNumber(Number(req.body.tpPct ?? current.tpPct), 0.2, 200),
     slPct: clampNumber(Number(req.body.slPct ?? current.slPct), 0.2, 99),
@@ -4480,7 +4525,9 @@ app.put("/api/autotrade/execution-config", authRequired, (req: AuthedRequest, re
     note:
       forcedPaper
         ? "Paper-only mode is enabled. Live request was forced to paper."
-        : "Execution config updated. For real on-chain live execution, connect dedicated signer + router worker."
+        : mode === "live" && normalizedTradeAmountUsd > requestedTradeAmountUsd
+          ? `Execution config updated. Live min trade floor applied ($${normalizedTradeAmountUsd.toFixed(2)}; min floor $${liveMinTradeUsd.toFixed(2)}).`
+          : "Execution config updated. For real on-chain live execution, connect dedicated signer + router worker."
   });
 });
 
@@ -5153,6 +5200,8 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
                 entryFillCostUsd: Number(meta?.entryFillCostUsd || 0),
                 exitFillCostUsd: Number(closeFill.totalCostUsd || 0)
               });
+              const netPnlPct = Number(attribution.netRealizedPct || closed.pnlPct || 0);
+              updateAutoTradePositionPnlPct(req.user!.id, closed.id, netPnlPct);
               positionExecutionMeta.delete(closed.id);
               actions.push({
                 type: "CLOSE",
@@ -5163,7 +5212,7 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
                 exitFillPriceUsd: effectiveClosePrice,
                 entryPriceUsd: closed.entryPriceUsd,
                 sizeUsd: closed.sizeUsd,
-                pnlPct: Number((closed.pnlPct || 0).toFixed(2)),
+                pnlPct: Number(netPnlPct.toFixed(2)),
                 realizedAfterCostsPct: Number(attribution.netRealizedPct || 0),
                 expectedPnlPct: Number(meta?.expectedPnlPct || 0),
                 attribution,
@@ -5496,6 +5545,8 @@ app.post(
               entryFillCostUsd: Number(entryMeta?.entryFillCostUsd || 0),
               exitFillCostUsd: Number(closeFill.totalCostUsd || 0)
             });
+            const netPnlPct = Number(attribution.netRealizedPct || closed.pnlPct || 0);
+            updateAutoTradePositionPnlPct(req.user.id, closed.id, netPnlPct);
             positionExecutionMeta.delete(closed.id);
             actions.push({
               type: "CLOSE",
@@ -5506,7 +5557,7 @@ app.post(
               exitFillPriceUsd: effectiveClosePrice,
               entryPriceUsd: closed.entryPriceUsd,
               sizeUsd: closed.sizeUsd,
-              pnlPct: Number((closed.pnlPct || 0).toFixed(2)),
+              pnlPct: Number(netPnlPct.toFixed(2)),
               expectedPnlPct: Number(entryMeta?.expectedPnlPct || 0),
               realizedAfterCostsPct: Number(attribution.netRealizedPct || 0),
               attribution,

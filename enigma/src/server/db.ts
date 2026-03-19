@@ -1607,6 +1607,20 @@ export function closeAutoTradePosition(input: {
   return listAutoTradePositions(input.userId).find((item) => item.id === input.positionId) || null;
 }
 
+export function updateAutoTradePositionPnlPct(
+  userId: number,
+  positionId: number,
+  pnlPct: number
+): AutoTradePositionRecord | null {
+  const nextPnlPct = Number.isFinite(Number(pnlPct)) ? Number(pnlPct) : 0;
+  db.prepare(
+    `UPDATE autotrade_positions
+     SET pnl_pct = ?
+     WHERE id = ? AND user_id = ?`
+  ).run(nextPnlPct, positionId, userId);
+  return listAutoTradePositions(userId).find((item) => item.id === positionId) || null;
+}
+
 export function getMissionWorkspace(userId: number, workspaceId: string): MissionWorkspaceRecord | null {
   const row = db
     .prepare(

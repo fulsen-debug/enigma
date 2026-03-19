@@ -317,7 +317,7 @@ export function computePnlAttribution(input: PnlAttributionInput): PnlAttributio
     const qty = entryNotional / entryRef;
     grossEdgeUsd = qty * exitRef - entryNotional;
   }
-  const netRealizedUsd = exitNotional - entryNotional;
+  const netRealizedUsd = exitNotional - entryNotional - costs;
   const slippageFeeLatencyUsd = grossEdgeUsd - netRealizedUsd;
   const netRealizedPct = entryNotional > 0 ? (netRealizedUsd / entryNotional) * 100 : 0;
 
