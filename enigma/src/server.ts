@@ -648,6 +648,14 @@ function recordExecutionSuccess(userId: number): void {
   state.errorTimestamps = [];
 }
 
+function isLiveSellBalanceMissingError(error: unknown): boolean {
+  const message = String((error as Error)?.message || "").toLowerCase();
+  return (
+    message.includes("no token balance found for mint") ||
+    message.includes("token balance is zero; nothing to sell")
+  );
+}
+
 function inferEventSeverity(
   eventType: string,
   closeReason?: string | null,
@@ -5166,12 +5174,39 @@ app.post("/api/autotrade/monitor", authRequired, async (req: AuthedRequest, res)
                   status: String((sellResponse.execution as Record<string, unknown>)?.status || "UNKNOWN")
                 });
               } catch (error) {
+                const errMessage = String((error as Error).message || "unknown live sell error");
+                if (isLiveSellBalanceMissingError(error)) {
+                  const forcedClosed = closeAutoTradePosition({
+                    userId: req.user!.id,
+                    positionId: marked.id,
+                    markPriceUsd: effectiveClosePrice,
+                    closeReason: "LIVE_BALANCE_NOT_FOUND_FORCE_CLOSE"
+                  });
+                  if (forcedClosed) {
+                    positionExecutionMeta.delete(forcedClosed.id);
+                    actions.push({
+                      type: "CLOSE",
+                      positionId: forcedClosed.id,
+                      mint: forcedClosed.mint,
+                      reason: "LIVE_BALANCE_NOT_FOUND_FORCE_CLOSE",
+                      markPriceUsd,
+                      exitFillPriceUsd: effectiveClosePrice,
+                      entryPriceUsd: forcedClosed.entryPriceUsd,
+                      sizeUsd: forcedClosed.sizeUsd,
+                      pnlPct: Number((forcedClosed.pnlPct || 0).toFixed(2)),
+                      mode: forcedClosed.mode,
+                      note: "Position reconciled because sell wallet balance was already empty."
+                    });
+                    recordExecutionSuccess(req.user!.id);
+                    return null;
+                  }
+                }
                 recordExecutionError(req.user!.id);
                 actions.push({
                   type: "ERROR",
                   positionId: marked.id,
                   mint: marked.mint,
-                  reason: `live sell failed: ${(error as Error).message}`
+                  reason: `live sell failed: ${errMessage}`
                 });
                 return {
                   positionId: marked.id,
@@ -5515,12 +5550,39 @@ app.post(
               });
               recordExecutionSuccess(req.user.id);
             } catch (error) {
+              const errMessage = String((error as Error).message || "unknown live sell error");
+              if (isLiveSellBalanceMissingError(error)) {
+                const forcedClosed = closeAutoTradePosition({
+                  userId: req.user.id,
+                  positionId: marked.id,
+                  markPriceUsd: effectiveClosePrice,
+                  closeReason: "LIVE_BALANCE_NOT_FOUND_FORCE_CLOSE"
+                });
+                if (forcedClosed) {
+                  positionExecutionMeta.delete(forcedClosed.id);
+                  actions.push({
+                    type: "CLOSE",
+                    positionId: forcedClosed.id,
+                    mint: forcedClosed.mint,
+                    reason: "LIVE_BALANCE_NOT_FOUND_FORCE_CLOSE",
+                    markPriceUsd: markPrice,
+                    exitFillPriceUsd: effectiveClosePrice,
+                    entryPriceUsd: forcedClosed.entryPriceUsd,
+                    sizeUsd: forcedClosed.sizeUsd,
+                    pnlPct: Number((forcedClosed.pnlPct || 0).toFixed(2)),
+                    mode: executionMode,
+                    note: "Position reconciled because sell wallet balance was already empty."
+                  });
+                  recordExecutionSuccess(req.user.id);
+                  continue;
+                }
+              }
               recordExecutionError(req.user.id);
               actions.push({
                 type: "ERROR",
                 positionId: marked.id,
                 mint: marked.mint,
-                reason: `live sell failed: ${(error as Error).message}`
+                reason: `live sell failed: ${errMessage}`
               });
               continue;
             }
