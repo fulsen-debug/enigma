@@ -8097,6 +8097,45 @@ body,
   background: rgba(7, 18, 30, 0.64);
 }
 
+.agent-workspace[data-execution-mode="live"] .neural-flow-core {
+  stroke-width: 2.8;
+  filter: drop-shadow(0 0 11px rgba(126, 232, 255, 0.62));
+}
+
+.agent-workspace[data-execution-mode="live"] .flow-particle.buy {
+  fill: rgba(143, 245, 255, 0.98);
+}
+
+.agent-workspace[data-execution-mode="paper"] .neural-flow-core {
+  opacity: 0.78;
+  filter: drop-shadow(0 0 6px rgba(126, 232, 255, 0.32));
+}
+
+.agent-workspace[data-execution-mode="paper"] .flow-particle.buy,
+.agent-workspace[data-execution-mode="paper"] .flow-particle.sell {
+  opacity: 0.72;
+}
+
+.agent-workspace[data-processing-state="halted"] .neural-flow-core,
+.agent-workspace[data-processing-state="error"] .neural-flow-core {
+  stroke: rgba(255, 171, 128, 0.8);
+  opacity: 0.55;
+}
+
+.agent-workspace[data-processing-state="halted"] .flow-particle.buy,
+.agent-workspace[data-processing-state="halted"] .flow-particle.sell,
+.agent-workspace[data-processing-state="error"] .flow-particle.buy,
+.agent-workspace[data-processing-state="error"] .flow-particle.sell {
+  fill: rgba(255, 169, 128, 0.78);
+  opacity: 0.5;
+}
+
+.agent-workspace[data-processing-state="halted"] .neural-flow-tag,
+.agent-workspace[data-processing-state="error"] .neural-flow-tag {
+  color: rgba(255, 211, 181, 0.84);
+  border-color: rgba(255, 171, 128, 0.32);
+}
+
 .agent-adaptive-profile {
   display: inline-flex;
   align-items: center;

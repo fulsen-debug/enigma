@@ -3412,8 +3412,10 @@ function stepAgentProcessingTelemetry() {
 function renderAgentProcessingTelemetry() {
   const mode = agentProcessingTelemetry.mode || getAgentProcessingMode();
   const energy = getProcessingEnergy(mode);
+  const executionMode = getSelectedExecutionMode();
   if (agentWorkspaceShell) {
     agentWorkspaceShell.dataset.processingState = mode;
+    agentWorkspaceShell.dataset.executionMode = executionMode;
   }
   if (agentRuntimeHeartbeat) {
     agentRuntimeHeartbeat.textContent = mode === "halted"
@@ -3503,6 +3505,8 @@ function renderAgentProcessingTelemetry() {
       return `<circle class="flow-particle ${type}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${pulse.toFixed(2)}"></circle>`;
     }).join("");
     const txTag = buySignals || sellSignals ? `BUY ${buySignals} • SELL ${sellSignals}` : "NO EXECUTION EVENTS YET";
+    agentNeuralFlow.dataset.mode = executionMode;
+    agentNeuralFlow.dataset.state = mode;
     agentNeuralFlow.innerHTML = `
       <svg class="neural-flow-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
         <defs>
