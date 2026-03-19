@@ -3482,6 +3482,24 @@ function renderAgentProcessingTelemetry() {
     const recentActivity = Array.isArray(agentTradeState.activity) ? agentTradeState.activity.slice(0, 10) : [];
     const buySignals = recentActivity.filter((item) => /execution_confirmed|position_opened|open/i.test(String(item?.eventType || ""))).length;
     const sellSignals = recentActivity.filter((item) => /position_closed|close|tp_hit|sl_hit|trailing|halt/i.test(String(item?.eventType || ""))).length;
+    const recentTrades = (Array.isArray(tradeActivityEvents) ? tradeActivityEvents : [])
+      .slice(-8)
+      .reverse()
+      .map((item, index) => {
+        const action = String(item?.action || "").toUpperCase();
+        if (action !== "BUY" && action !== "SELL") return null;
+        const cost = Number(item?.sizeUsd || 0);
+        const pnl = Number(item?.pnlPct || 0);
+        return {
+          key: `${action}-${index}-${Math.round(cost * 100)}`,
+          action,
+          cost,
+          pnl,
+          top: 18 + (index % 4) * 16,
+          left: 8 + (index * 11) % 78
+        };
+      })
+      .filter(Boolean);
     const netBias = Math.max(-4, Math.min(4, buySignals - sellSignals));
     const width = 1000;
     const height = 480;
@@ -3505,6 +3523,13 @@ function renderAgentProcessingTelemetry() {
       return `<circle class="flow-particle ${type}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${pulse.toFixed(2)}"></circle>`;
     }).join("");
     const txTag = buySignals || sellSignals ? `BUY ${buySignals} • SELL ${sellSignals}` : "NO EXECUTION EVENTS YET";
+    const floatLabels = recentTrades
+      .map((item) => {
+        const tone = item.action === "BUY" ? "buy" : "sell";
+        const pnlText = Number.isFinite(item.pnl) && item.pnl !== 0 ? ` (${formatPct(item.pnl, 2)})` : "";
+        return `<span class="flow-label ${tone}" style="left:${item.left}%;top:${item.top}%;animation-delay:${((item.left % 7) * 0.11).toFixed(2)}s">${escapeHtml(item.action)} ${escapeHtml(formatUsd(item.cost))}${escapeHtml(pnlText)}</span>`;
+      })
+      .join("");
     agentNeuralFlow.dataset.mode = executionMode;
     agentNeuralFlow.dataset.state = mode;
     agentNeuralFlow.innerHTML = `
@@ -3525,6 +3550,7 @@ function renderAgentProcessingTelemetry() {
         <polyline class="neural-flow-core" points="${points}" style="stroke-dashoffset:${(agentProcessingTick * -6).toFixed(2)}px" />
         ${particles}
       </svg>
+      <div class="neural-flow-floats">${floatLabels}</div>
       <div class="neural-flow-tag">${escapeHtml(txTag)}</div>
     `;
   }
@@ -3829,6 +3855,18 @@ function renderAgentDiagnostics() {
 function renderAgentTokenIdentity() {
   const mint = String(agentTargetMint || "");
   const meta = getTokenMetaForMint(mint, null);
+  const executionMode = getSelectedExecutionMode();
+  const autonomousMode = executionMode === "live" && !mint;
+  const labelText = autonomousMode
+    ? "Autonomous Universe"
+    : mint
+      ? (meta.name || meta.symbol || shortMint(mint, 6, 6))
+      : "No token selected";
+  const mintText = autonomousMode
+    ? "AIG scans boosted + validated tokens automatically."
+    : mint
+      ? shortMint(mint, 8, 8)
+      : "Set a workspace token inside Developer / Engine Details.";
   const symbol = String(meta.symbol || "").trim() || (mint ? shortMint(mint, 4, 4) : "AIG");
 
   if (agentCurrentTokenAvatar) {
@@ -3837,16 +3875,22 @@ function renderAgentTokenIdentity() {
       agentCurrentTokenAvatar.className = "token-avatar large";
       agentCurrentTokenAvatar.innerHTML = `<img src="${escapeHtml(meta.imageUrl)}" alt="${escapeHtml(symbol)}" loading="lazy" onerror="this.parentElement.className='token-avatar fallback large';this.parentElement.textContent='${escapeHtml(symbol.slice(0, 1) || "A")}';" /><span>${escapeHtml(symbol.slice(0, 1) || "A")}</span>`;
     } else {
-      agentCurrentTokenAvatar.textContent = escapeHtml(symbol.slice(0, 1) || "A");
+      agentCurrentTokenAvatar.textContent = escapeHtml(autonomousMode ? "AI" : (symbol.slice(0, 1) || "A"));
     }
   }
   if (agentCurrentTokenLabel) {
-    agentCurrentTokenLabel.textContent = mint ? (meta.name || meta.symbol || shortMint(mint, 6, 6)) : "No token selected";
+    agentCurrentTokenLabel.textContent = labelText;
   }
   if (agentCurrentTokenMint) {
-    agentCurrentTokenMint.textContent = mint
-      ? shortMint(mint, 8, 8)
-      : "Set a workspace token inside Developer / Engine Details.";
+    agentCurrentTokenMint.textContent = mintText;
+  }
+  if (agentClearTargetButton) {
+    agentClearTargetButton.disabled = !mint;
+    agentClearTargetButton.textContent = mint ? "Remove Token" : "No Token Lock";
+  }
+  if (agentClearTargetSecondaryButton) {
+    agentClearTargetSecondaryButton.disabled = !mint;
+    agentClearTargetSecondaryButton.textContent = mint ? "Clear Token Set" : "No Token Set";
   }
 }
 
