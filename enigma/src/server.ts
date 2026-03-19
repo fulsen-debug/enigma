@@ -398,6 +398,14 @@ const FAST_ENTRY_COOLDOWN_SEC = Math.max(
   1,
   Math.min(30, Number(process.env.ENIGMA_FAST_ENTRY_COOLDOWN_SEC || 2))
 );
+const NET_EDGE_MIN_PCT = Math.max(
+  0,
+  Math.min(10, Number(process.env.ENIGMA_NET_EDGE_MIN_PCT || 0.35))
+);
+const NET_EDGE_COST_BUFFER_PCT = Math.max(
+  0,
+  Math.min(10, Number(process.env.ENIGMA_NET_EDGE_COST_BUFFER_PCT || 0.15))
+);
 const AUTONOMOUS_UNIVERSE_LIMIT = Math.max(
   3,
   Math.min(24, Number(process.env.ENIGMA_AUTONOMOUS_UNIVERSE_LIMIT || 8))
@@ -5610,6 +5618,35 @@ app.post(
             );
             if (!Number.isFinite(requestedAmountUsd) || requestedAmountUsd < 1) continue;
 
+            const expectedPnlPct = projectDecisionPnlPct(
+              Number(candidate.patternScore || 0),
+              Number(candidate.confidence || 0)
+            );
+            const preFill = simulateExecutionFill({
+              side: "BUY",
+              mode: executionMode,
+              referencePriceUsd: entryPrice,
+              requestedNotionalUsd: requestedAmountUsd,
+              spreadBps,
+              volatilityIndex: Number(candidate.marketRegime?.volatilityIndex ?? NaN),
+              pollIntervalSec: Number(execCfg.pollIntervalSec || 5)
+            });
+            const preExecutedNotionalUsd = Number(preFill.executedNotionalUsd || 0);
+            if (!Number.isFinite(preExecutedNotionalUsd) || preExecutedNotionalUsd < 1) continue;
+            const entryCostsPct = Number(
+              (((Number(preFill.totalCostUsd || 0) / preExecutedNotionalUsd) * 100) || 0).toFixed(4)
+            );
+            const estimatedTotalCostsPct = Number((entryCostsPct * 2 + NET_EDGE_COST_BUFFER_PCT).toFixed(4));
+            const netEdgePct = Number((expectedPnlPct - estimatedTotalCostsPct).toFixed(4));
+            if (netEdgePct < NET_EDGE_MIN_PCT) {
+              actions.push({
+                type: "INFO",
+                mint: candidate.mint,
+                note: `net-edge gate blocked entry (edge ${netEdgePct.toFixed(2)}% < min ${NET_EDGE_MIN_PCT.toFixed(2)}%; exp ${expectedPnlPct.toFixed(2)}%, est costs ${estimatedTotalCostsPct.toFixed(2)}%)`
+              });
+              continue;
+            }
+
             if (executionMode === "live") {
               try {
                 const buyResponse = await executeUltraBuy({
@@ -5636,15 +5673,7 @@ app.post(
               }
             }
 
-            const fill = simulateExecutionFill({
-              side: "BUY",
-              mode: executionMode,
-              referencePriceUsd: entryPrice,
-              requestedNotionalUsd: requestedAmountUsd,
-              spreadBps,
-              volatilityIndex: Number(candidate.marketRegime?.volatilityIndex ?? NaN),
-              pollIntervalSec: Number(execCfg.pollIntervalSec || 5)
-            });
+            const fill = preFill;
             const executedNotionalUsd = Number(fill.executedNotionalUsd || 0);
             if (!Number.isFinite(executedNotionalUsd) || executedNotionalUsd < 1) continue;
             availableEntryBudgetUsd = Number(
@@ -5669,10 +5698,7 @@ app.post(
             positionExecutionMeta.set(created.id, {
               entryReferencePriceUsd: entryPrice,
               entryFillCostUsd: Number(fill.totalCostUsd || 0),
-              expectedPnlPct: projectDecisionPnlPct(
-                Number(candidate.patternScore || 0),
-                Number(candidate.confidence || 0)
-              )
+              expectedPnlPct
             });
 
             actions.push({
@@ -5688,10 +5714,9 @@ app.post(
               spreadBps: Number(spreadBps || 0),
               stopDistancePct: Number(sizing.stopDistancePct || 0),
               riskBudgetUsd: Number(sizing.riskBudgetUsd || 0),
-              expectedPnlPct: projectDecisionPnlPct(
-                Number(candidate.patternScore || 0),
-                Number(candidate.confidence || 0)
-              ),
+              expectedPnlPct,
+              netEdgePct,
+              estimatedTotalCostsPct,
               executionCostsUsd: Number(fill.totalCostUsd || 0),
               fillRatio: Number(fill.fillRatio || 1),
               mode: executionMode,
